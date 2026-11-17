@@ -236,6 +236,16 @@
       { id: 2, user_id: 'u2', changed_at: day(-6, 19), changes: { potency: [u2.potency - 640, u2.potency], resonance: [u2.resonance - 210, u2.resonance] } },
       { id: 3, user_id: 'u5', changed_at: day(-12, 21), changes: { char_class: [u5.char_class === 'dh' ? 'mago' : 'dh', u5.char_class], google_name: ['trovao_antigo', u5.google_name] } },
     );
+    // Evolução de Ressonância nos últimos meses (alimenta os gráficos de Estatísticas)
+    db.profiles.filter((p) => p.resonance && p.role !== 'pending' && p.id !== 'u2').forEach((p) => {
+      let v = p.resonance;
+      for (let k = 1; k <= 3; k++) {
+        if (rnd() < 0.3) continue;
+        const gain = 40 + Math.floor(rnd() * 260);
+        db.history.push({ id: db.history.length + 1, user_id: p.id, changed_at: day(-(k - 1) * 28 - 1 - Math.floor(rnd() * 25), 20), changes: { resonance: [v - gain, v] } });
+        v -= gain;
+      }
+    });
     // Exemplos de anotações internas
     db.notes = [
       { id: 900, member_id: 'u5', author_id: 'u1', body: 'Avisou que troca de turno no trabalho às quintas; pode chegar atrasado na Guerra.', created_at: day(-3, 22) },
@@ -702,7 +712,7 @@
     if (isMember()) {
       const links = [['#/', 'Próximos', 'upcoming'], ['#/passados', 'Passados', 'past'], ['#/news', 'Malah News', 'news']];
       if (isOfficer()) links.push(['#/membros', 'Membros', 'members'], ['#/frequencia', 'Frequência', 'freq']);
-      links.push(['#/perfil', 'Meu perfil', 'profile']);
+      links.push(['#/perfil', 'Meu perfil', 'profile'], ['#/utils', 'Utils', 'utils']);
       nav.innerHTML = links.map(([href, label, key]) => `<a href="${href}" class="${currentKey === key ? 'active' : ''}">${label}${key === 'news' && hasUnreadNews() ? '<span class="dot-new" title="Edição nova"></span>' : ''}</a>`).join('');
     } else nav.innerHTML = '';
 
@@ -2390,6 +2400,253 @@
     </div>`;
   }
 
+  // ---------- Estatísticas do clã (tela Membros, só oficiais e líder) ----------
+
+  const S = { open: false, type: '' };
+  const STATS_DAYS = 90;
+  const intFmt = (n) => Math.round(n).toLocaleString('pt-BR');
+  const pctFmt = (p) => `${Math.round(p * 100)}%`;
+  const pctColor = (p) => (p >= 0.75 ? 'var(--yes)' : p >= 0.5 ? 'var(--gold)' : 'var(--no)');
+
+  // Valor de um atributo numa data: parte do valor atual e desfaz as alterações posteriores.
+  // hist deve estar do mais recente para o mais antigo. Antes da 1ª alteração, vale o 1º valor conhecido.
+  function valueAt(m, key, t, hist) {
+    let v = m[key];
+    for (const h of hist) {
+      if (Date.parse(h.changed_at) <= t) break;
+      if (h.changes && key in h.changes) v = h.changes[key][0];
+    }
+    const n = Number(v);
+    return v == null || !Number.isFinite(n) || n <= 0 ? null : n;
+  }
+
+  // Barras horizontais: [{ label | labelHtml, value, color?, valHtml?, title? }]
+  function hbars(items, { max, fmt = intFmt } = {}) {
+    const top = max ?? Math.max(1, ...items.map((i) => i.value));
+    return `<div class="hbars">${items.map((i) => `<div class="hbar" title="${esc(i.title || `${i.label}: ${fmt(i.value)}`)}">
+      <span class="hbar-label">${i.labelHtml || esc(i.label)}</span>
+      <span class="hbar-track"><span class="hbar-fill" style="width:${Math.max(0, (i.value / top) * 100)}%${i.color ? `;background:${i.color}` : ''}"></span></span>
+      <span class="hbar-val">${i.valHtml ?? fmt(i.value)}</span></div>`).join('')}</div>`;
+  }
+
+  // Colunas verticais: [{ label, title, bars: [{ v, cls }] }]
+  function vcols(items) {
+    const top = Math.max(1, ...items.flatMap((i) => i.bars.map((b) => b.v)));
+    return `<div class="vcols">${items.map((i) => `<div class="vcol" title="${esc(i.title || i.label)}">
+      <div class="vcol-bars">${i.bars.map((b) => `<span class="vbar ${b.cls || ''}" style="height:${(b.v / top) * 100}%"><em>${b.v || ''}</em></span>`).join('')}</div>
+      <div class="vcol-label">${esc(i.label)}</div></div>`).join('')}</div>`;
+  }
+
+  // Barras empilhadas Sim / Não / Sem resposta
+  function stackRows(rows) {
+    return `<div class="stack-rows">${rows.map((r) => {
+      const tot = Math.max(1, r.total);
+      const seg = (n, cls, what) => (n ? `<span class="seg ${cls}" style="width:${(n / tot) * 100}%" title="${n} ${what}">${n / tot >= 0.08 ? n : ''}</span>` : '');
+      return `<div class="stack-row">
+        <span class="stack-label" title="${esc(r.title)}">${r.labelHtml}</span>
+        <span class="stack-track">${seg(r.yes, 'yes', 'vão')}${seg(r.no, 'no', 'não vão')}${seg(r.none, 'none', 'sem resposta')}</span>
+        <span class="stack-val ${r.none ? 'c-no' : 'muted'}" title="Sem resposta">${r.none ? `${r.none} ⏳` : '✓'}</span>
+      </div>`;
+    }).join('')}</div>`;
+  }
+
+  function lineChart(points) {
+    const W = 640, H = 210, L = 58, R = 16, T = 16, B = 30;
+    const vs = points.map((p) => p.v);
+    let lo = Math.min(...vs); let hi = Math.max(...vs);
+    if (hi - lo < 20) { lo -= 20; hi += 20; }
+    const pad = (hi - lo) * 0.18; const y0 = lo - pad; const y1 = hi + pad;
+    const x = (i) => L + (i * (W - L - R)) / Math.max(1, points.length - 1);
+    const y = (v) => T + (1 - (v - y0) / (y1 - y0)) * (H - T - B);
+    const line = points.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p.v).toFixed(1)}`).join('');
+    const area = `${line}L${x(points.length - 1).toFixed(1)},${H - B}L${x(0).toFixed(1)},${H - B}Z`;
+    const every = Math.ceil(points.length / 6);
+    const last = points.length - 1;
+    return `<svg class="line-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Ressonância média ao longo do tempo">
+      <defs><linearGradient id="g-area" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ff7a2f" stop-opacity=".35"/><stop offset="1" stop-color="#ff7a2f" stop-opacity="0"/></linearGradient></defs>
+      ${[lo, (lo + hi) / 2, hi].map((v) => `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"/>
+        <text class="axis" x="${L - 8}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end">${intFmt(v)}</text>`).join('')}
+      <path d="${area}" fill="url(#g-area)"/>
+      <path class="line" d="${line}"/>
+      ${points.map((p, i) => `<circle class="pt" cx="${x(i).toFixed(1)}" cy="${y(p.v).toFixed(1)}" r="4"><title>${esc(p.label)}: ${intFmt(p.v)} (${p.n} membros)</title></circle>`).join('')}
+      ${points.map((p, i) => (i === last || (i % every === 0 && last - i >= every)
+        ? `<text class="axis" x="${x(i).toFixed(1)}" y="${H - 8}" text-anchor="middle">${esc(p.label)}</text>` : '')).join('')}
+    </svg>`;
+  }
+
+  async function renderClanStats(box) {
+    box.innerHTML = '<div class="muted small stats-loading">Carregando estatísticas…</div>';
+    const since = new Date(Date.now() - STATS_DAYS * 86400000).toISOString();
+    const [past, upcoming, histAll] = await Promise.all([
+      api.history(since), api.events(false).catch(() => []), api.profileHistory().catch(() => []),
+    ]);
+    const members = activeMembers();
+    const now = Date.now();
+    const empty = (msg) => `<div class="muted small chart-empty">${msg}</div>`;
+    const link = (m) => `<a class="member-link" href="#/membro/${encodeURIComponent(m.id)}">${esc(displayName(m))}</a>`;
+
+    // ----- Composição -----
+    const counts = CLASSES.map((c) => ({ c, n: members.filter((m) => m.char_class === c.key).length }))
+      .sort((a, b) => b.n - a.n || a.c.label.localeCompare(b.c.label, 'pt-BR'));
+    const noClass = members.filter((m) => !CLASS[m.char_class]).length;
+    const classChart = hbars(counts.map(({ c, n }) => ({
+      label: c.label, labelHtml: `${classTag(c.key)} ${esc(c.label)}`, value: n, color: c.color,
+      title: `${c.label}: ${n} membro(s)`,
+    })));
+
+    const res = members.map((m) => Number(m.resonance)).filter((v) => Number.isFinite(v) && v > 0).sort((a, b) => a - b);
+    let resChart = empty('Ninguém informou a Ressonância ainda.');
+    let resSummary = '';
+    if (res.length) {
+      const lo = res[0]; const hi = res[res.length - 1];
+      const step = [100, 250, 500, 1000, 2000, 5000].find((s) => Math.floor(hi / s) - Math.floor(lo / s) + 1 <= 8) || 10000;
+      const bins = [];
+      for (let b = Math.floor(lo / step) * step; b <= hi; b += step) bins.push({ from: b, to: b + step - 1, n: res.filter((v) => v >= b && v < b + step).length });
+      resChart = vcols(bins.map((b) => ({ label: intFmt(b.from), title: `${intFmt(b.from)} a ${intFmt(b.to)}: ${b.n} membro(s)`, bars: [{ v: b.n, cls: 'pres' }] })));
+      const median = res.length % 2 ? res[(res.length - 1) / 2] : (res[res.length / 2 - 1] + res[res.length / 2]) / 2;
+      resSummary = `<div class="chart-foot">Média <b>${intFmt(res.reduce((s, v) => s + v, 0) / res.length)}</b> · Mediana <b>${intFmt(median)}</b> · Menor <b>${intFmt(lo)}</b> · Maior <b>${intFmt(hi)}</b></div>`;
+    }
+
+    // ----- Engajamento (filtrável por tipo) -----
+    const typeOk = (e) => !S.type || (S.type === 'none' ? !e.type_id : e.type_id === Number(S.type));
+    const evs = past.filter(typeOk);
+    const withAtt = evs.filter((e) => e.attendance.length).sort((a, b) => Date.parse(a.starts_at) - Date.parse(b.starts_at)).slice(-12);
+    const presenceChart = withAtt.length ? vcols(withAtt.map((e) => {
+      const conf = e.rsvps.filter((r) => r.going).length;
+      const pres = e.attendance.filter((a) => a.present).length;
+      return { label: fmtShortDate(e.starts_at), title: `${e.title} ${fmtShortDate(e.starts_at)}: ${conf} confirmaram, ${pres} estiveram presentes`,
+        bars: [{ v: conf, cls: 'conf' }, { v: pres, cls: 'pres' }] };
+    })) + '<div class="chart-legend"><span class="lg conf"></span> confirmaram <span class="lg pres"></span> estiveram presentes</div>'
+      : empty('Nenhum evento com presença registrada nos últimos 90 dias.');
+
+    const nextEvs = upcoming.filter(typeOk).slice(0, 3);
+    const respEvents = [
+      ...evs.slice().sort((a, b) => Date.parse(a.starts_at) - Date.parse(b.starts_at)).slice(-6).map((e) => ({ e, soon: false })),
+      ...nextEvs.map((e) => ({ e, soon: true })),
+    ];
+    const respChart = respEvents.length ? stackRows(respEvents.map(({ e, soon }) => {
+      const t = Date.parse(e.starts_at);
+      const elig = members.filter((m) => soon || (Date.parse(m.created_at || 0) || 0) < t);
+      const eligIds = new Set(elig.map((m) => m.id));
+      const rs = e.rsvps.filter((r) => eligIds.has(r.user_id));
+      const yes = rs.filter((r) => r.going).length; const no = rs.length - yes;
+      return { total: elig.length, yes, no, none: elig.length - rs.length, title: `${e.title} · ${fmtShortDate(e.starts_at)}`,
+        labelHtml: `${soon ? '<span class="soon-tag">próximo</span> ' : ''}<b>${fmtShortDate(e.starts_at)}</b> <span class="muted">${esc(e.title)}</span>` };
+    })) + '<div class="chart-legend"><span class="lg yes"></span> vão <span class="lg no"></span> não vão <span class="lg none"></span> sem resposta</div>'
+      : empty('Nenhum evento no período.');
+    const nextEv = nextEvs[0];
+    const pendingNames = nextEv ? members.filter((m) => !nextEv.rsvps.some((r) => r.user_id === m.id)).sort(byName) : [];
+    const pendingBox = nextEv ? `<div class="pending-answer">
+        <b>Ainda não responderam a <a href="#/evento/${nextEv.id}">${esc(nextEv.title)} ${fmtShortDate(nextEv.starts_at)}</a> (${pendingNames.length}):</b>
+        ${pendingNames.length ? `<div class="name-chips">${pendingNames.map((m) => `<span class="name-chip">${link(m)}</span>`).join('')}</div>
+          <button class="btn small" id="st-copy-pending">📋 Copiar lista</button>` : '<span class="c-yes"> todos responderam! 🎉</span>'}
+      </div>` : '';
+
+    const freq = computeFrequency(evs, members).filter((r) => r.total);
+    const maxTotal = Math.max(0, ...freq.map((r) => r.total));
+    const ranked = freq.filter((r) => r.total >= Math.min(3, maxTotal));
+    const byPct = (dir) => (a, b) => dir * (a.pct - b.pct) || dir * (a.present - b.present) || byName(a.m, b.m);
+    const best = ranked.slice().sort(byPct(-1)).slice(0, 10);
+    const worst = ranked.slice().sort(byPct(1)).filter((r) => !best.includes(r)).slice(0, 10);
+    const rankBars = (rows) => hbars(rows.map((r) => ({
+      label: displayName(r.m), labelHtml: link(r.m), value: r.pct, color: pctColor(r.pct),
+      valHtml: `${pctFmt(r.pct)} <span class="muted">${r.present}/${r.total}</span>`, title: `${displayName(r.m)}: ${r.present} de ${r.total} eventos`,
+    })), { max: 1, fmt: pctFmt });
+
+    // ----- Evolução da Ressonância -----
+    const histBy = {};
+    histAll.slice().sort((a, b) => Date.parse(b.changed_at) - Date.parse(a.changed_at))
+      .forEach((h) => { (histBy[h.user_id] ||= []).push(h); });
+    const firstSeen = Math.min(now, ...members.map((m) => Date.parse(m.created_at || 0) || now));
+    const start = Math.max(now - STATS_DAYS * 86400000, firstSeen);
+    const nPts = 12;
+    const stepMs = Math.max(86400000, Math.round((now - start) / (nPts - 1) / 86400000) * 86400000);
+    const points = [];
+    for (let t = now; t >= start - 1 && points.length < nPts; t -= stepMs) {
+      const vals = members.map((m) => valueAt(m, 'resonance', t, histBy[m.id] || [])).filter((v) => v != null);
+      if (vals.length) points.unshift({ label: fmtShortDate(new Date(t).toISOString()), v: vals.reduce((s, v) => s + v, 0) / vals.length, n: vals.length });
+    }
+    let evoChart = empty('Ainda não há histórico suficiente. O gráfico ganha forma conforme os membros atualizam a Ressonância.');
+    if (points.length >= 2) {
+      const diff = points[points.length - 1].v - points[0].v;
+      evoChart = lineChart(points) + `<div class="chart-foot">Desde ${points[0].label}: <b class="${diff > 0 ? 'c-yes' : diff < 0 ? 'c-no' : ''}">${diff > 0 ? '+' : ''}${intFmt(diff)}</b> na média do clã</div>`;
+    }
+    const t30 = now - 30 * 86400000;
+    const gains = members.map((m) => {
+      const h = histBy[m.id] || [];
+      const before = valueAt(m, 'resonance', t30, h); const after = valueAt(m, 'resonance', now, h);
+      return { m, before, after, gain: before != null && after != null ? after - before : 0 };
+    }).filter((g) => g.gain > 0).sort((a, b) => b.gain - a.gain || byName(a.m, b.m)).slice(0, 8);
+    const gainChart = gains.length ? hbars(gains.map((g) => ({
+      label: displayName(g.m), labelHtml: link(g.m), value: g.gain, color: 'var(--ember)',
+      valHtml: `<b class="c-yes">+${intFmt(g.gain)}</b> <span class="muted">${intFmt(g.before)} → ${intFmt(g.after)}</span>`,
+      title: `${displayName(g.m)}: ${intFmt(g.before)} → ${intFmt(g.after)}`,
+    }))) : empty('Ninguém aumentou a Ressonância nos últimos 30 dias (ou ainda não atualizou no site).');
+
+    const hasUntyped = past.some((e) => !e.type_id);
+    box.innerHTML = `
+      <section class="stats-section">
+        <h3>🧙 Composição do clã <span class="muted small">· ${members.length} membros ativos</span></h3>
+        <div class="chart-grid">
+          <div class="card chart"><h4>Membros por classe</h4>${classChart}
+            ${noClass ? `<div class="chart-foot">${noClass} membro(s) ainda sem classe informada</div>` : ''}</div>
+          <div class="card chart"><h4>Distribuição de Ressonância</h4>${resChart}${resSummary}</div>
+        </div>
+      </section>
+      <section class="stats-section">
+        <h3>📈 Engajamento <span class="muted small">· últimos ${STATS_DAYS} dias</span>
+          <select class="inline" id="st-type" aria-label="Tipo de evento">
+            <option value="">Todos os tipos</option>
+            ${state.types.map((t) => `<option value="${t.id}" ${S.type === String(t.id) ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}
+            ${hasUntyped ? `<option value="none" ${S.type === 'none' ? 'selected' : ''}>Sem tipo</option>` : ''}
+          </select></h3>
+        <div class="chart-grid">
+          <div class="card chart"><h4>Presença por evento</h4>${presenceChart}</div>
+          <div class="card chart"><h4>Respostas por evento</h4>${respChart}${pendingBox}</div>
+          <div class="card chart"><h4>🏆 Mais presentes</h4>${best.length ? rankBars(best) : empty('Sem presença registrada no período.')}</div>
+          <div class="card chart"><h4>⚠️ Mais faltam</h4>${worst.length ? rankBars(worst) : empty(best.length ? 'Todos já aparecem no ranking ao lado.' : 'Sem presença registrada no período.')}</div>
+        </div>
+        ${ranked.length ? `<p class="muted small">O ranking conta só eventos com presença registrada${maxTotal >= 3 ? ' e membros com pelo menos 3 deles' : ''}. Detalhes na aba <a href="#/frequencia">Frequência</a>.</p>` : ''}
+      </section>
+      <section class="stats-section">
+        <h3>💪 Evolução</h3>
+        <div class="chart-grid evo">
+          <div class="card chart wide"><h4>Ressonância média do clã</h4>${evoChart}
+            <div class="muted small">Considera os membros ativos de hoje. Antes da primeira atualização de cada um, vale o primeiro valor informado.</div></div>
+          <div class="card chart"><h4>🔥 Quem mais evoluiu (30 dias)</h4>${gainChart}</div>
+        </div>
+      </section>`;
+
+    $('#st-type').addEventListener('change', (e) => { S.type = e.target.value; renderClanStats(box).catch(fail); });
+    $('#st-copy-pending')?.addEventListener('click', () => {
+      copy([`**Ainda não responderam: ${nextEv.title} ${fmtShortDate(nextEv.starts_at)}**`, ...pendingNames.map((m) => `• ${displayName(m)}`)].join('\n'), 'Lista copiada');
+    });
+  }
+
+  // ---------- Utils: links úteis (todos os membros) ----------
+
+  const UTIL_LINKS = [
+    { icon: '⚔️', title: 'Builds', desc: 'Builds das classes, com itens e gemas recomendados', url: 'https://diablo.tv/builds' },
+    { icon: '💎', title: 'Gemas', desc: 'Lista das gemas lendárias e seus efeitos', url: 'https://diablo.tv/legendary-gems' },
+    { icon: '🏆', title: 'Rank PvP Mundial', desc: 'Ranking mundial dos jogadores', url: 'https://diablo.tv/leaderboards' },
+    { icon: '💬', title: 'Reddit', desc: 'Comunidade r/DiabloImmortal: notícias, dúvidas e discussões', url: 'https://www.reddit.com/r/DiabloImmortal/' },
+    { icon: '📜', title: 'Patch Notes NA', desc: 'Notícias e atualizações oficiais da Blizzard (Ocidente)', url: 'https://news.blizzard.com/en-us/feed/diablo-immortal' },
+    { icon: '🐉', title: 'Patch Notes CN', desc: 'Notícias do servidor chinês, que recebe as novidades antes', url: 'https://di.blizzard.cn/news/index.html' },
+  ];
+
+  function viewUtils() {
+    main.innerHTML = `
+      <div class="page-head"><h1>Utils</h1><span class="muted">Links úteis para o clã</span></div>
+      <div class="util-grid">
+        ${UTIL_LINKS.map((l) => `<a class="card util-card" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">
+          <span class="util-icon" aria-hidden="true">${l.icon}</span>
+          <span class="util-body"><b>${esc(l.title)}</b><span class="muted small">${esc(l.desc)}</span>
+            <span class="util-host">${esc(new URL(l.url).hostname.replace(/^www\./, ''))} ↗</span></span>
+        </a>`).join('')}
+      </div>
+      <p class="muted small">Os links abrem em uma nova aba.</p>`;
+  }
+
   // ---------- Membros ----------
 
   const M = { q: '' };
@@ -2450,6 +2707,10 @@
     main.innerHTML = `
       <div class="page-head"><h1>Membros</h1><span class="muted">${active.length} ativos</span>
         ${isOfficer() ? '<button class="btn small" id="btn-csv" title="Baixar planilha (CSV separado por ;)">⬇ Exportar CSV</button>' : ''}</div>
+      ${isOfficer() ? `<details class="stats-box" id="stats-box"${S.open ? ' open' : ''}>
+        <summary>📊 Estatísticas do clã <span class="muted small">· composição, engajamento e evolução</span></summary>
+        <div id="clan-stats"></div>
+      </details>` : ''}
       ${isOfficer() ? `<input type="search" id="m-search" class="search" placeholder="Buscar por nome atual ou antigo…" value="${esc(M.q)}">` : ''}
       ${pilotRequests.length ? `<h2>🧑‍✈️ Pedidos de piloto (${pilotRequests.length})</h2>
         <div class="card" style="margin-bottom:20px">${pilotRequests.map((p) => {
@@ -2483,6 +2744,14 @@
       if (fb && q) fb.open = [...fb.querySelectorAll('.member')].some((r) => !r.hidden);
     };
     $('#m-search')?.addEventListener('input', (e) => { M.q = e.target.value; applySearch(); });
+    // Estatísticas: só carregam quando o painel é aberto (e lembram se estava aberto)
+    const statsBox = $('#stats-box');
+    if (statsBox) {
+      let loaded = false;
+      const load = () => { if (!loaded) { loaded = true; renderClanStats($('#clan-stats')).catch((e) => { loaded = false; fail(e); }); } };
+      statsBox.addEventListener('toggle', () => { S.open = statsBox.open; if (statsBox.open) load(); });
+      if (statsBox.open) load();
+    }
     // Clique na linha abre o perfil (exceto em botões, seletores e links)
     main.querySelectorAll('.member[data-profile]').forEach((r) => r.addEventListener('click', (e) => {
       if (e.target.closest('a, button, select, input, label')) return;
@@ -2664,7 +2933,7 @@
     const ev = h.match(/^\/evento\/(\d+)$/);
     const tm = h.match(/^\/evento\/(\d+)\/times$/);
     const mp = h.match(/^\/membro\/([\w%-]+)$/); // perfil de um membro (oficiais e líder)
-    const key = h === '/passados' ? 'past' : h === '/frequencia' ? 'freq' : h === '/news' ? 'news'
+    const key = h === '/passados' ? 'past' : h === '/frequencia' ? 'freq' : h === '/news' ? 'news' : h === '/utils' ? 'utils'
       : h === '/perfil' ? 'profile' : h === '/membros' ? (isOfficer() ? 'members' : 'profile') : mp ? 'members'
       : tm ? 'teams' : ev ? 'event' : 'upcoming';
     renderHeader(key);
@@ -2673,6 +2942,7 @@
     try {
       if (key === 'past') await viewEvents(true);
       else if (key === 'news') await viewNews();
+      else if (key === 'utils') viewUtils();
       else if (mp) await viewMyPanel(decodeURIComponent(mp[1]));
       else if (key === 'profile') await viewMyPanel();
       else if (key === 'members') await viewMembers();
