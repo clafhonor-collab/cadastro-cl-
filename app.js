@@ -2632,6 +2632,9 @@
     { icon: '💬', title: 'Reddit', desc: 'Comunidade r/DiabloImmortal: notícias, dúvidas e discussões', url: 'https://www.reddit.com/r/DiabloImmortal/' },
     { icon: '📜', title: 'Patch Notes NA', desc: 'Notícias e atualizações oficiais da Blizzard (Ocidente)', url: 'https://news.blizzard.com/en-us/feed/diablo-immortal' },
     { icon: '🐉', title: 'Patch Notes CN', desc: 'Notícias do servidor chinês, que recebe as novidades antes', url: 'https://di.blizzard.cn/news/index.html' },
+    { icon: '🗣️', title: 'Fórum Oficial', desc: 'Discussão geral no fórum oficial da Blizzard', url: 'https://us.forums.blizzard.com/en/diablo-immortal/c/general-discussion/5' },
+    { icon: '🧮', title: 'Calculadora de Gemas', desc: 'Calcula a Ressonância das suas gemas lendárias', url: 'https://diforge.kr/resonance-calc' },
+    { icon: '🎧', title: 'Discord Oficial', desc: 'Servidor oficial do Diablo Immortal no Discord', url: 'https://discord.com/invite/QBkEExsmQa' },
   ];
 
   function viewUtils() {
