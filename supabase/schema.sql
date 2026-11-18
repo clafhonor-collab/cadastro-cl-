@@ -1014,3 +1014,310 @@ create policy "notes_delete" on public.member_notes
   for delete to authenticated
   using (public.is_officer() and not public.can_act_as(member_id)
          and (author_id = auth.uid() or public.my_role() = 'leader'));
+
+-- =====================================================================
+--  Novembro/2026: foto de perfil própria, nomes dos times (formato
+--  "Outros") e tipo "Torre Amaldiçoada". Só ADICIONA coisas: nenhum
+--  dado existente é alterado ou apagado.
+-- =====================================================================
+
+-- ---------- Foto de perfil enviada pelo membro ----------------------
+-- custom_avatar_url: foto enviada pelo site (tem prioridade sobre a da conta Google)
+-- avatar_hidden:     o membro removeu a foto (mostra só a inicial do nome)
+alter table public.profiles add column if not exists custom_avatar_url text;
+alter table public.profiles add column if not exists avatar_hidden boolean not null default false;
+grant update (custom_avatar_url, avatar_hidden) on public.profiles to authenticated;
+
+-- Espaço PÚBLICO para as fotos (até 2 MB; o site já envia reduzida para 256×256)
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('avatars', 'avatars', true, 2097152, array['image/webp', 'image/jpeg', 'image/png'])
+on conflict (id) do nothing;
+
+-- Cada pessoa só envia/troca/apaga arquivos dentro da própria pasta (avatars/<seu id>/...)
+drop policy if exists "avatars_insert" on storage.objects;
+create policy "avatars_insert" on storage.objects
+  for insert to authenticated
+  with check (bucket_id = 'avatars' and (storage.foldername(name))[1] = auth.uid()::text);
+
+drop policy if exists "avatars_update" on storage.objects;
+create policy "avatars_update" on storage.objects
+  for update to authenticated
+  using (bucket_id = 'avatars' and (storage.foldername(name))[1] = auth.uid()::text);
+
+drop policy if exists "avatars_delete" on storage.objects;
+create policy "avatars_delete" on storage.objects
+  for delete to authenticated
+  using (bucket_id = 'avatars' and (storage.foldername(name))[1] = auth.uid()::text);
+
+-- ---------- Nomes dos times no formato "Outros" ----------------------
+-- (no banco o formato continua se chamando 'rito'; no site aparece como "Outros")
+-- team_names[i] = nome do time i; vazio/nulo = "Time i"
+alter table public.events add column if not exists team_names text[];
+
+-- Renomeia um time e leva junto quem já está nele, numa única transação
+create or replace function public.rename_team(p_event bigint, p_index integer, p_name text) returns void
+language plpgsql security invoker set search_path = public as $$
+declare
+  ev       public.events;
+  names    text[];
+  old_name text;
+  new_name text := nullif(btrim(coalesce(p_name, '')), '');
+begin
+  if not public.is_officer() then
+    raise exception 'Sem permissão para renomear times';
+  end if;
+  select * into ev from public.events where id = p_event for update;
+  if ev.id is null then raise exception 'Evento não encontrado'; end if;
+  if ev.team_format is distinct from 'rito' then
+    raise exception 'Só é possível renomear times no formato Outros';
+  end if;
+  if p_index < 1 or p_index > ev.team_count then raise exception 'Time inválido'; end if;
+  if char_length(new_name) > 30 then raise exception 'O nome do time pode ter até 30 caracteres'; end if;
+
+  -- Lista sempre com 10 posições (evita índices "pulados" no array)
+  names := array(select ev.team_names[i] from generate_series(1, 10) i);
+  old_name := coalesce(nullif(btrim(names[p_index]), ''), 'Time ' || p_index);
+  if exists (select 1 from generate_series(1, ev.team_count) i
+              where i <> p_index
+                and lower(coalesce(nullif(btrim(names[i]), ''), 'Time ' || i))
+                  = lower(coalesce(new_name, 'Time ' || p_index))) then
+    raise exception 'Já existe um time com esse nome';
+  end if;
+
+  names[p_index] := new_name;
+  update public.events set team_names = names where id = p_event;
+  update public.team_slots set team = coalesce(new_name, 'Time ' || p_index)
+   where event_id = p_event and team = old_name;
+end $$;
+
+revoke execute on function public.rename_team(bigint, integer, text) from public, anon;
+grant  execute on function public.rename_team(bigint, integer, text) to authenticated;
+
+-- ---------- Novo tipo de evento --------------------------------------
+insert into public.event_types (name, sort_order) values ('Torre Amaldiçoada', 40)
+on conflict (name) do nothing;
+
+-- =====================================================================
+--  Configurações do líder: permissões dos oficiais e aprovações
+--  Para cada função, o líder escolhe: allow (Permitido), approval
+--  (Precisa de aprovação) ou deny (Bloqueado). Sem nada configurado,
+--  tudo fica "Permitido", igual ao funcionamento anterior.
+--  Só ADICIONA tabelas, funções e gatilhos e ajusta 3 regras de leitura;
+--  nenhum dado existente é alterado ou apagado.
+-- =====================================================================
+
+create table if not exists public.officer_permissions (
+  perm_key   text primary key check (perm_key ~ '^[a-z_]{2,40}$'),
+  mode       text not null default 'allow' check (mode in ('allow', 'approval', 'deny')),
+  updated_by uuid default auth.uid() references public.profiles(id) on delete set null,
+  updated_at timestamptz not null default now()
+);
+
+-- Fila de ações de oficiais que aguardam o líder.
+-- method/args: a operação do site que o líder executa ao aprovar.
+create table if not exists public.officer_requests (
+  id           bigint generated always as identity primary key,
+  perm_key     text not null,
+  method       text not null check (char_length(method) <= 60),
+  args         jsonb not null default '[]'::jsonb,
+  summary      text not null check (char_length(summary) between 1 and 500),
+  requested_by uuid not null default auth.uid() references public.profiles(id) on delete cascade,
+  requested_at timestamptz not null default now(),
+  status       text not null default 'pending' check (status in ('pending', 'approved', 'rejected', 'failed')),
+  decided_by   uuid references public.profiles(id) on delete set null,
+  decided_at   timestamptz,
+  note         text check (note is null or char_length(note) <= 300)
+);
+create index if not exists officer_requests_status_idx on public.officer_requests (status, requested_at desc);
+
+-- Modo configurado para uma função (padrão: allow)
+create or replace function public.officer_perm(p_key text) returns text
+language sql stable security definer set search_path = public as $$
+  select coalesce((select mode from public.officer_permissions where perm_key = p_key), 'allow')
+$$;
+
+-- O usuário atual pode fazer isso diretamente? (líder sempre; oficial só se "allow")
+create or replace function public.officer_can(p_key text) returns boolean
+language sql stable security definer set search_path = public as $$
+  select coalesce(public.my_role() = 'leader'
+              or (public.my_role() = 'officer' and public.officer_perm(p_key) = 'allow'), false)
+$$;
+
+-- Usado pelos gatilhos: barra o oficial quando a função não está "Permitida"
+create or replace function public.require_perm(p_key text) returns void
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if public.my_role() = 'officer' and public.officer_perm(p_key) <> 'allow' then
+    raise exception 'O líder não permite esta ação para oficiais (%)', p_key using errcode = '42501';
+  end if;
+end $$;
+
+revoke execute on function public.officer_perm(text)  from public, anon;
+revoke execute on function public.officer_can(text)   from public, anon;
+revoke execute on function public.require_perm(text)  from public, anon;
+grant  execute on function public.officer_perm(text)  to authenticated;
+grant  execute on function public.officer_can(text)   to authenticated;
+grant  execute on function public.require_perm(text)  to authenticated;
+
+-- ---------- Gatilhos que garantem as regras no banco ----------
+
+-- Eventos: criar, editar, apagar, travar times e formato/nomes dos times
+create or replace function public.perm_events() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if public.my_role() is distinct from 'officer' then return coalesce(new, old); end if;
+  if tg_op = 'INSERT' then perform public.require_perm('event_create'); return new; end if;
+  if tg_op = 'DELETE' then perform public.require_perm('event_delete'); return old; end if;
+  if (new.title, new.description, new.starts_at, new.type_id, new.rsvp_close_minutes)
+     is distinct from (old.title, old.description, old.starts_at, old.type_id, old.rsvp_close_minutes) then
+    perform public.require_perm('event_edit');
+  end if;
+  if new.teams_locked is distinct from old.teams_locked then perform public.require_perm('teams_lock'); end if;
+  if (new.team_format, new.team_count, new.team_names) is distinct from (old.team_format, old.team_count, old.team_names) then
+    perform public.require_perm('teams_build');
+  end if;
+  return new;
+end $$;
+drop trigger if exists events_perm on public.events;
+create trigger events_perm before insert or update or delete on public.events
+  for each row execute function public.perm_events();
+
+-- Times: montar/salvar/limpar. Saídas automáticas (desmarcou presença, evento apagado) passam.
+create or replace function public.perm_team_slots() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if public.my_role() is distinct from 'officer' then return coalesce(new, old); end if;
+  if tg_op = 'DELETE' and (
+       not exists (select 1 from public.rsvps where event_id = old.event_id and user_id = old.user_id and going)
+       or not exists (select 1 from public.events where id = old.event_id)) then
+    return old;
+  end if;
+  perform public.require_perm('teams_build');
+  return coalesce(new, old);
+end $$;
+drop trigger if exists team_slots_perm on public.team_slots;
+create trigger team_slots_perm before insert or update or delete on public.team_slots
+  for each row execute function public.perm_team_slots();
+
+-- Presença real
+create or replace function public.perm_attendance() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if public.my_role() is distinct from 'officer' then return coalesce(new, old); end if;
+  if tg_op = 'DELETE' and not exists (select 1 from public.events where id = old.event_id) then return old; end if;
+  perform public.require_perm('attendance');
+  return coalesce(new, old);
+end $$;
+drop trigger if exists attendance_perm on public.attendance;
+create trigger attendance_perm before insert or update or delete on public.attendance
+  for each row execute function public.perm_attendance();
+
+-- Pedidos de saída (oficial decide pela conta de outra pessoa)
+create or replace function public.perm_rsvps() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if public.my_role() = 'officer'
+     and old.withdraw_requested_at is not null and new.withdraw_requested_at is null
+     and not public.can_act_as(new.user_id) then
+    perform public.require_perm('withdraw_decide');
+  end if;
+  return new;
+end $$;
+drop trigger if exists rsvps_perm on public.rsvps;
+create trigger rsvps_perm before update on public.rsvps
+  for each row execute function public.perm_rsvps();
+
+-- Membros: aprovar novos e remover/recusar
+create or replace function public.perm_profiles_role() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if public.my_role() = 'officer' and new.id <> auth.uid() and new.role is distinct from old.role then
+    if old.role = 'pending' and new.role = 'member' then
+      perform public.require_perm('member_approve');
+    elsif new.role = 'former' or (old.role = 'member' and new.role = 'pending') then
+      perform public.require_perm('member_remove');
+    end if;
+  end if;
+  return new;
+end $$;
+drop trigger if exists profiles_perm_role on public.profiles;
+create trigger profiles_perm_role before update of role on public.profiles
+  for each row execute function public.perm_profiles_role();
+
+-- Pilotos: o oficial mexendo em contas de outras pessoas
+create or replace function public.perm_pilots() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare
+  acc uuid;
+  pil uuid;
+begin
+  if public.my_role() is distinct from 'officer' then return coalesce(new, old); end if;
+  if tg_op = 'DELETE' then acc := old.account_id; pil := old.pilot_id; else acc := new.account_id; pil := new.pilot_id; end if;
+  if acc = auth.uid() or pil = auth.uid() then return coalesce(new, old); end if;
+  -- Quem saiu do clã deixa de pilotar (parte de "remover membro")
+  if tg_op = 'DELETE' and exists (select 1 from public.profiles where id in (acc, pil) and role = 'former') then
+    return old;
+  end if;
+  perform public.require_perm('pilots');
+  return coalesce(new, old);
+end $$;
+drop trigger if exists pilots_perm on public.account_pilots;
+create trigger pilots_perm before insert or update or delete on public.account_pilots
+  for each row execute function public.perm_pilots();
+
+-- Malah News
+create or replace function public.perm_news() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if public.my_role() is distinct from 'officer' then return coalesce(new, old); end if;
+  perform public.require_perm(case when tg_op = 'DELETE' then 'news_delete' else 'news_publish' end);
+  return coalesce(new, old);
+end $$;
+drop trigger if exists news_perm on public.news_posts;
+create trigger news_perm before insert or update or delete on public.news_posts
+  for each row execute function public.perm_news();
+
+-- Anotações internas e telefones (a leitura também depende da permissão)
+drop policy if exists "notes_select" on public.member_notes;
+create policy "notes_select" on public.member_notes
+  for select to authenticated
+  using (public.is_officer() and not public.can_act_as(member_id) and public.officer_can('notes'));
+
+drop policy if exists "notes_insert" on public.member_notes;
+create policy "notes_insert" on public.member_notes
+  for insert to authenticated
+  with check (public.is_officer() and author_id = auth.uid() and not public.can_act_as(member_id) and public.officer_can('notes'));
+
+drop policy if exists "contacts_select" on public.member_contacts;
+create policy "contacts_select" on public.member_contacts
+  for select to authenticated using (user_id = auth.uid() or public.officer_can('view_phone'));
+
+-- ---------- Quem vê e quem altera as configurações ----------
+alter table public.officer_permissions enable row level security;
+alter table public.officer_requests    enable row level security;
+
+drop policy if exists "operm_select" on public.officer_permissions;
+create policy "operm_select" on public.officer_permissions
+  for select to authenticated using (public.is_officer());
+
+drop policy if exists "operm_write" on public.officer_permissions;
+create policy "operm_write" on public.officer_permissions
+  for all to authenticated
+  using (public.my_role() = 'leader') with check (public.my_role() = 'leader');
+
+-- O oficial vê os próprios pedidos; o líder vê e decide todos
+drop policy if exists "oreq_select" on public.officer_requests;
+create policy "oreq_select" on public.officer_requests
+  for select to authenticated using (requested_by = auth.uid() or public.my_role() = 'leader');
+
+-- Só dá para pedir aprovação do que o líder marcou como "Precisa de aprovação"
+drop policy if exists "oreq_insert" on public.officer_requests;
+create policy "oreq_insert" on public.officer_requests
+  for insert to authenticated
+  with check (public.my_role() = 'officer' and requested_by = auth.uid() and status = 'pending'
+              and decided_by is null and public.officer_perm(perm_key) = 'approval');
+
+drop policy if exists "oreq_update" on public.officer_requests;
+create policy "oreq_update" on public.officer_requests
+  for update to authenticated
+  using (public.my_role() = 'leader') with check (public.my_role() = 'leader');

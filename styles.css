@@ -690,3 +690,44 @@ h1 { background: linear-gradient(180deg, #fff1da, #e3b878); -webkit-background-c
 .util-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .util-body b { font-family: "Cinzel", serif; font-size: 1.05rem; color: var(--gold); }
 .util-host { font-size: .78rem; color: var(--ember); margin-top: 4px; }
+
+/* ---------- Botão "Detalhar evento" nos cards ---------- */
+.event .ev-foot { margin-top: 8px; }
+.event .ev-foot .btn { text-decoration: none; }
+
+/* ---------- Renomear time (formato Outros) ---------- */
+.team-rename { background: none; border: 0; padding: 0 2px; margin-left: 2px; cursor: pointer; font-size: .8rem; opacity: .65; line-height: 1; }
+.team-rename:hover, .team-rename:focus-visible { opacity: 1; }
+
+/* ---------- Evento já finalizado (revisão de times) ---------- */
+.finished-banner { margin: 0 0 12px; }
+
+/* ---------- Foto de perfil ---------- */
+.pf-photo { align-items: center; gap: 14px; flex-wrap: nowrap; }
+.pf-photo label.btn { cursor: pointer; }
+.pf-photo .btn.disabled { opacity: .5; pointer-events: none; }
+@media (max-width: 480px) { .pf-photo { flex-wrap: wrap; } }
+
+/* ---------- Configurações do líder / Solicitações (protótipo) ---------- */
+.nav-count { display: inline-block; margin-left: 5px; min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--fire, #e2401c); color: #fff; font-size: .7rem; line-height: 18px; text-align: center; vertical-align: 1px; }
+.perm-group { margin-bottom: 12px; }
+.perm-group h3 { margin: 0 0 6px; }
+.perm-row { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-top: 1px solid rgba(255, 255, 255, .06); }
+.perm-group .perm-row:first-of-type { border-top: 0; }
+.perm-row .seg { flex-shrink: 0; }
+.perm-row .seg button.on.mode-allow { background: #1f3a22; border-color: #3f7a45; color: #b9f0bf; }
+.perm-row .seg button.on.mode-approval { background: #3a2c10; border-color: #8a6a1c; color: #f3d699; }
+.perm-row .seg button.on.mode-deny { background: #3a1612; border-color: #7a2a20; color: #ffc9c0; }
+.req-list { display: flex; flex-direction: column; gap: 0; }
+.req-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid rgba(255, 255, 255, .06); }
+.req-row:first-child { border-top: 0; }
+.req-area { display: inline-block; font-size: .7rem; text-transform: uppercase; letter-spacing: .04em; padding: 1px 6px; border-radius: 6px; background: rgba(255, 255, 255, .07); color: var(--muted); margin-right: 4px; }
+.req-status { font-size: .8rem; white-space: nowrap; padding: 3px 8px; border-radius: 8px; background: rgba(255, 255, 255, .06); }
+.req-status.pending { color: #f3d699; }
+.req-status.approved { color: #b9f0bf; }
+.req-status.rejected, .req-status.failed { color: #ffc9c0; }
+@media (max-width: 640px) {
+  .perm-row, .req-row { flex-wrap: wrap; }
+  .perm-row .seg { width: 100%; }
+  .perm-row .seg button { flex: 1; }
+}
