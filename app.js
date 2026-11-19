@@ -106,8 +106,9 @@
     'Arena Ancestral', 'Pesadelo Ancestral', 'Carruagem Assombrada', 'Torre Amaldiçoada',
     'Raid do clã', 'Reunião do clã',
   ];
-  // Eventos que começaram há menos disso ainda aparecem em "Próximos".
-  const STILL_UPCOMING_MS = 3 * 3600 * 1000;
+  // Eventos que começaram há menos disso ainda aparecem em "Próximos" (com o selo "Agora");
+  // depois passam sozinhos para "Passados".
+  const STILL_UPCOMING_MS = 20 * 60 * 1000;
   // Prazo para responder (minutos antes do início). null = sem prazo.
   const RSVP_CLOSE_OPTIONS = [[null, 'Sem prazo'], [30, '30 min antes'], [60, '1h antes'], [120, '2h antes'], [180, '3h antes'],
     [360, '6h antes'], [720, '12h antes'], [1440, '1 dia antes']];
@@ -1851,9 +1852,25 @@
     }).join('');
   }
 
+  let eventsTimer = null;
   async function viewEvents(past) {
+    clearTimeout(eventsTimer);
     loading();
     const events = await api.events(past);
+    // Quem está com a lista aberta vê o selo "Agora" aparecer no início e o evento
+    // sair para "Passados" 20 min depois, sem recarregar a página
+    if (!past) {
+      const now = Date.now();
+      const next = Math.min(...events.flatMap((ev) => [Date.parse(ev.starts_at), Date.parse(ev.starts_at) + STILL_UPCOMING_MS]).filter((t) => t > now));
+      const wait = next - now;
+      const key = currentRouteKey();
+      const refresh = () => {
+        if (currentRouteKey() !== key) return;
+        if ($('#dlg').open) { eventsTimer = setTimeout(refresh, 30000); return; }
+        route();
+      };
+      if (Number.isFinite(wait) && wait < 2 * 86400e3) eventsTimer = setTimeout(refresh, wait + 1500);
+    }
     const head = `<div class="page-head"><h1>${past ? 'Eventos passados' : 'Próximos eventos'}</h1>
       ${can('event_create') && !past ? '<button class="btn primary" id="btn-new">+ Novo evento</button>' : ''}</div>`;
     const body = events.length

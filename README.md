@@ -142,6 +142,8 @@ A sugestão entra como **rascunho**: ajuste o que quiser e clique em **💾 Salv
 **⏳ Prazo para responder:** ao criar ou editar um evento, escolha até quando os membros podem responder (ex.: "2h antes", que é o padrão; ou "Sem prazo").
 Os cards mostram "⏳ Responda até …". Depois do prazo, aparece "⛔ Respostas encerradas" e os membros não conseguem mais mudar a resposta.
 
+**Próximos → Passados:** quando o evento começa, o card ganha o selo **Agora**. **20 minutos depois do horário de início**, o evento sai de **Próximos** e vai sozinho para **Passados**, mesmo com a página aberta.
+
 **🔒 Travar times:** no painel de montagem, o botão **🔓 Travar times** trava os times. Com os times travados, quem está escalado não sai sozinho: o botão "Não vou" vira **"Não vou poder ir…"**, e o membro informa o motivo.
 Quem não está escalado continua respondendo normalmente enquanto o prazo estiver aberto. Oficiais e o líder continuam podendo editar os times e mudar a própria resposta.
 
