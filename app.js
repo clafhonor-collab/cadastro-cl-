@@ -904,7 +904,7 @@
       { key: 'recruit_delete', label: 'Apagar recrutamentos', desc: 'Apagar recrutamentos de outros membros', approval: true },
     ] }] : []),
     ...(TICKETS_ON ? [{ group: 'Tickets', items: [
-      { key: 'ticket_view', label: 'Ver tickets', desc: 'Se bloqueado, a aba Atendimento some para os oficiais' },
+      { key: 'ticket_view', label: 'Ver tickets', desc: 'Se bloqueado, o oficial só vê os próprios tickets na Central de Atendimento' },
       { key: 'ticket_reply', label: 'Responder tickets', desc: 'Responder, escrever notas internas e assumir tickets' },
       { key: 'ticket_resolve', label: 'Resolver tickets', desc: 'Mudar o status (Em andamento, Resolvido ou reabrir)' },
       { key: 'ticket_reports', label: 'Ver denúncias', desc: 'Se bloqueado, os tickets de Reclamação / Denúncia ficam só com o líder' },
@@ -1038,7 +1038,18 @@
     return { args, text: g[1] };
   }
 
-  const api = withPermissions(DEMO ? demoApi() : supabaseApi());
+  // Depois de qualquer ação que muda dados, o sininho recalcula as pendências
+  const MUTATES = /^(set|clear|request|cancel|decide|create|update|delete|save|post|assign|close|reopen|apply|withdraw|remove|approve|reject|add|record|mark|reveal|lock|unlock|leave|join|publish)/;
+  function withBellRefresh(raw) {
+    const out = {};
+    Object.keys(raw).forEach((k) => {
+      out[k] = typeof raw[k] !== 'function' ? raw[k]
+        : !MUTATES.test(k) ? raw[k].bind(raw)
+        : async (...a) => { const r = await raw[k](...a); refreshBellSoon(); return r; };
+    });
+    return out;
+  }
+  const api = withBellRefresh(withPermissions(DEMO ? demoApi() : supabaseApi()));
   if (DEMO) window.__demo = { state, api, actingId: () => actingId(), myAccounts: () => myAccounts() }; // ajuda nos testes (só na demonstração)
 
   // =====================================================================
@@ -1216,23 +1227,32 @@
     }
     main.classList.toggle('wide', currentKey === 'teams' || currentKey === 'freq');
 
+    // Botão flutuante da Central de Atendimento (membros: os meus tickets; liderança: aba Atendimento)
+    let fab = $('#help-fab');
+    if (!fab) {
+      fab = document.createElement('a');
+      fab.id = 'help-fab';
+      fab.className = 'help-fab';
+      fab.innerHTML = '<span class="help-fab-icon" aria-hidden="true">💬</span><span class="help-fab-label">Central de Atendimento</span>';
+      document.body.appendChild(fab);
+    }
+    fab.hidden = !(TICKETS_ON && isMember()) || currentKey === 'teams';
+    fab.href = supportOn() ? '#/atendimento' : '#/tickets';
+    fab.title = supportOn() ? 'Central de Atendimento: tickets dos membros' : 'Central de Atendimento: fale com a liderança';
+    fab.setAttribute('aria-label', 'Central de Atendimento');
+    fab.classList.toggle('active', ['tickets', 'support'].includes(currentKey));
+    document.body.classList.toggle('has-fab', !fab.hidden);
+
     const nav = $('#nav');
     if (isMember()) {
       const links = [['#/', 'Próximos', 'upcoming'], ['#/passados', 'Passados', 'past'], ['#/news', 'Malah News', 'news']];
       if (RECRUIT_ON) links.push(['#/recrutamentos', 'Recrutamentos', 'recruits']);
-      if (TICKETS_ON && !supportOn()) links.push(['#/tickets', 'Tickets', 'tickets']);
       if (isOfficer()) links.push(['#/membros', 'Membros', 'members']);
       if (can('freq_view')) links.push(['#/frequencia', 'Frequência', 'freq']);
       links.push(['#/perfil', 'Meu perfil', 'profile'], ['#/utils', 'Utils', 'utils']);
-      if (TICKETS_ON && supportOn()) links.push(['#/atendimento', 'Atendimento', 'support']);
-      if (isLeader()) links.push(['#/config', 'Configurações', 'config']);
-      else if (isOfficer()) links.push(['#/solicitacoes', 'Solicitações', 'requests']);
-      const dot = (key) => (key === 'news' && hasUnreadNews() ? '<span class="dot-new" title="Edição nova"></span>'
-        : key === 'config' && pendingRequests().length ? `<span class="nav-count" title="Aprovações pendentes">${pendingRequests().length}</span>`
-        : key === 'recruits' && recruitBadge() ? `<span class="nav-count" title="Recrutamentos aguardando você">${recruitBadge()}</span>`
-        : key === 'tickets' && ticketBadgeMine() ? `<span class="nav-count" title="Respostas novas nos seus tickets">${ticketBadgeMine()}</span>`
-        : key === 'support' && ticketBadgeStaff() ? `<span class="nav-count" title="Tickets aguardando resposta">${ticketBadgeStaff()}</span>` : '');
-      nav.innerHTML = links.map(([href, label, key]) => `<a href="${href}" class="${currentKey === key ? 'active' : ''}">${label}${dot(key)}</a>`).join('');
+      if (!isLeader() && isOfficer()) links.push(['#/solicitacoes', 'Solicitações', 'requests']);
+      // Os contadores ficam no sininho (ao lado da foto), não no menu
+      nav.innerHTML = links.map(([href, label, key]) => `<a href="${href}" class="${currentKey === key ? 'active' : ''}">${label}</a>`).join('');
     } else nav.innerHTML = '';
 
     const box = $('#userbox');
@@ -1242,6 +1262,8 @@
           <span>Respondendo como</span>
           <select id="acting-select" class="inline">${accounts.map((a) => `<option value="${esc(a.id)}" ${a.id === actingId() ? 'selected' : ''}>${esc(displayName(a))}${a.id === state.user.id ? ' (você)' : ' 🧑‍✈️'}</option>`).join('')}</select>
         </label>` : ''}
+        ${isMember() ? '<div class="bell-wrap" id="bell-wrap"></div>' : ''}
+        ${isLeader() ? `<a class="gear${currentKey === 'config' ? ' active' : ''}" href="#/config" title="Configurações" aria-label="Configurações"><span aria-hidden="true">⚙️</span></a>` : ''}
         <button class="who" id="btn-profile" title="Meu perfil">${avatar(state.me)}<span class="label">${esc(displayName(state.me))}</span></button>
         <button class="btn ghost small" id="btn-logout">Sair</button>`;
       $('#acting-select')?.addEventListener('change', (e) => {
@@ -1250,6 +1272,7 @@
         route();
       });
       $('#btn-profile').addEventListener('click', openProfile);
+      renderBell();
       $('#btn-logout').addEventListener('click', () => api.signOut().catch(fail));
     } else box.innerHTML = '';
   }
@@ -3043,7 +3066,7 @@
     const open = mine.filter((t) => t.status !== 'resolved');
     const done = mine.filter((t) => t.status === 'resolved');
     main.innerHTML = `
-      <div class="page-head"><h1>Tickets</h1><button class="btn primary" id="btn-new-tk">+ Novo ticket</button></div>
+      <div class="page-head"><h1>Central de Atendimento</h1><button class="btn primary" id="btn-new-tk">+ Novo ticket</button></div>
       <p class="muted small">Fale com a liderança do clã: sugestões, melhorias, dúvidas, problemas no site, reclamações ou denúncias. O líder e os oficiais respondem aqui mesmo, e você pode abrir o ticket de forma anônima.</p>
       <div class="section-head"><h2>Em aberto</h2></div>
       ${open.length ? open.map((t) => ticketRowHtml(t, false)).join('') : '<div class="card empty">Você não tem tickets em aberto.</div>'}
@@ -3086,7 +3109,7 @@
     const done = list.filter((t) => t.status === 'resolved');
     const rows = (arr) => arr.map((t) => ticketRowHtml(t, true)).join('');
     main.innerHTML = `
-      <div class="page-head"><h1>Atendimento</h1><button class="btn primary" id="btn-new-tk">+ Abrir ticket</button></div>
+      <div class="page-head"><h1>Central de Atendimento</h1><button class="btn primary" id="btn-new-tk">+ Abrir ticket</button></div>
       <p class="muted small">Tickets dos membros; os que você abriu ficam em “Abertos por mim”. <b>${nNew}</b> não iniciado${nNew === 1 ? '' : 's'} · <b>${nMine}</b> pendente${nMine === 1 ? '' : 's'} com você · <b>${nWaiting}</b> pendente${nWaiting === 1 ? '' : 's'} de atendimento no total.${reportsHidden ? ' Os tickets de Reclamação / Denúncia ficam só com o líder.' : ''}</p>
       <div class="row tk-filters">
         <div class="seg rc-filter" role="group" aria-label="Filtrar tickets">
@@ -3108,9 +3131,9 @@
   // ---------- Um ticket (conversa) ----------
   async function viewTicket(id) {
     const t = state.tickets.find((x) => x.id === id);
-    if (t?.mine) markTicketSeen(t.id);
+    if (t?.mine) { markTicketSeen(t.id); renderBell(); }
     const staff = !!t && !t.mine;
-    const home = supportOn() ? ['#/atendimento', 'Atendimento'] : ['#/tickets', 'Meus tickets'];
+    const home = supportOn() ? ['#/atendimento', 'Central de Atendimento'] : ['#/tickets', 'Central de Atendimento'];
     renderHeader(supportOn() ? 'support' : 'tickets');
     if (!t) {
       main.innerHTML = `<p><a href="${home[0]}" class="small">← ${home[1]}</a></p><div class="card empty">Ticket não encontrado.</div>`;
@@ -3959,6 +3982,7 @@
     if (!isOfficer() || isLeader()) { location.hash = '#/'; return; }
     await loadPerms();
     const mine = perms.requests.filter((r) => r.requested_by === state.user.id);
+    markReqSeen(); renderBell();
     const rules = PERMS.flatMap((g) => g.items).filter((p) => permMode(p.key) !== 'allow');
     main.innerHTML = `
       <div class="page-head"><h1>Minhas solicitações</h1></div>
@@ -4330,6 +4354,139 @@
   //  Navegação
   // =====================================================================
 
+  // =====================================================================
+  //  Sininho: só as pendências de cada pessoa (somem quando resolvidas)
+  // =====================================================================
+  state.bellUp = []; state.bellPast = [];
+  const BELL_ATT_DAYS = 14; // presença sem registro: só eventos dos últimos 14 dias
+  async function loadBell() {
+    if (!state.user || !isMember()) { state.bellUp = []; state.bellPast = []; return; }
+    const [up, past] = await Promise.all([
+      api.events(false).catch(() => []),
+      can('attendance') ? api.events(true).catch(() => []) : [],
+    ]);
+    state.bellUp = up || []; state.bellPast = past || [];
+  }
+  let bellTimer = null;
+  function refreshBellSoon() {
+    clearTimeout(bellTimer);
+    bellTimer = setTimeout(async () => {
+      if (!state.user || !isMember()) return;
+      try {
+        await Promise.all([
+          loadBell(), loadRecruits(), loadTickets(), isOfficer() ? loadPerms() : null,
+          api.pilots().then((p) => { state.pilots = p; }).catch(() => {}),
+          isOfficer() ? api.members().then((m) => { state.members = m; }).catch(() => {}) : null,
+        ]);
+      } catch (e) { console.warn('sininho', e); }
+      renderBell();
+    }, 400);
+  }
+  // Solicitações do oficial já decididas pelo líder e ainda não vistas
+  const reqSeenKey = () => `req-seen-${state.user?.id}`;
+  const reqSeen = () => { try { return localStorage.getItem(reqSeenKey()) || ''; } catch { return ''; } };
+  const markReqSeen = () => { try { localStorage.setItem(reqSeenKey(), new Date().toISOString()); } catch { /* ignora */ } };
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+  function bellItems() {
+    const me = state.user.id;
+    const mine = []; const lead = [];
+    // --- Para mim ---
+    const accs = myAccounts();
+    state.bellUp.filter((ev) => rsvpOpen(ev)).forEach((ev) => {
+      const missing = accs.filter((a) => !ev.rsvps.some((r) => r.user_id === a.id));
+      if (!missing.length) return;
+      const who = accs.length > 1 ? ` · ${missing.map((a) => (a.id === me ? 'você' : esc(displayName(a)))).join(', ')}` : '';
+      const d = rsvpDeadline(ev);
+      mine.push({ icon: '📅', text: `Responder: <b>${esc(ev.title)}</b>`, sub: `${esc(fmtWhenShort(ev.starts_at))}${d ? ` · responda até ${esc(fmtDeadline(d))}` : ''}${who}`, href: `#/evento/${ev.id}` });
+    });
+    (state.tickets || []).filter(ticketHasNews).forEach((t) => {
+      mine.push({ icon: '💬', text: `Resposta nova no ticket <b>${esc(t.title)}</b>`, href: `#/ticket/${t.id}` });
+    });
+    (state.recruits || []).filter((r) => isMyRecruit(r) && r.status === 'open' && recruitApps(r, 'applied').length).forEach((r) => {
+      mine.push({ icon: '📣', text: `${plural(recruitApps(r, 'applied').length, 'candidato aguardando', 'candidatos aguardando')} você`, sub: `Recrutamento “${esc(r.title)}”`, href: `#/recrutamento/${r.id}` });
+    });
+    (state.pilots || []).filter((p) => p.account_id === me && p.status === 'pending').forEach((p) => {
+      mine.push({ icon: '🧑‍✈️', text: `<b>${esc(nameOf(p.pilot_id))}</b> pediu para pilotar sua conta`, href: '#/perfil' });
+    });
+    if (hasUnreadNews()) mine.push({ icon: '📰', text: 'Edição nova do <b>Malah News</b>', href: '#/news' });
+
+    // --- Liderança (conforme as Configurações do líder) ---
+    if (isOfficer()) {
+      if (can('member_approve')) {
+        const n = state.members.filter((m) => m.role === 'pending').length;
+        if (n) lead.push({ icon: '🙋', text: `${plural(n, 'membro aguardando', 'membros aguardando')} aprovação`, href: '#/membros' });
+      }
+      if (can('pilots')) {
+        const n = (state.pilots || []).filter((p) => p.status === 'pending' && p.account_id !== me).length;
+        if (n) lead.push({ icon: '🧑‍✈️', text: `${plural(n, 'pedido de piloto', 'pedidos de piloto')}`, href: '#/membros' });
+      }
+      if (can('withdraw_decide')) {
+        state.bellUp.forEach((ev) => {
+          const n = ev.rsvps.filter((r) => r.going && r.withdraw_requested_at).length;
+          if (n) lead.push({ icon: '🚪', text: `${plural(n, 'pedido de saída', 'pedidos de saída')}: <b>${esc(ev.title)}</b>`, sub: esc(fmtWhenShort(ev.starts_at)), href: `#/evento/${ev.id}` });
+        });
+      }
+      if (can('attendance')) {
+        const since = Date.now() - BELL_ATT_DAYS * 86400e3;
+        const seen = new Set();
+        [...state.bellPast, ...state.bellUp].filter((ev) => hasStarted(ev) && Date.parse(ev.starts_at) >= since && !(ev.attendance || []).length)
+          .sort((a, b) => Date.parse(b.starts_at) - Date.parse(a.starts_at))
+          .forEach((ev) => {
+            if (seen.has(ev.id)) return; seen.add(ev.id);
+            lead.push({ icon: '✅', text: `Registrar presença: <b>${esc(ev.title)}</b>`, sub: esc(fmtWhenShort(ev.starts_at)), href: `#/evento/${ev.id}` });
+          });
+      }
+      (state.recruits || []).filter((r) => canApproveRecruit(r) && !isMyRecruit(r)).forEach((r) => {
+        lead.push({ icon: '📣', text: `Aprovar recrutamento <b>${esc(r.title)}</b>`, sub: `Criado por ${esc(nameOf(r.created_by))}`, href: `#/recrutamento/${r.id}` });
+      });
+      if (supportOn()) {
+        const all = state.tickets || [];
+        const nNew = all.filter(SUP_PICK.new).length;
+        const nMine = all.filter(SUP_PICK.mine_pending).length;
+        if (nNew) lead.push({ icon: '🎫', text: `${plural(nNew, 'ticket não iniciado', 'tickets não iniciados')}`, href: '#/atendimento', sup: 'new' });
+        if (nMine) lead.push({ icon: '🎫', text: `${plural(nMine, 'ticket pendente', 'tickets pendentes')} com você`, sub: 'O autor respondeu', href: '#/atendimento', sup: 'mine_pending' });
+      }
+      if (isLeader()) {
+        const n = pendingRequests().length;
+        if (n) lead.push({ icon: '⚙️', text: `${plural(n, 'solicitação', 'solicitações')} dos oficiais`, href: '#/config' });
+      } else {
+        const last = reqSeen();
+        perms.requests.filter((r) => r.requested_by === me && r.status !== 'pending' && r.decided_at && r.decided_at > last).forEach((r) => {
+          lead.push({ icon: r.status === 'approved' ? '👍' : '👎', text: `Sua solicitação foi <b>${{ approved: 'aprovada', rejected: 'recusada', failed: 'não aplicada' }[r.status] || esc(r.status)}</b>`, sub: esc(r.summary || ''), href: '#/solicitacoes' });
+        });
+      }
+    }
+    return { mine, lead };
+  }
+
+  let bellOpen = false;
+  function renderBell() {
+    const wrap = $('#bell-wrap');
+    if (!wrap) return;
+    const { mine, lead } = bellItems();
+    const total = mine.length + lead.length;
+    const row = (i) => `<a class="bell-item" href="${i.href}"${i.sup ? ` data-sup="${i.sup}"` : ''}>
+        <span class="bell-ic" aria-hidden="true">${i.icon}</span>
+        <span class="bell-tx"><span>${i.text}</span>${i.sub ? `<span class="muted small">${i.sub}</span>` : ''}</span></a>`;
+    const group = (title, list) => (list.length ? `<div class="bell-group"><div class="bell-gt">${title}</div>${list.map(row).join('')}</div>` : '');
+    wrap.innerHTML = `<button class="bell${total ? ' has' : ''}" id="btn-bell" type="button" aria-haspopup="true" aria-expanded="${bellOpen}"
+        title="${total ? plural(total, 'pendência', 'pendências') : 'Nenhuma pendência'}" aria-label="Pendências${total ? ` (${total})` : ''}">
+        <span aria-hidden="true">🔔</span>${total ? `<span class="bell-count">${total > 99 ? '99+' : total}</span>` : ''}</button>
+      <div class="bell-pop" ${bellOpen ? '' : 'hidden'}>
+        <div class="bell-head">Pendências ${total ? `<span class="bell-total">${total}</span>` : ''}</div>
+        ${total ? group('Para você', mine) + group('Liderança', lead) : '<p class="bell-empty muted">✨ Tudo em dia! Nenhuma pendência.</p>'}
+      </div>`;
+    $('#btn-bell').addEventListener('click', (e) => { e.stopPropagation(); bellOpen = !bellOpen; renderBell(); });
+    wrap.querySelectorAll('.bell-item').forEach((a) => a.addEventListener('click', () => {
+      if (a.dataset.sup) SUP.view = a.dataset.sup;
+      bellOpen = false;
+      if (a.getAttribute('href') === location.hash) route(); else renderBell();
+    }));
+  }
+  document.addEventListener('click', (e) => { if (bellOpen && !e.target.closest('#bell-wrap')) { bellOpen = false; renderBell(); } });
+  document.addEventListener('keydown', (e) => { if (bellOpen && e.key === 'Escape') { bellOpen = false; renderBell(); $('#btn-bell')?.focus(); } });
+
   function parseRoute() {
     const h = location.hash.replace(/^#/, '') || '/';
     const ev = h.match(/^\/evento\/(\d+)$/);
@@ -4350,7 +4507,8 @@
   async function route() {
     const { ev, tm, mp, rc, tk, key } = parseRoute();
     if (state.user && isOfficer()) await loadPerms();
-    if (state.user && isMember()) await Promise.all([loadRecruits(), loadTickets()]);
+    if (state.user && isMember()) await Promise.all([loadRecruits(), loadTickets(), loadBell()]);
+    bellOpen = false;
     renderHeader(key);
     if (!state.user) return viewLogin();
     if (!isMember()) return state.me?.role === 'former' ? viewFormer() : viewPending();
