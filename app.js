@@ -1095,7 +1095,7 @@
       { key: 'ticket_reports', label: 'Ver denúncias', desc: 'Se bloqueado, os tickets de Reclamação / Denúncia ficam só com o líder' },
     ] }] : []),
     ...(RAFFLE_ON ? [{ group: 'Sorteio', items: [
-      { key: 'raffle_manage', label: 'Criar, editar e cancelar sorteios', desc: 'Escolher o domingo e o prêmio' },
+      { key: 'raffle_manage', label: 'Ativar (criar), editar e cancelar sorteios', desc: 'O sorteio só acontece no domingo em que a staff ativar um, com o prêmio escolhido', approval: true },
       { key: 'raffle_remove', label: 'Remover inscrições do sorteio', desc: 'Sempre com o motivo por escrito' },
     ] }] : []),
   ];
@@ -1149,16 +1149,21 @@
     postTicketMessage: (raw, id) => ticketGate(raw, id, 'ticket_reply'),
     assignTicket: (raw, id) => ticketGate(raw, id, 'ticket_reply'),
     setTicketStatus: (raw, id) => ticketGate(raw, id, 'ticket_resolve'),
-    // Sorteio: só Permitido ou Bloqueado (sem fila de aprovação)
-    createRaffle: () => ['raffle_manage', ''],
-    updateRaffle: () => ['raffle_manage', ''],
-    deleteRaffle: () => ['raffle_manage', ''],
+    // Sorteio: ativar/editar/cancelar pode precisar da aprovação do líder; remover inscrição é só Permitido ou Bloqueado
+    createRaffle: (raw, row) => ['raffle_manage', `Ativar o sorteio de ${fmtDraw(row?.draw_at)} · prêmio: ${prizeText(cleanRaffleRow(row))}`],
+    updateRaffle: (raw, id, row) => raffleGate(raw, id, (r) => `Editar o sorteio de ${fmtDraw(r.draw_at)} (${prizeText(r)}) → ${fmtDraw(row?.draw_at)} · prêmio: ${prizeText(cleanRaffleRow(row))}`),
+    deleteRaffle: (raw, id) => raffleGate(raw, id, (r) => `Cancelar o sorteio de ${fmtDraw(r.draw_at)} (${prizeText(r)})`),
     removeRaffleEntry: () => ['raffle_remove', ''],
   };
   async function ticketGate(raw, id, key) {
     const t = await raw.ticket(id);
     if (!t) throw new Error('Este ticket não existe mais');
     return t.mine ? null : [key, ''];
+  }
+  async function raffleGate(raw, id, text) {
+    const r = (await raw.raffles()).find((x) => x.id === Number(id));
+    if (!r) throw new Error('Este sorteio não existe mais');
+    return ['raffle_manage', text(r)];
   }
   async function recruitGate(raw, id, key, text) {
     const r = await raw.recruitment(id);
@@ -1185,6 +1190,9 @@
     closeRecruit: ([id, reopen]) => [Number(id), !!reopen],
     updateRecruit: ([id, row]) => [Number(id), cleanRecruitRow(row)],
     deleteRecruit: ([id]) => [Number(id)],
+    createRaffle: ([row]) => [only(row, ['draw_at', 'prize_kind', 'prize_qty', 'prize_text'])],
+    updateRaffle: ([id, row]) => [Number(id), only(row, ['draw_at', 'prize_kind', 'prize_qty', 'prize_text'])],
+    deleteRaffle: ([id]) => [Number(id)],
   };
   let RAW = null; // operações sem a checagem de permissão (o líder usa ao aprovar)
   function withPermissions(raw) {
@@ -3610,13 +3618,16 @@
           <p class="muted small" id="rf-history-msg" hidden>Ainda não houve nenhum sorteado. O primeiro resultado aparece aqui depois do próximo sorteio.</p></div>`;
 
     main.innerHTML = `
-      <div class="page-head"><h1>Sorteio</h1>${staff && can('raffle_manage') ? '<button class="btn primary" id="btn-new-rf">+ Novo sorteio</button>' : ''}</div>
-      <p class="muted small">Todo <b>domingo às 22h (horário de Brasília)</b> o site sorteia um membro inscrito e elegível para cada item do prêmio.
+      <div class="page-head"><h1>Sorteio</h1>${staff && can('raffle_manage') ? '<button class="btn primary" id="btn-new-rf">+ Ativar sorteio</button>' : ''}</div>
+      <p class="muted small">Quando a staff ativa um sorteio, o site sorteia <b>no domingo às 22h (horário de Brasília)</b> um membro inscrito e elegível para cada item do prêmio.
         Para concorrer, inscreva-se e tenha <b>presença registrada nas duas Guerras das Sombras da semana</b>.</p>
+      ${staff && !isLeader() && can('raffle_manage') && permMode('raffle_manage') === 'approval' ? '<p class="small rc-note">⏳ Os sorteios que você ativar, editar ou cancelar só valem depois que o líder aprovar. Acompanhe em “Solicitações”.</p>' : ''}
       ${staff && state.raffleError ? '<div class="card attend-sum warn">O sorteio ainda não está ativo no banco. Rode no Supabase o arquivo <code>supabase/sorteio.sql</code> e recarregue a página.</div>' : ''}
       ${showResult ? resultCard(latest) : ''}
       ${open.length ? `<div class="section-head"><h2>${open.length > 1 ? 'Próximos sorteios' : 'Próximo sorteio'}</h2></div>${open.map(openCard).join('')}`
-        : '<div class="card empty">Nenhum sorteio agendado no momento. A staff avisa quando houver um novo.</div>'}
+        : `<div class="card empty">Nenhum sorteio ativado no momento.${staff
+          ? (can('raffle_manage') ? '<br><br>Sem um sorteio ativado, nada é sorteado no domingo. Ative um em “+ Ativar sorteio”.' : '<br><br>Sem um sorteio ativado, nada é sorteado no domingo. O líder não permite que oficiais ativem sorteios.')
+          : ' A staff avisa quando houver um novo.'}</div>`}
       ${historyHtml}
       ${staff ? raffleStaffPanel(open, drawn, staffData) : ''}`;
 
@@ -3704,7 +3715,7 @@
     };
     return `<div class="section-head"><h2>Painel da staff</h2></div>
       <p class="muted small">Só a staff vê esta parte. Quem tiver a inscrição removida recebe um aviso para falar com a staff; os outros oficiais e o líder são avisados com o motivo.</p>
-      ${open.length ? open.map(card).join('') : '<div class="card empty">Nenhum sorteio aberto.</div>'}
+      ${open.length ? open.map(card).join('') : '<div class="card empty">Nenhum sorteio ativado.</div>'}
       ${drawn.length ? `<div class="section-head"><h2>Sorteios realizados</h2></div>
         <div class="card rf-past">${drawn.slice(0, 10).map((r) => `<div class="rf-past-row">
           <div><b>${esc(fmtDrawShort(r.draw_at))}</b> · ${esc(prizeText(r))}</div>
@@ -3748,7 +3759,7 @@
     const kind = r?.prize_kind || 'bp_simple';
     const opt = (key, inner) => `<label class="rf-opt"><input type="radio" name="rf-kind" value="${key}" ${kind === key ? 'checked' : ''}> ${inner}</label>`;
     openDialog(`<form id="rf-form" class="stack">
-        <h2>${editing ? 'Editar sorteio' : 'Novo sorteio'}</h2>
+        <h2>${editing ? 'Editar sorteio' : 'Ativar sorteio'}</h2>
         <div class="field"><label for="rf-when">Data do sorteio</label>
           <select id="rf-when" required>${dates.map((d) => `<option value="${d.toISOString()}" ${editing && d.getTime() === Date.parse(r.draw_at) ? 'selected' : ''}>${esc(fmtDraw(d.toISOString()))}</option>`).join('')}</select>
           <div class="muted small field-hint">O sorteio é sempre aos domingos às 22h (horário de Brasília).</div></div>
@@ -3766,7 +3777,7 @@
         </fieldset>
         <p class="small rc-note" id="rf-winners"></p>
         <div class="row end"><button type="button" class="btn ghost" data-close>Cancelar</button>
-          <button type="submit" class="btn primary">${editing ? 'Salvar' : 'Criar sorteio'}</button></div>
+          <button type="submit" class="btn primary">${editing ? 'Salvar' : 'Ativar sorteio'}</button></div>
       </form>`, (d) => {
       const read = () => {
         const k = $('input[name=rf-kind]:checked', d)?.value;
@@ -3799,7 +3810,7 @@
           cleanRaffleRow(row);
           if (editing) await api.updateRaffle(r.id, row); else await api.createRaffle(row);
           dlg.close();
-          toast(editing ? 'Sorteio atualizado' : 'Sorteio criado! Os membros já podem se inscrever.');
+          toast(editing ? 'Sorteio atualizado' : 'Sorteio ativado! Os membros já podem se inscrever.');
           await route();
         } catch (err) { fail(err); submit.disabled = false; }
       });
