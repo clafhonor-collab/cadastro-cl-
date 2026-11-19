@@ -950,3 +950,18 @@ body.has-fab main { padding-bottom: 90px; }
   .rf-row .btn, .rf-row > span:last-child { grid-column: 2; grid-row: 2; justify-self: end; }
   .raffle-winner-name { font-size: 1.15rem; }
 }
+
+/* ---------- Histórico de alterações do evento ---------- */
+.team-edit { font-size: .74rem; color: var(--muted); margin: -2px 0 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ev-log-list { display: grid; gap: 10px; max-height: min(60vh, 520px); overflow-y: auto; padding-right: 4px; }
+.ev-log-item { padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: rgba(255, 255, 255, .02); }
+.ev-log-head { margin-bottom: 4px; }
+.ev-log-item ul { margin: 0; padding-left: 18px; display: grid; gap: 3px; font-size: .9rem; }
+.ev-log-item .c-yes { color: var(--yes); font-weight: 600; }
+.ev-log-item .c-no { color: #ff9d95; font-weight: 600; }
+
+/* ---------- Contador de respostas no botão da Central de Atendimento ---------- */
+.help-fab-badge { position: absolute; top: -4px; right: -4px; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 11px; background: var(--gold); color: #1d1406; font-size: .75rem; font-weight: 800; line-height: 22px; text-align: center; box-shadow: 0 0 0 2px var(--bg); animation: fab-pulse 1.8s ease-in-out infinite; }
+.help-fab-badge[hidden] { display: none; }
+@keyframes fab-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.15); } }
+@media (prefers-reduced-motion: reduce) { .help-fab-badge { animation: none; } }

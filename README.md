@@ -103,6 +103,7 @@ Mande o link https://forhonorcla.com.br no Discord do clã. Cada pessoa entra co
 | Ver a lista de membros e os telefones | | ✔ | ✔ |
 | Criar / editar / apagar eventos | | ✔ | ✔ |
 | Montar times | | ✔ | ✔ |
+| Ver o histórico de alterações do evento e quem alterou cada sala por último | | ✔ | ✔ |
 | Registrar presença real e ver a frequência | | ✔ | ✔ |
 | Aprovar, recusar ou remover membros comuns | | ✔ | ✔ |
 | Remover oficiais e readmitir ex-membros | | | ✔ |
@@ -168,6 +169,15 @@ Membros comuns não conseguem abrir o perfil de outra pessoa. O painel mostra:
 - os 5 atributos comparados com a média do clã;
 - os últimos eventos, com o resultado de cada um (presente, confirmou e faltou, avisou, faltou sem responder);
 - o histórico das próprias alterações de nome, classe e atributos. Se alguém mudar a resposta para "Não vou", sai do time automaticamente.
+
+**🕘 Histórico de alterações do evento** (oficiais e líder): na página do evento, o botão **🕘 Histórico de alterações** mostra quem mudou o quê, do mais recente para o mais antigo, com o nome, o cargo, a data e a hora:
+- criação do evento e edições (nome, data, tipo, prazo para responder e descrição);
+- formato dos times, times renomeados, times travados e destravados;
+- cada sala (ex.: Exaltação 1): quem entrou e quem saiu. Saídas automáticas (o membro marcou "Não vou" ou teve a saída aceita) aparecem identificadas.
+
+Em cada sala, na página do evento e no painel **⚔ Montar times**, aparece **✎ Nome · data e hora** do **último oficial ou líder** que alterou aquela sala.
+Se outro oficial salvar os times enquanto você edita, o aviso antes de substituir diz quem foi e a que horas.
+Os membros comuns não veem o histórico. Ele começa a contar a partir de quando o [`supabase/historico_eventos.sql`](supabase/historico_eventos.sql) for executado (veja **Dicas**).
 
 **Registrar presença** (oficial ou líder): depois que o evento começa, ele mostra o aviso **📋 Registrar presença**.
 A lista já vem marcada com quem confirmou "Vou"; basta desmarcar quem faltou e marcar quem apareceu sem avisar.
@@ -244,7 +254,14 @@ O filtro no topo separa por categoria. O menu mostra um contador com os recrutam
 **🎫 Central de Atendimento** (botão 💬 no canto da tela): o canal entre os membros e a liderança.
 - **Membros:** clicam em **+ Novo ticket** e escolhem o assunto, a categoria (Sugestão, Melhorias, Reclamação / Denúncia, Dúvida, Problema no site ou Outros) e a mensagem. Dá para anexar até 3 imagens por mensagem.
 - **🕶️ Anônimo:** marcando **Enviar anonimamente**, o nome fica oculto para oficiais e líder. Em casos graves, o líder pode clicar em **Revelar autor**: só ele vê o nome, e nada fica registrado no ticket.
-- A conversa continua no próprio ticket. O membro vê o selo **Resposta nova** e pode marcar o ticket como resolvido. Se escrever num ticket resolvido, ele é reaberto.
+- A conversa continua no próprio ticket. O membro pode marcar o ticket como resolvido. Se escrever num ticket resolvido, ele é reaberto.
+- **🔔 Aviso de resposta:** quando a staff responde, quem abriu o ticket recebe:
+  - um aviso na tela ("A staff respondeu seu ticket …"), uma única vez por resposta;
+  - um contador dourado no botão **💬**;
+  - o item "A staff respondeu seu ticket" no 🔔;
+  - o selo **Resposta nova** no ticket.
+
+  Com o site aberto, o aviso chega sozinho em até 1 minuto, sem recarregar. Na conversa aberta, a resposta nova aparece automaticamente. O aviso some quando a pessoa abre o ticket. Notas internas da staff não geram aviso.
 - **Líder e oficiais:** veem todos os tickets, com os filtros **Em aberto**, **Não iniciado**, **Pendente comigo**, **Pendente autor**, **Abertos por mim**, **Resolvidos** e **Todos**, além do filtro por categoria.
   Podem **🙋 Assumir** um ticket (ele passa para **Em atendimento**), responder, mudar o status e escrever **🔒 notas internas**, que o membro não vê.
 
@@ -265,6 +282,7 @@ Para adicionar, trocar ou remover um link, edite a lista `UTIL_LINKS` no [`app.j
 
 ## Dicas
 - **Atualizando o site:** se você já tinha executado uma versão anterior do `schema.sql`, rode o arquivo inteiro de novo no SQL Editor. Ele só acrescenta o que falta e não apaga dados. Ao publicar arquivos novos, aumente o número `?v=` no `index.html` para os navegadores baixarem a versão nova.
+- **Ativar o histórico de alterações dos eventos:** no Supabase, abra o **SQL Editor**, cole todo o conteúdo de [`supabase/historico_eventos.sql`](supabase/historico_eventos.sql) e clique em **Run**. Ele só acrescenta o que falta, pode ser executado de novo e também está no fim do `schema.sql`. Enquanto ele não for executado, o site funciona normalmente, só sem o histórico.
 - **Ativar o Sorteio:** no Supabase, abra o **SQL Editor**, cole todo o conteúdo de [`supabase/sorteio.sql`](supabase/sorteio.sql) e clique em **Run**. Ele só acrescenta o que falta e pode ser executado de novo sem problema. O mesmo trecho também está no fim do `schema.sql`.
   O script também agenda o sorteio às 22h com o **pg_cron** do Supabase. Se aparecer o aviso "pg_cron indisponível", ative a extensão em **Database → Extensions → pg_cron** e rode o arquivo de novo. Enquanto ela não estiver ativa, o sorteio acontece na primeira visita ao site depois das 22h.
 - **Só Recrutamentos e Tickets:** o [`supabase/recrutamentos_tickets.sql`](supabase/recrutamentos_tickets.sql) instala apenas essas duas partes, sem mexer no resto. Ele depende das Configurações do líder, que já vêm no `schema.sql`. Quem roda o `schema.sql` completo não precisa dele.

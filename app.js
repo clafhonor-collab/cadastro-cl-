@@ -325,6 +325,11 @@
         ok(await q);
       },
       async saveTeams(eventId, slots) { ok(await sb.rpc('save_teams', { p_event: eventId, p_slots: slots })); },
+      // Histórico de alterações do evento e das salas (só líder e oficiais)
+      async eventLog(eventId) {
+        return ok(await sb.from('event_log').select('*').eq('event_id', eventId)
+          .order('at', { ascending: false }).order('id', { ascending: false }).limit(300));
+      },
       async renameTeam(eventId, index, name) { ok(await sb.rpc('rename_team', { p_event: eventId, p_index: index + 1, p_name: name })); },
       // Foto de perfil: blob = nova foto; null + hidden = sem foto; null sem hidden = volta a da conta Google
       async setAvatar(blob, hidden = false) {
@@ -635,7 +640,50 @@
         attendance: db.attendance.filter((a) => a.event_id === e.id && (officer || canActAsDemo(a.user_id))).map((a) => ({ user_id: a.user_id, present: a.present })),
       };
     };
-    const dropSlot = (eventId, userId) => { db.slots = db.slots.filter((s) => !(s.event_id === eventId && s.user_id === userId)); };
+    // Histórico de alterações dos eventos (mesmas regras dos gatilhos do banco)
+    db.elog = [];
+    const elog = (event_id, kind, room = null, detail = {}, at = new Date().toISOString(), actor = state.user?.id ?? null) =>
+      db.elog.push({ id: db.elog.length + 1, event_id, at, actor, kind, room, detail });
+    const slotsOf = (eventId) => db.slots.filter((s) => s.event_id === eventId).map((s) => ({ user_id: s.user_id, team: s.team }));
+    const logRoomDiff = (eventId, before, after, extra = {}) => {
+      const key = (s) => `${s.team}|${s.user_id}`;
+      const added = after.filter((s) => !before.some((o) => key(o) === key(s)));
+      const removed = before.filter((s) => !after.some((n) => key(n) === key(s)));
+      [...new Set([...added, ...removed].map((s) => s.team))].forEach((room) => elog(eventId, 'room', room, {
+        added: added.filter((s) => s.team === room).map((s) => s.user_id),
+        removed: removed.filter((s) => s.team === room).map((s) => s.user_id), ...extra }));
+    };
+    const logEventUpdate = (e, row) => {
+      const d = {};
+      if ('title' in row && row.title !== e.title) d.title = [e.title, row.title];
+      if ('description' in row && (row.description || null) !== (e.description || null)) d.description = true;
+      if ('starts_at' in row && Date.parse(row.starts_at) !== Date.parse(e.starts_at)) d.starts_at = [e.starts_at, row.starts_at];
+      if ('type_id' in row && (row.type_id ?? null) !== (e.type_id ?? null)) d.type_id = [e.type_id ?? null, row.type_id ?? null];
+      if ('rsvp_close_minutes' in row && (row.rsvp_close_minutes ?? null) !== (e.rsvp_close_minutes ?? null)) d.rsvp_close_minutes = [e.rsvp_close_minutes ?? null, row.rsvp_close_minutes ?? null];
+      if (Object.keys(d).length) elog(e.id, 'edit', null, d);
+      const fmt = 'team_format' in row ? row.team_format : e.team_format;
+      const cnt = 'team_count' in row ? row.team_count : e.team_count;
+      if (fmt !== e.team_format || cnt !== e.team_count) elog(e.id, 'format', null, { format: [e.team_format ?? null, fmt ?? null], count: [e.team_count, cnt] });
+      if ('teams_locked' in row && !!row.teams_locked !== !!e.teams_locked) elog(e.id, row.teams_locked ? 'lock' : 'unlock');
+    };
+    // Saída de sala fora do painel ("Não vou", saída aceita): auto = a pessoa não vai mais
+    const dropSlot = (eventId, userId) => {
+      const before = slotsOf(eventId);
+      db.slots = db.slots.filter((s) => !(s.event_id === eventId && s.user_id === userId));
+      logRoomDiff(eventId, before, slotsOf(eventId), { auto: !db.rsvps.some((r) => r.event_id === eventId && r.user_id === userId && r.going) });
+    };
+    // Exemplos na Guerra das Sombras de amanhã
+    {
+      const ago = (h) => new Date(Date.now() - h * 3600e3).toISOString();
+      const inRoom = (t) => db.slots.filter((s) => s.event_id === 1 && s.team === t).map((s) => s.user_id);
+      elog(1, 'created', null, {}, ago(72), 'u1');
+      elog(1, 'format', null, { format: [null, 'guerra'], count: [10, 10] }, ago(31), 'u1');
+      elog(1, 'room', 'Exaltação 1', { added: inRoom('Exaltação 1'), removed: [] }, ago(30), 'u1');
+      elog(1, 'edit', null, { description: true }, ago(20), 'u1');
+      elog(1, 'room', 'Exaltação 2', { added: inRoom('Exaltação 2'), removed: [] }, ago(6), 'u0');
+      elog(1, 'room', 'Exaltação 1', { added: [], removed: ['u30'] }, ago(6), 'u0');
+      elog(1, 'lock', null, {}, ago(5), 'u0');
+    }
     let user = null;
     let listener = () => {};
     return {
@@ -679,7 +727,7 @@
           .sort((a, b) => Date.parse(b.starts_at) - Date.parse(a.starts_at)).map(attach);
       },
       async createEvents(rows) {
-        return rows.map((r) => { const e = { id: db.nextId++, team_format: null, team_count: 10, ...r }; db.events.push(e); return { id: e.id }; });
+        return rows.map((r) => { const e = { id: db.nextId++, team_format: null, team_count: 10, ...r }; db.events.push(e); elog(e.id, 'created'); return { id: e.id }; });
       },
       async notes() { return isOfficer() ? db.notes.filter((n) => !canActAsDemo(n.member_id)).map((n) => ({ ...n })) : []; },
       async addNote(memberId, body) { db.notes.unshift({ id: db.nextId++, member_id: memberId, author_id: state.user.id, body, created_at: new Date().toISOString() }); },
@@ -742,12 +790,19 @@
         if (accept) { r.going = false; r.discord = null; dropSlot(eventId, userId); }
         r.withdraw_reason = null; r.withdraw_requested_at = null;
       },
-      async updateEvent(id, row) { Object.assign(db.events.find((e) => e.id === id), row); },
+      async updateEvent(id, row) { const e = db.events.find((x) => x.id === id); logEventUpdate(e, row); Object.assign(e, row); },
+      async eventLog(eventId) {
+        if (!isOfficer()) return [];
+        return db.elog.filter((x) => x.event_id === eventId)
+          .sort((a, b) => (Date.parse(b.at) - Date.parse(a.at)) || (b.id - a.id))
+          .map((x) => ({ ...x, detail: JSON.parse(JSON.stringify(x.detail)) }));
+      },
       async deleteEvent(id) {
         db.events = db.events.filter((e) => e.id !== id);
         db.rsvps = db.rsvps.filter((r) => r.event_id !== id);
         db.slots = db.slots.filter((s) => s.event_id !== id);
         db.attendance = db.attendance.filter((a) => a.event_id !== id);
+        db.elog = db.elog.filter((x) => x.event_id !== id);
       },
       async setRsvp(eventId, going, build, accountId) {
         const acct = accountId || state.user.id;
@@ -938,7 +993,11 @@
         db.slots.push({ event_id: eventId, user_id: userId, team });
       },
       async unassign(eventId, userId) { dropSlot(eventId, userId); },
-      async removeTeams(eventId, teams) { db.slots = db.slots.filter((s) => !(s.event_id === eventId && (!teams || teams.includes(s.team)))); },
+      async removeTeams(eventId, teams) {
+        const before = slotsOf(eventId);
+        db.slots = db.slots.filter((s) => !(s.event_id === eventId && (!teams || teams.includes(s.team))));
+        logRoomDiff(eventId, before, slotsOf(eventId), { auto: false });
+      },
       // Mesmas regras da função rename_team do banco
       async renameTeam(eventId, index, name) {
         const e = db.events.find((x) => x.id === eventId);
@@ -953,6 +1012,7 @@
         if (teamNames(next).some((t, i) => i !== index && norm(t) === norm(newName))) throw new Error('Já existe um time com esse nome');
         e.team_names = names;
         db.slots.forEach((s) => { if (s.event_id === eventId && s.team === oldName) s.team = newName; });
+        if (oldName !== newName) elog(eventId, 'rename', newName, { from: oldName, to: newName });
       },
       async setAvatar(blob, hidden = false) {
         const p = profile(state.user.id);
@@ -967,7 +1027,9 @@
           count[s.team] = (count[s.team] || 0) + 1;
           if (count[s.team] > TEAM_SIZE) throw new Error(`O time ${s.team} passou de 8 membros`);
         });
+        const before = slotsOf(eventId);
         db.slots = db.slots.filter((s) => s.event_id !== eventId).concat(slots.map((s) => ({ event_id: eventId, user_id: s.user_id, team: s.team })));
+        logRoomDiff(eventId, before, slotsOf(eventId));
       },
       async saveAttendance(eventId, rows) {
         rows.forEach((r) => {
@@ -1848,12 +1910,23 @@
     </div></div>`;
   }
 
-  function teamCard(name, people, { editable = false, sel = null, showFoot = true, bare = false, renameIndex = null } = {}) {
+  // Última alteração de cada sala feita pela staff (o histórico vem do mais novo para o mais antigo)
+  function lastRoomEdits(log) {
+    const out = {};
+    (log || []).forEach((x) => {
+      if ((x.kind === 'room' || x.kind === 'rename') && x.room && !out[x.room] && ['officer', 'leader'].includes(memberById(x.actor)?.role)) out[x.room] = x;
+    });
+    return out;
+  }
+  const editTag = (x) => (x ? `<div class="team-edit" title="Último oficial ou líder a alterar esta sala">✎ ${esc(nameOf(x.actor))} · ${esc(fmtShortDate(x.at))} ${esc(fmtTime(x.at))}</div>` : '');
+
+  function teamCard(name, people, { editable = false, sel = null, showFoot = true, bare = false, renameIndex = null, edits = null } = {}) {
     const hide = bare || aggMode() === 'hide';
     const mineHere = people.some((p) => p.id === actingId());
     const empties = editable ? Array.from({ length: TEAM_SIZE - people.length }, () => '<div class="slot-empty">vazio</div>').join('') : '';
     return `<div class="team${mineHere ? ' mine' : ''}${people.length >= TEAM_SIZE ? ' full' : ''}${editable && sel ? ' target' : ''}" data-team="${esc(name)}">
       <div class="team-head"><strong>${esc(name)}${renameIndex !== null ? ` <button type="button" class="team-rename" data-rename="${renameIndex}" title="Renomear este time" aria-label="Renomear ${esc(name)}">✏️</button>` : ''}</strong><span class="muted small">${people.some((p) => p.discord) ? `<span class="dc-count" title="Integrantes no Discord">🎧 ${people.filter((p) => p.discord).length}</span> · ` : ''}${people.length}/${TEAM_SIZE}</span></div>
+      ${edits ? editTag(edits[name]) : ''}
       <div class="team-slots">${people.map((p) => chip(p, { draggable: editable, removable: editable, selected: sel === p.id, compact: true, bare: hide })).join('')}${empties}</div>
       ${people.length && showFoot && !hide ? teamFoot(people) : ''}
     </div>`;
@@ -1879,6 +1952,62 @@
     const out = people.filter((p) => !slots.has(p.id));
     if (out.length) lines.push(`Sem time (${out.length}): ${out.map((p) => p.name).join(', ')}`);
     return lines.join('\n');
+  }
+
+  // ---------- Histórico de alterações do evento (líder e oficiais) ----------
+  const closeLabel = (m) => RSVP_CLOSE_OPTIONS.find(([v]) => v === (m ?? null))?.[1] || (m == null ? 'Sem prazo' : `${m} min antes`);
+  const whenLabel = (iso) => `${fmtShortDate(iso)} ${fmtTime(iso)}`;
+  function eventLogLine(x) {
+    const d = x.detail || {};
+    const who = (ids) => ids.map((u) => `<b>${esc(nameOf(u))}</b>`).join(', ');
+    if (x.kind === 'created') return '🆕 Criou o evento';
+    if (x.kind === 'lock') return '🔒 Travou os times';
+    if (x.kind === 'unlock') return '🔓 Destravou os times';
+    if (x.kind === 'rename') return `✏️ Renomeou o time <b>${esc(d.from)}</b> para <b>${esc(d.to)}</b>`;
+    if (x.kind === 'format') {
+      const [fo, fn] = d.format || []; const [, cn] = d.count || [];
+      return `⚔ Formato dos times: ${esc(FORMAT_LABEL[fo] || 'nenhum')} → <b>${esc(FORMAT_LABEL[fn] || 'nenhum')}</b>${fn === 'rito' && cn ? ` (${cn} times)` : ''}`;
+    }
+    if (x.kind === 'edit') {
+      const parts = [];
+      if (d.title) parts.push(`nome “${esc(d.title[0])}” → “${esc(d.title[1])}”`);
+      if (d.starts_at) parts.push(`data ${esc(whenLabel(d.starts_at[0]))} → ${esc(whenLabel(d.starts_at[1]))}`);
+      if (d.type_id) parts.push(`tipo ${esc(typeName(d.type_id[0]) || '—')} → ${esc(typeName(d.type_id[1]) || '—')}`);
+      if (d.rsvp_close_minutes) parts.push(`prazo para responder ${esc(closeLabel(d.rsvp_close_minutes[0]))} → ${esc(closeLabel(d.rsvp_close_minutes[1]))}`);
+      if (d.description) parts.push('descrição');
+      return `📝 Editou o evento: ${parts.join(' · ')}`;
+    }
+    if (x.kind === 'room') {
+      const bits = [];
+      if (d.added?.length) bits.push(`<span class="c-yes">entrou</span> ${who(d.added)}`);
+      if (d.removed?.length) bits.push(`<span class="c-no">saiu</span> ${who(d.removed)}`);
+      return `🛡 <b>${esc(x.room)}</b>: ${bits.join(' · ')}${d.auto ? ' <span class="muted">(marcou “Não vou” ou teve a saída aceita)</span>' : ''}`;
+    }
+    return esc(x.kind);
+  }
+  function openEventLog(ev, log) {
+    // Junta o que a mesma pessoa fez no mesmo momento (ex.: salvar várias salas de uma vez)
+    const blocks = [];
+    (log || []).forEach((x) => {
+      const last = blocks[blocks.length - 1];
+      if (last && last.actor === x.actor && Math.abs(Date.parse(last.at) - Date.parse(x.at)) < 5000) last.items.push(x);
+      else blocks.push({ actor: x.actor, at: x.at, items: [x] });
+    });
+    const actorLabel = (id) => {
+      if (!id) return '<b>Sistema</b>';
+      const p = memberById(id);
+      return `<b>${esc(nameOf(id))}</b>${p ? ` <span class="muted small">(${esc(ROLE_LABEL[p.role] || p.role)})</span>` : ''}`;
+    };
+    openDialog(`<div class="stack ev-log">
+        <h2>🕘 Histórico de alterações</h2>
+        <p class="muted small" style="margin:0">${esc(ev.title)} · ${esc(fmtDay(ev.starts_at))}. Quem alterou o evento e cada sala, do mais recente para o mais antigo.</p>
+        ${blocks.length ? `<div class="ev-log-list">${blocks.map((b) => `<div class="ev-log-item">
+            <div class="ev-log-head">${actorLabel(b.actor)} <span class="muted small">· ${esc(fmtWhen(b.at))}</span></div>
+            <ul>${b.items.map((x) => `<li>${eventLogLine(x)}</li>`).join('')}</ul>
+          </div>`).join('')}</div>`
+          : '<p class="muted">Nenhuma alteração registrada ainda. O histórico conta a partir de quando ele foi ativado no site.</p>'}
+        <div class="row end"><button type="button" class="btn ghost" data-close>Fechar</button></div>
+      </div>`, () => {});
   }
 
   // ---------- Detalhe do evento ----------
@@ -1909,6 +2038,9 @@
     const mine = myTeam(ev);
     // Oficiais veem todos os times; membro comum vê só o próprio (sem totais e sem copiar)
     const showTeams = officer ? ev.team_format && slots.size > 0 : !!mine;
+    // Histórico de alterações (líder e oficiais): quem mexeu em cada sala por último
+    const log = officer ? await api.eventLog(ev.id).catch((e) => { console.warn('histórico do evento', e); return []; }) : [];
+    const edits = lastRoomEdits(log);
 
     // Resumo da presença real (oficiais)
     let attendanceBox = '';
@@ -1956,6 +2088,7 @@
         <div class="row">
           <button class="btn small ghost" id="btn-copy">🔗 Copiar link</button>
           ${isOfficer() ? `<button class="btn small ghost" id="btn-copy-list">📋 Copiar lista</button>
+            <button class="btn small ghost" id="btn-history" title="Quem alterou o evento e cada sala">🕘 Histórico de alterações</button>
             <span class="spacer"></span>
             ${can('teams_build') ? `<a class="btn small primary" id="btn-teams" href="#/evento/${ev.id}/times">⚔ ${finished ? 'Revisar times' : 'Montar times'}</a>` : ''}
             ${can('event_edit') ? '<button class="btn small" id="btn-edit">Editar</button>' : ''}
@@ -1977,7 +2110,7 @@
               <button class="${aggMode() === 'hide' ? 'on' : ''}" data-agg="hide" title="Mostrar só nome e classe de cada membro">Ocultar</button>
             </div>
             <button class="btn small ghost" id="btn-copy-teams">📋 Copiar times</button></div>
-          <div id="ev-teams">${teamsHtml(ev, people, slots)}</div>`
+          <div id="ev-teams">${teamsHtml(ev, people, slots, { edits })}</div>`
         : `<div class="section-head"><h2>Seu time</h2></div>
           <div class="teams-grid single">${teamCard(mine, people.filter((p) => slots.get(p.id) === mine), { showFoot: false, bare: true })}</div>`}
       ${officer ? `<div class="lists">
@@ -1991,6 +2124,7 @@
     bindRsvp(main, [ev], () => viewEvent(id));
     $('#btn-copy').addEventListener('click', () => copy(location.href, 'Link copiado'));
     $('#btn-copy-teams')?.addEventListener('click', () => copy(teamsText(ev, people, slots), 'Times copiados — cole no Discord'));
+    $('#btn-history')?.addEventListener('click', () => openEventLog(ev, log));
     const resolve = async (uid, accept) => {
       const p = state.members.find((m) => m.id === uid);
       const msg = accept
@@ -2004,7 +2138,7 @@
     // Média / Totalizador (oficiais): redesenha só os times, sem recarregar a página
     main.querySelectorAll('[data-agg]').forEach((b) => b.addEventListener('click', () => {
       setAggMode(b.dataset.agg);
-      $('#ev-teams').innerHTML = teamsHtml(ev, people, slots);
+      $('#ev-teams').innerHTML = teamsHtml(ev, people, slots, { edits });
       main.querySelectorAll('[data-agg]').forEach((x) => x.classList.toggle('on', x.dataset.agg === aggMode()));
     }));
     $('#btn-attend')?.addEventListener('click', () => openAttendanceDialog(ev, () => viewEvent(id)));
@@ -2269,6 +2403,7 @@
     T.slots = new Map((ev.team_slots || []).map((s) => [s.user_id, s.team]));
     T.orig = new Map(T.slots);
     T.sel = null;
+    T.log = await api.eventLog(id).catch((e) => { console.warn('histórico do evento', e); return []; });
     renderTeams();
   }
 
@@ -2359,7 +2494,7 @@
           </div>
           ${classSummary()}
         </aside>
-        <section class="teams-area">${teamsHtml(ev, T.people, T.slots, { editable: true, sel: T.sel, renamable: ev.team_format === 'rito' })}</section>
+        <section class="teams-area">${teamsHtml(ev, T.people, T.slots, { editable: true, sel: T.sel, renamable: ev.team_format === 'rito', edits: lastRoomEdits(T.log) })}</section>
       </div>`;
     // Destaca quem foi movido e ainda não foi salvo
     main.querySelectorAll('.chip[data-uid]').forEach((c) => {
@@ -2511,7 +2646,12 @@
       const fresh = await api.event(T.ev.id);
       const server = new Map((fresh.team_slots || []).map((s) => [s.user_id, s.team]));
       const same = server.size === T.orig.size && [...server].every(([u, t]) => T.orig.get(u) === t);
-      if (!same && !(await confirmDialog('Outro oficial alterou estes times depois que você abriu a página. Salvar agora vai substituir as alterações dele. Continuar?', 'Substituir'))) {
+      let who = 'Outro oficial';
+      if (!same) {
+        const last = (await api.eventLog(T.ev.id).catch(() => [])).find((x) => x.kind === 'room' && x.actor && x.actor !== state.user.id);
+        if (last) who = `${nameOf(last.actor)} (às ${fmtTime(last.at)})`;
+      }
+      if (!same && !(await confirmDialog(`${who} alterou estes times depois que você abriu a página. Salvar agora vai substituir essas alterações. Continuar?`, 'Substituir'))) {
         renderTeams(); return;
       }
       // Quem desmarcou presença nesse meio-tempo fica de fora
@@ -3184,6 +3324,53 @@
   const supportOn = () => TICKETS_ON && isOfficer() && can('ticket_view');
   const ticketBadgeMine = () => (state.tickets || []).filter(ticketHasNews).length;
   const ticketBadgeStaff = () => (supportOn() ? (state.tickets || []).filter(ticketAwaiting).length + ticketBadgeMine() : 0);
+  // Contador no botão 💬 da Central de Atendimento
+  function updateHelpFab() {
+    const fab = $('#help-fab');
+    if (!fab) return;
+    let b = fab.querySelector('.help-fab-badge');
+    if (!b) { b = document.createElement('span'); b.className = 'help-fab-badge'; fab.appendChild(b); }
+    const n = supportOn() ? ticketBadgeStaff() : ticketBadgeMine();
+    b.hidden = !n;
+    b.textContent = n > 99 ? '99+' : String(n);
+    const mine = ticketBadgeMine();
+    fab.title = mine ? `Central de Atendimento: a staff respondeu ${mine === 1 ? '1 ticket seu' : `${mine} tickets seus`}`
+      : supportOn() ? 'Central de Atendimento: tickets dos membros' : 'Central de Atendimento: fale com a liderança';
+  }
+  // Aviso na tela quando a staff responde um ticket meu (uma vez por resposta, também entre visitas)
+  const tkToastKey = () => `tk-toasted-${state.user?.id}`;
+  function notifyTicketReplies() {
+    if (!TICKETS_ON || !state.user || !isMember()) return;
+    let done = {};
+    try { done = JSON.parse(localStorage.getItem(tkToastKey()) || '{}') || {}; } catch { done = {}; }
+    const here = parseRoute().tk;
+    const fresh = (state.tickets || []).filter((t) => ticketHasNews(t) && !(here && Number(here[1]) === t.id)
+      && done[t.id] !== lastPublic(t)?.created_at);
+    if (!fresh.length) return;
+    fresh.forEach((t) => { done[t.id] = lastPublic(t).created_at; });
+    try { localStorage.setItem(tkToastKey(), JSON.stringify(done)); } catch { /* ignora */ }
+    toast(fresh.length === 1
+      ? `💬 A staff respondeu seu ticket “${fresh[0].title}”. Toque no 💬 para ver.`
+      : `💬 A staff respondeu ${fresh.length} tickets seus. Toque no 💬 para ver.`);
+  }
+  // Enquanto o site está aberto, confere novas respostas a cada minuto (e ao voltar para a aba)
+  let ticketPollBusy = false;
+  async function pollTickets() {
+    if (ticketPollBusy || document.hidden || !TICKETS_ON || !state.user || !isMember()) return;
+    ticketPollBusy = true;
+    try {
+      const here = parseRoute().tk;
+      const count = (id) => (state.tickets || []).find((t) => t.id === id)?.messages?.length || 0;
+      const before = here ? count(Number(here[1])) : 0;
+      await loadTickets();
+      renderBell();
+      notifyTicketReplies();
+      // Na conversa aberta, mostra a mensagem nova (se a pessoa não estiver escrevendo)
+      if (here && count(Number(here[1])) !== before && !$('#tk-body')?.value.trim()) await viewTicket(Number(here[1]));
+    } catch (e) { console.warn('tickets', e); } finally { ticketPollBusy = false; }
+  }
+  setInterval(pollTickets, 60000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) pollTickets(); });
   const ownerLabel = (t) => (t.assigned_to === state.user.id ? 'Com você' : `Responsável: ${nameOf(t.assigned_to)}`);
   function ticketAuthorLabel(t) {
     if (t.mine) return t.anonymous ? 'Você (anônimo)' : 'Você';
@@ -4946,7 +5133,7 @@
       mine.push({ icon: '📅', text: `Responder: <b>${esc(ev.title)}</b>`, sub: `${esc(fmtWhenShort(ev.starts_at))}${d ? ` · responda até ${esc(fmtDeadline(d))}` : ''}${who}`, href: `#/evento/${ev.id}` });
     });
     (state.tickets || []).filter(ticketHasNews).forEach((t) => {
-      mine.push({ icon: '💬', text: `Resposta nova no ticket <b>${esc(t.title)}</b>`, href: `#/ticket/${t.id}` });
+      mine.push({ icon: '💬', text: `A staff respondeu seu ticket <b>${esc(t.title)}</b>`, sub: 'Toque para ver a resposta', href: `#/ticket/${t.id}` });
     });
     (state.recruits || []).filter((r) => isMyRecruit(r) && r.status === 'open' && recruitApps(r, 'applied').length).forEach((r) => {
       mine.push({ icon: '📣', text: `${plural(recruitApps(r, 'applied').length, 'candidato aguardando', 'candidatos aguardando')} você`, sub: `Recrutamento “${esc(r.title)}”`, href: `#/recrutamento/${r.id}` });
@@ -5008,6 +5195,7 @@
 
   let bellOpen = false;
   function renderBell() {
+    updateHelpFab();
     const wrap = $('#bell-wrap');
     if (!wrap) return;
     const { mine, lead } = bellItems();
@@ -5059,6 +5247,7 @@
     renderHeader(key);
     if (!state.user) return viewLogin();
     if (!isMember()) return state.me?.role === 'former' ? viewFormer() : viewPending();
+    notifyTicketReplies();
     try {
       if (key === 'past') await viewEvents(true);
       else if (key === 'news') await viewNews();
