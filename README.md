@@ -266,6 +266,9 @@ O filtro no topo separa por categoria. O menu mostra um contador com os recrutam
   Com o site aberto, o aviso chega sozinho em até 1 minuto, sem recarregar. Na conversa aberta, a resposta nova aparece automaticamente. O aviso some quando a pessoa abre o ticket. Notas internas da staff não geram aviso.
 - **Líder e oficiais:** veem todos os tickets, com os filtros **Em aberto**, **Não iniciado**, **Pendente comigo**, **Pendente autor**, **Abertos por mim**, **Resolvidos** e **Todos**, além do filtro por categoria.
   Podem **🙋 Assumir** um ticket (ele passa para **Em atendimento**), responder, mudar o status e escrever **🔒 notas internas**, que o membro não vê.
+- **✔ Quem encerrou:** todo ticket resolvido mostra se foi encerrado **pelo jogador** (quem abriu) ou **pela staff** (com o nome de quem encerrou), com a data e a hora. Isso aparece na lista de resolvidos e no topo do ticket.
+  Dentro da conversa, as mudanças de status aparecem na ordem em que aconteceram: colocado em atendimento, encerrado e reaberto, cada uma com quem fez.
+  Em ticket anônimo, aparece só "pelo jogador (anônimo)", sem o nome. O histórico começa a contar a partir de quando o [`supabase/tickets_historico.sql`](supabase/tickets_historico.sql) for executado (veja **Dicas**).
 
 **⚙️ Configurações do líder** (engrenagem no topo, só o líder): para cada função dos oficiais, o líder escolhe:
 - **Permitido:** o oficial faz direto (é o padrão).
@@ -285,6 +288,7 @@ Para adicionar, trocar ou remover um link, edite a lista `UTIL_LINKS` no [`app.j
 ## Dicas
 - **Atualizando o site:** se você já tinha executado uma versão anterior do `schema.sql`, rode o arquivo inteiro de novo no SQL Editor. Ele só acrescenta o que falta e não apaga dados. Ao publicar arquivos novos, aumente o número `?v=` no `index.html` para os navegadores baixarem a versão nova.
 - **Ativar o histórico de alterações dos eventos:** no Supabase, abra o **SQL Editor**, cole todo o conteúdo de [`supabase/historico_eventos.sql`](supabase/historico_eventos.sql) e clique em **Run**. Ele só acrescenta o que falta, pode ser executado de novo e também está no fim do `schema.sql`. Enquanto ele não for executado, o site funciona normalmente, só sem o histórico.
+- **Ativar o histórico de quem encerrou os tickets:** do mesmo jeito, cole todo o conteúdo de [`supabase/tickets_historico.sql`](supabase/tickets_historico.sql) no **SQL Editor** e clique em **Run**. Ele também só acrescenta o que falta, pode ser executado de novo e está no fim do `schema.sql`.
 - **Ativar o Sorteio:** no Supabase, abra o **SQL Editor**, cole todo o conteúdo de [`supabase/sorteio.sql`](supabase/sorteio.sql) e clique em **Run**. Ele só acrescenta o que falta e pode ser executado de novo sem problema. O mesmo trecho também está no fim do `schema.sql`.
   O script também agenda o sorteio às 22h com o **pg_cron** do Supabase. Se aparecer o aviso "pg_cron indisponível", ative a extensão em **Database → Extensions → pg_cron** e rode o arquivo de novo. Enquanto ela não estiver ativa, o sorteio acontece na primeira visita ao site depois das 22h.
 - **Só Recrutamentos e Tickets:** o [`supabase/recrutamentos_tickets.sql`](supabase/recrutamentos_tickets.sql) instala apenas essas duas partes, sem mexer no resto. Ele depende das Configurações do líder, que já vêm no `schema.sql`. Quem roda o `schema.sql` completo não precisa dele.

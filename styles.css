@@ -808,6 +808,11 @@ h1 { background: linear-gradient(180deg, #fff1da, #e3b878); -webkit-background-c
 .tk-msg.internal { background: rgba(220, 170, 82, .08); border: 1px dashed rgba(220, 170, 82, .55); }
 .tk-msg-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 4px; font-size: .9rem; }
 .tk-msg-head .muted { margin-left: auto; }
+/* Mudanças de status no meio da conversa (encerrado, reaberto…) */
+.tk-event { align-self: center; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 4px 10px; max-width: 92%;
+  padding: 5px 12px; border-radius: 999px; border: 1px solid var(--border); background: rgba(255, 255, 255, .03); font-size: .85rem; color: var(--muted); text-align: center; }
+.tk-event.done { border-color: rgba(79, 176, 109, .4); background: var(--yes-bg); color: #c9f0d2; }
+.tk-closed { margin-top: 4px; color: #9fd9ae; }
 .tk-role { font-size: .68rem; text-transform: uppercase; letter-spacing: .05em; padding: 1px 6px; border-radius: 6px; background: rgba(255, 255, 255, .08); color: var(--gold); }
 .tk-int { font-size: .75rem; color: var(--gold); }
 .tk-text { white-space: pre-line; overflow-wrap: anywhere; }

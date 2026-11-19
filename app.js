@@ -538,6 +538,17 @@
       { id: 7, ticket_id: 803, author_id: 'u0', body: 'Bem-vindo! É a disputa pelo trono entre os clãs vencedores. Confirme presença no evento que montamos os times.', internal: false, images: [], created_at: day(-9, 21) },
       { id: 8, ticket_id: 803, author_id: 'u6', body: 'Entendi, valeu!', internal: false, images: [], created_at: day(-8, 12) },
     ];
+    // Histórico de status (quem encerrou, reabriu ou pôs em atendimento)
+    db.tlog = [
+      { ticket_id: 801, at: day(-2, 10), actor: 'u1', by_author: false, from_status: 'open', to_status: 'progress' },
+      { ticket_id: 803, at: day(-9, 21), actor: 'u0', by_author: false, from_status: 'open', to_status: 'progress' },
+      { ticket_id: 803, at: day(-8, 12, 2), actor: 'u6', by_author: true, from_status: 'progress', to_status: 'resolved' },
+    ];
+    const tlogStatus = (t, to) => {
+      if (t.status === to) return;
+      db.tlog.push({ ticket_id: t.id, at: new Date().toISOString(), actor: state.user.id, by_author: t.author_id === state.user.id, from_status: t.status, to_status: to });
+      t.status = to;
+    };
     // Quem atende pode ver este ticket? (igual às regras do banco)
     const staffSeesTicket = (t) => isOfficer() && (isLeader()
       || (permMode('ticket_view') !== 'deny' && (t.category !== 'report' || permMode('ticket_reports') !== 'deny')));
@@ -553,6 +564,7 @@
           messages: db.tmsgs.filter((m) => m.ticket_id === t.id && (!m.internal || !mine))
             .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
             .map((m) => ({ ...m, images: [...m.images], from_author: m.author_id === t.author_id, author_id: hide && m.author_id === t.author_id ? null : m.author_id })),
+          log: db.tlog.filter((l) => l.ticket_id === t.id).map(({ ticket_id, ...l }) => ({ ...l, actor: hide && l.by_author ? null : l.actor })),
         };
       });
     const ticketRow = (id) => db.tickets.find((t) => t.id === id);
@@ -903,8 +915,8 @@
         if (internal && mine) throw new Error('Notas internas são só para quem atende');
         db.tmsgs.push({ id: db.nextId++, ticket_id: id, author_id: state.user.id, body, internal: !!internal, images: images || [], created_at: new Date().toISOString() });
         // Membro escrevendo num ticket resolvido reabre; resposta de quem atende põe "Em andamento"
-        if (mine && t.status === 'resolved') t.status = 'open';
-        if (!mine && !internal && t.status === 'open') t.status = 'progress';
+        if (mine && t.status === 'resolved') tlogStatus(t, 'open');
+        if (!mine && !internal && t.status === 'open') tlogStatus(t, 'progress');
       },
       async setTicketStatus(id, status) {
         const t = ticketRow(id);
@@ -912,13 +924,13 @@
         const mine = t.author_id === state.user.id;
         if (!mine && !isStaffOn(t)) throw new Error('Sem permissão');
         if (mine && !['open', 'resolved'].includes(status)) throw new Error('Você só pode resolver ou reabrir o seu ticket');
-        t.status = status;
+        tlogStatus(t, status);
       },
       async assignTicket(id, userId) {
         const t = ticketRow(id);
         if (!t || !isStaffOn(t)) throw new Error('Sem permissão');
         t.assigned_to = userId || null;
-        if (userId && t.status === 'open') t.status = 'progress'; // assumiu = Em atendimento
+        if (userId && t.status === 'open') tlogStatus(t, 'progress'); // assumiu = Em atendimento
       },
       async revealTicketAuthor(id) {
         if (!isLeader()) throw new Error('Só o líder pode ver o autor de um ticket anônimo');
@@ -3413,15 +3425,34 @@
       ? `<span class="tk-owner${t.assigned_to === state.user.id ? ' me' : ''}">👤 ${esc(ownerLabel(t))}</span>`
       : '<span class="tk-owner none">👤 Sem responsável</span>';
   }
+  // Histórico de status: quem encerrou ou reabriu (o jogador que abriu ou a staff)
+  const lastClose = (t) => (t.status === 'resolved' ? [...(t.log || [])].reverse().find((l) => l.to_status === 'resolved') : null);
+  function tkWho(t, l) {
+    if (l.by_author) return t.mine ? 'por você' : `pelo jogador${t.author_id ? ` (${nameOf(t.author_id)})` : t.anonymous ? ' (anônimo)' : ''}`;
+    if (!l.actor) return '';
+    return l.actor === state.user.id ? 'por você (staff)' : `pela staff (${nameOf(l.actor)})`;
+  }
+  function tkLogText(t, l) {
+    const who = tkWho(t, l);
+    const w = who ? ` ${who}` : '';
+    if (l.to_status === 'resolved') return `✔ Encerrado${w}`;
+    if (l.from_status === 'resolved') return `↺ Reaberto${w}`;
+    if (l.to_status === 'progress') return `💬 Colocado em atendimento${w}`;
+    return `Voltou para Aberto${w}`;
+  }
+  const closedLine = (t) => { const l = lastClose(t); return l ? `${tkLogText(t, l)} em ${fmtWhen(l.at)}` : ''; };
+
   function ticketRowHtml(t, staff) {
     const cat = TICKET_CAT[t.category] || TICKET_CAT.other;
     const n = t.messages.filter((m) => !m.internal).length;
+    const closed = closedLine(t);
     return `<a class="card tk-row" href="#/ticket/${t.id}">
       <span class="rc-icon" aria-hidden="true">${cat.icon}</span>
       <div class="rc-body">
         <div class="tk-row-top"><div class="tk-title">${esc(t.title)}</div>${staff ? ownerTag(t) : ''}</div>
         <div class="rc-badges">${ticketBadges(t, staff)}</div>
         <div class="muted small">${staff ? `Aberto por <b>${esc(ticketAuthorLabel(t))}</b> · ` : ''}${n} mensage${n === 1 ? 'm' : 'ns'} · atualizado ${esc(fmtWhen(lastActivity(t)))}${!staff && t.assigned_to ? ` · com ${esc(nameOf(t.assigned_to))}` : ''}</div>
+        ${closed ? `<div class="tk-closed small">${esc(closed)}</div>` : ''}
       </div>
     </a>`;
   }
@@ -3553,14 +3584,23 @@
       if (m.from_author) return t.mine ? 'Você' : ticketAuthorLabel(t);
       return m.author_id === state.user.id ? 'Você' : nameOf(m.author_id);
     };
-    const msgs = t.messages.map((m) => {
+    const msgHtml = (m) => {
       const me = m.author_id === state.user.id || (t.mine && m.from_author);
       return `<div class="tk-msg${me ? ' me' : ''}${m.internal ? ' internal' : ''}${m.from_author ? '' : ' staff'}">
         <div class="tk-msg-head"><b>${esc(who(m))}</b>${!m.from_author ? ' <span class="tk-role">Liderança</span>' : ''}${m.internal ? ' <span class="tk-int">🔒 Nota interna</span>' : ''}<span class="muted small">${esc(fmtWhen(m.created_at))}</span></div>
         ${m.body ? `<div class="tk-text">${esc(m.body)}</div>` : ''}
         ${imagesHtml(m.images)}
       </div>`;
-    }).join('');
+    };
+    // Mensagens e mudanças de status (encerrado, reaberto…) na ordem em que aconteceram
+    const logHtml = (l) => `<div class="tk-event${l.to_status === 'resolved' ? ' done' : ''}"><span>${esc(tkLogText(t, l))}</span><span class="muted small">${esc(fmtWhen(l.at))}</span></div>`;
+    const msgs = [
+      ...t.messages.map((m) => ({ at: Date.parse(m.created_at), html: msgHtml(m) })),
+      ...(t.log || []).map((l) => ({ at: Date.parse(l.at), html: logHtml(l) })),
+    ].sort((a, b) => a.at - b.at).map((x) => x.html).join('');
+    const closed = closedLine(t);
+    const closedNote = t.status !== 'resolved' ? ''
+      : `<p class="small rc-note ok">${closed ? esc(closed) : '✔ Ticket encerrado (antes do histórico existir, sem registro de quem encerrou)'}.${!staff ? ' Se precisar, escreva abaixo que ele é reaberto.' : ''}</p>`;
 
     const controls = [];
     if (staff) {
@@ -3584,7 +3624,7 @@
         <div class="muted small">Aberto por <b>${esc(ticketAuthorLabel(t))}</b> em ${esc(fmtWhen(t.created_at))}${!staff && t.assigned_to ? ` · Responsável: <b>${esc(nameOf(t.assigned_to))}</b>` : ''}</div>
         ${staff && state.revealed[t.id] ? `<p class="small rc-note">🕶️ Autor: <b>${esc(nameOf(state.revealed[t.id]))}</b>. Só você está vendo; nada fica registrado no ticket.</p>` : ''}
         ${t.mine && t.anonymous ? '<p class="small rc-note">🕶️ Seu nome fica oculto para os oficiais e o líder. Em casos graves, o líder pode ver quem abriu.</p>' : ''}
-        ${!staff && t.status === 'resolved' ? '<p class="small rc-note">✔ Ticket resolvido. Se precisar, escreva abaixo que ele é reaberto.</p>' : ''}
+        ${closedNote}
         ${controls.length ? `<div class="row tk-controls">${controls.join('')}</div>` : ''}
       </div>
       <div class="tk-thread">${msgs}</div>
