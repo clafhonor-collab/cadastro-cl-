@@ -15,6 +15,7 @@ O nome e o lema aparecem no topo e na tela de login, e podem ser trocados no [`c
 - **Frequência**: depois do evento, um oficial marca quem realmente compareceu. O painel mostra a % de presença de cada membro, quem confirmou e faltou e quem não respondeu.
 - Em cada evento aparece quem vai, quem não vai e quem ainda não respondeu. Os botões "Copiar lista" e "Copiar times" geram textos prontos para colar no Discord.
 - **Recrutamentos**: membros procuram gente para um Grupo Guerreiro, um evento PvP ou outra atividade; os candidatos se inscrevem e quem criou escolhe quem entra.
+- **Sorteio**: todo domingo às 22h (Brasília) o site sorteia prêmios entre os inscritos que tiveram presença registrada nas duas Guerras das Sombras da semana.
 - **Central de Atendimento**: membros abrem tickets para a liderança (sugestões, dúvidas, problemas no site, denúncias), inclusive de forma anônima.
 - **Configurações do líder**: o líder define o que os oficiais podem fazer sozinhos, o que precisa da aprovação dele e o que fica bloqueado.
 - **Utils**: links úteis para o clã, como o Discord da aliança, builds, gemas e patch notes.
@@ -111,6 +112,9 @@ Mande o link https://forhonorcla.com.br no Discord do clã. Cada pessoa entra co
 | Abrir tickets, inclusive anônimos | ✔ | ✔ | ✔ |
 | Responder, assumir e resolver tickets de outros membros | | ✔ | ✔ |
 | Ver quem abriu um ticket anônimo | | | ✔ |
+| Inscrever-se no sorteio e retirar a inscrição | ✔ | ✔ | ✔ |
+| Criar, editar e cancelar sorteios | | ✔ | ✔ |
+| Ver o painel do sorteio (inscritos e elegíveis) e remover inscrições com motivo | | ✔ | ✔ |
 | Definir as permissões dos oficiais e aprovar as solicitações deles | | | ✔ |
 
 As funções marcadas para oficiais podem ser restringidas pelo líder em **⚙️ Configurações** (veja abaixo).
@@ -224,6 +228,17 @@ Só contam eventos com presença registrada e posteriores à entrada do membro. 
 
 O filtro no topo separa por categoria. O menu mostra um contador com os recrutamentos para aprovar e os candidatos novos nos seus recrutamentos.
 
+**🎟️ Sorteio** (menu do topo, para todos): todo **domingo às 22h (horário de Brasília)** o site sorteia os prêmios entre os inscritos elegíveis.
+- **Membros:** em cada sorteio aberto, clicam em **🎟️ Quero participar** (ou **Retirar inscrição**). A inscrição vale para um sorteio; na semana seguinte, é preciso se inscrever de novo.
+- **Quem é elegível:** quem está inscrito e tem **presença registrada em todas as Guerras das Sombras da semana** (de segunda 00h até domingo 22h, em Brasília; normalmente 2). Conta a presença marcada pelos oficiais em **📋 Registrar presença**, não o "Vou". Por isso, registre a presença das Guerras **antes de domingo às 22h**.
+- **Prêmio:** a staff escolhe de **1 a 5 Passes de Batalha Simples**, **1 Passe de Batalha Potencializado**, **1 Via do Prodígio** ou **Outros** (escrevendo o prêmio, com quantidade opcional de 1 a 10). É **um ganhador por item**: 3 passes = 3 ganhadores diferentes, cada um leva 1.
+- **No horário:** o site mostra só os ganhadores, com o nome em destaque, um troféu dourado e a mensagem "Parabéns, entre em contato com a staff para retirar seu prêmio!". O resultado fica em destaque por 6 dias. Quem estiver com a página aberta às 22h vê o resultado sem precisar recarregar.
+- **Últimos sorteados:** os membros veem os 3 últimos ganhadores. Enquanto não houver nenhum, aparece só o botão **Conferir últimos sorteios**.
+- **Staff (líder e oficiais):** **+ Novo sorteio** escolhe o domingo e o prêmio (dá para editar ou cancelar até o horário). O **Painel da staff** mostra as Guerras das Sombras da semana (com ou sem presença registrada) e cada inscrito com a situação: **✔ Elegível**, **⏳ Aguardando registro de presença** ou **✖ Faltou**. Também lista os sorteios já realizados, com os ganhadores e quantos estavam elegíveis.
+- **Remover inscrição:** só com o **motivo por escrito**. O membro removido recebe um aviso no 🔔 para entrar em contato com a staff (ele não vê o motivo nem consegue se inscrever de novo nesse sorteio). Os **outros** oficiais e o líder recebem um alerta no 🔔 com o nome, quem removeu e o motivo.
+- **Como o sorteio acontece:** a escolha é aleatória e feita no banco, uma única vez por sorteio. Com o agendamento ativo (veja **Dicas**), ela acontece exatamente às 22h; sem ele, acontece quando a primeira pessoa abre o site depois das 22h. Depois do horário, ninguém entra, sai ou é removido.
+- O líder pode bloquear para os oficiais a criação de sorteios e a remoção de inscrições em **⚙️ Configurações → Sorteio**.
+
 **🎫 Central de Atendimento** (botão 💬 no canto da tela): o canal entre os membros e a liderança.
 - **Membros:** clicam em **+ Novo ticket** e escolhem o assunto, a categoria (Sugestão, Melhorias, Reclamação / Denúncia, Dúvida, Problema no site ou Outros) e a mensagem. Dá para anexar até 3 imagens por mensagem.
 - **🕶️ Anônimo:** marcando **Enviar anonimamente**, o nome fica oculto para oficiais e líder. Em casos graves, o líder pode clicar em **Revelar autor**: só ele vê o nome, e nada fica registrado no ticket.
@@ -248,6 +263,8 @@ Para adicionar, trocar ou remover um link, edite a lista `UTIL_LINKS` no [`app.j
 
 ## Dicas
 - **Atualizando o site:** se você já tinha executado uma versão anterior do `schema.sql`, rode o arquivo inteiro de novo no SQL Editor. Ele só acrescenta o que falta e não apaga dados. Ao publicar arquivos novos, aumente o número `?v=` no `index.html` para os navegadores baixarem a versão nova.
+- **Ativar o Sorteio:** no Supabase, abra o **SQL Editor**, cole todo o conteúdo de [`supabase/sorteio.sql`](supabase/sorteio.sql) e clique em **Run**. Ele só acrescenta o que falta e pode ser executado de novo sem problema. O mesmo trecho também está no fim do `schema.sql`.
+  O script também agenda o sorteio às 22h com o **pg_cron** do Supabase. Se aparecer o aviso "pg_cron indisponível", ative a extensão em **Database → Extensions → pg_cron** e rode o arquivo de novo. Enquanto ela não estiver ativa, o sorteio acontece na primeira visita ao site depois das 22h.
 - **Só Recrutamentos e Tickets:** o [`supabase/recrutamentos_tickets.sql`](supabase/recrutamentos_tickets.sql) instala apenas essas duas partes, sem mexer no resto. Ele depende das Configurações do líder, que já vêm no `schema.sql`. Quem roda o `schema.sql` completo não precisa dele.
 - **Eventos semanais:** ao criar, escolha "Repetir por N semanas"; ou, num evento existente, use "Repetir na próxima semana".
 - **Horários:** cada pessoa vê o horário no fuso do próprio celular ou PC.

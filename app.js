@@ -61,6 +61,45 @@
   const TICKET_STATUS = { open: 'Aberto', progress: 'Em atendimento', resolved: 'Resolvido' };
   const TICKET_MAX_IMAGES = 3;
 
+  // Sorteio: todo domingo às 22h (Brasília) entre os inscritos com presença nas Guerras das Sombras da semana
+  const RAFFLE_ON = true;
+  const RAFFLE_TZ = 'America/Sao_Paulo';
+  const PRIZES = [
+    { key: 'bp_simple', label: 'Passe de Batalha Simples', many: 'Passes de Batalha Simples', icon: '🎟️', max: 5 },
+    { key: 'bp_boosted', label: 'Passe de Batalha Potencializado', icon: '💠' },
+    { key: 'prodigy', label: 'Via do Prodígio', icon: '🌟' },
+    { key: 'other', label: 'Outros', icon: '🎁', max: 10 },
+  ];
+  const PRIZE = Object.fromEntries(PRIZES.map((p) => [p.key, p]));
+  // Próximos domingos às 22h de Brasília (= segunda 01h UTC; o Brasil não tem horário de verão desde 2019)
+  function nextDrawDates(n = 8) {
+    const d = new Date();
+    d.setUTCHours(1, 0, 0, 0);
+    while (d.getUTCDay() !== 1 || d.getTime() <= Date.now()) d.setUTCDate(d.getUTCDate() + 1);
+    return Array.from({ length: n }, (_, i) => new Date(d.getTime() + i * 7 * 86400e3));
+  }
+  const isDrawSlot = (iso) => { const d = new Date(iso); return d.getUTCDay() === 1 && d.getUTCHours() === 1 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0; };
+  // Início da semana do sorteio: segunda 00h de Brasília (6 dias e 22h antes do domingo 22h)
+  function raffleWeekStart(iso) { return new Date(Date.parse(iso) - (6 * 24 + 22) * 3600e3).toISOString(); }
+  // Confere o prêmio e calcula os ganhadores (um por item) — mesmas regras do banco
+  function cleanRaffleRow(row) {
+    const kind = row?.prize_kind;
+    const draw = row?.draw_at && Number.isFinite(Date.parse(row.draw_at)) ? new Date(row.draw_at).toISOString() : null;
+    if (!draw || !isDrawSlot(draw)) throw new Error('O sorteio é sempre aos domingos às 22h (horário de Brasília)');
+    if (!PRIZE[kind]) throw new Error('Prêmio inválido');
+    let qty = 1; let text = null;
+    if (kind === 'bp_simple') {
+      qty = parseInt(row.prize_qty, 10) || 1;
+      if (qty < 1 || qty > 5) throw new Error('Escolha de 1 a 5 Passes de Batalha Simples');
+    } else if (kind === 'other') {
+      text = String(row.prize_text || '').trim().slice(0, 100);
+      if (!text) throw new Error('Escreva o que será sorteado');
+      qty = row.prize_qty === '' || row.prize_qty == null ? null : parseInt(row.prize_qty, 10);
+      if (qty !== null && !(qty >= 1 && qty <= 10)) throw new Error('A quantidade vai de 1 a 10');
+    }
+    return { draw_at: draw, prize_kind: kind, prize_qty: qty, prize_text: text, winners_count: qty || 1 };
+  }
+
   // Sugestões no campo "título" — o oficial pode digitar qualquer outro nome.
   const EVENT_SUGGESTIONS = [
     'Guerra das Sombras', 'Rito do Exílio', 'Portões Demoníacos', 'Assalto ao Cofre',
@@ -244,6 +283,20 @@
       async setTicketStatus(id, status) { ok(await sb.rpc('set_ticket_status', { p_ticket: id, p_status: status })); },
       async assignTicket(id, userId) { ok(await sb.rpc('assign_ticket', { p_ticket: id, p_user: userId || null })); },
       async revealTicketAuthor(id) { return ok(await sb.rpc('reveal_ticket_author', { p_ticket: id })); },
+      // ----- Sorteio (o sorteio em si acontece no banco, em run_raffle_draws) -----
+      async raffles() {
+        return ok(await sb.from('raffles').select('*, entries:raffle_entries(raffle_id, user_id, entered_at, removed_at), winners:raffle_winners(*)')
+          .order('draw_at', { ascending: false }).limit(60));
+      },
+      async runRaffleDraws() { ok(await sb.rpc('run_raffle_draws')); },
+      async raffleStaff(id) { return ok(await sb.rpc('raffle_staff_view', { p_raffle: id })); },
+      async raffleRemovals() { return ok(await sb.rpc('raffle_removals')) || []; },
+      async createRaffle(row) { return ok(await sb.rpc('create_raffle', { p: cleanRaffleRow(row) })); },
+      async updateRaffle(id, row) { ok(await sb.rpc('update_raffle', { p_id: id, p: cleanRaffleRow(row) })); },
+      async deleteRaffle(id) { ok(await sb.rpc('delete_raffle', { p_id: id })); },
+      async joinRaffle(id) { ok(await sb.rpc('join_raffle', { p_id: id })); },
+      async leaveRaffle(id) { ok(await sb.rpc('leave_raffle', { p_id: id })); },
+      async removeRaffleEntry(id, userId, reason) { ok(await sb.rpc('remove_raffle_entry', { p_id: id, p_user: userId, p_reason: reason })); },
       // ----- Configurações do líder -----
       async perms() { return ok(await sb.from('officer_permissions').select('perm_key, mode')); },
       async setPerm(key, mode) { ok(await sb.from('officer_permissions').upsert({ perm_key: key, mode, updated_by: state.user.id, updated_at: new Date().toISOString() })); },
@@ -507,6 +560,62 @@
       { id: 4, name: 'Outros', sort_order: 999, active: true },
     ];
     db.events.forEach((e) => { e.type_id = guessTypeId(e.title, db.types); });
+
+    // Sorteios de exemplo: um realizado há 2 semanas, o da semana passada (é sorteado ao abrir a demonstração) e o do próximo domingo
+    const GDS = db.types.find((t) => t.name === 'Guerra das Sombras').id;
+    const nextDraw = nextDrawDates(1)[0].getTime();
+    const drawIso = (weeksAgo) => new Date(nextDraw - weeksAgo * 7 * 86400e3).toISOString();
+    // Duas Guerras das Sombras na semana passada (qui e sáb, 20h30 de Brasília), com presença registrada
+    const lastWeek = Date.parse(raffleWeekStart(drawIso(1)));
+    [[31, 3], [32, 5]].forEach(([id, d]) => {
+      const starts = new Date(lastWeek + (d * 24 + 20.5) * 3600e3).toISOString();
+      db.events.push({ id, title: 'Guerra das Sombras', description: '', starts_at: starts, team_format: null, team_count: 10, type_id: GDS });
+      db.profiles.filter((p) => ACTIVE_ROLES.includes(p.role)).forEach((p) => {
+        db.attendance.push({ event_id: id, user_id: p.id, present: p.id === 'u0' || rnd() < reliability[p.id] + 0.25 });
+      });
+    });
+    // Nesta semana: uma Guerra já aconteceu (com presença registrada), se a semana já tiver começado há tempo suficiente
+    const thisWeek = Date.parse(raffleWeekStart(drawIso(0)));
+    const midWeek = thisWeek + (2 * 24 + 20.5) * 3600e3;
+    if (midWeek < Date.now() - 3600e3) {
+      db.events.push({ id: 33, title: 'Guerra das Sombras', description: '', starts_at: new Date(midWeek).toISOString(), team_format: null, team_count: 10, type_id: GDS });
+      db.profiles.filter((p) => ACTIVE_ROLES.includes(p.role)).forEach((p) => {
+        db.attendance.push({ event_id: 33, user_id: p.id, present: !['u3', 'u10'].includes(p.id) && rnd() < 0.9 });
+      });
+    }
+    db.raffles = [
+      { id: 600, draw_at: drawIso(2), prize_kind: 'bp_simple', prize_qty: 2, prize_text: null, winners_count: 2, status: 'drawn',
+        created_by: 'u1', created_at: drawIso(3), drawn_at: drawIso(2), eligible_count: 14 },
+      { id: 601, draw_at: drawIso(1), prize_kind: 'prodigy', prize_qty: 1, prize_text: null, winners_count: 1, status: 'open',
+        created_by: 'u0', created_at: drawIso(2), drawn_at: null, eligible_count: null },
+      { id: 602, draw_at: drawIso(0), prize_kind: 'bp_simple', prize_qty: 3, prize_text: null, winners_count: 3, status: 'open',
+        created_by: 'u1', created_at: new Date(Date.now() - 2 * 86400e3).toISOString(), drawn_at: null, eligible_count: null },
+    ];
+    db.rwinners = [{ raffle_id: 600, user_id: 'u4', position: 1 }, { raffle_id: 600, user_id: 'u9', position: 2 }];
+    db.rentries = [];
+    const enter = (raffleId, userId, removed) => db.rentries.push({ raffle_id: raffleId, user_id: userId, entered_at: new Date(Date.now() - 3 * 86400e3).toISOString(),
+      removed_at: removed ? new Date(Date.now() - 5 * 3600e3).toISOString() : null, removed_by: removed ? 'u1' : null, removed_reason: removed || null });
+    ['u0', 'u2', 'u3', 'u4', 'u5', 'u6', 'u8', 'u9', 'u11', 'u12', 'u14', 'u16'].forEach((u) => enter(601, u));
+    ['u2', 'u3', 'u4', 'u5', 'u6', 'u8', 'u9', 'u10', 'u11', 'u13', 'u15'].forEach((u) => enter(602, u));
+    enter(602, 'u7', 'Conta compartilhada com outro jogador; já combinamos no Discord.');
+    // Mesmas regras do banco (raffle_wars / raffle_check)
+    const raffleWarsDemo = (r) => {
+      const from = Date.parse(raffleWeekStart(r.draw_at)); const to = Date.parse(r.draw_at);
+      return db.events.filter((e) => e.type_id === GDS && Date.parse(e.starts_at) >= from && Date.parse(e.starts_at) < to)
+        .sort((a, b) => Date.parse(a.starts_at) - Date.parse(b.starts_at))
+        .map((e) => ({ event_id: e.id, title: e.title, starts_at: e.starts_at, registered: db.attendance.some((a) => a.event_id === e.id) }));
+    };
+    const raffleChecksDemo = (r) => {
+      const wars = raffleWarsDemo(r);
+      return db.rentries.filter((e) => e.raffle_id === r.id && !e.removed_at).map((e) => {
+        const present = wars.filter((w) => db.attendance.some((a) => a.event_id === w.event_id && a.user_id === e.user_id && a.present)).length;
+        return { user_id: e.user_id, wars_total: wars.length, wars_present: present,
+          eligible: wars.length > 0 && present === wars.length && ACTIVE_ROLES.includes(profile(e.user_id)?.role) };
+      });
+    };
+    const raffleRow = (id) => db.raffles.find((r) => r.id === id);
+    const raffleStaffDemo = () => { if (!isOfficer()) throw new Error('Só a staff (líder e oficiais) pode fazer isso'); };
+    const raffleOpenDemo = (r, msg) => { if (!r || r.status !== 'open' || Date.parse(r.draw_at) <= Date.now()) throw new Error(msg); };
 
     // Posso agir por esta conta? (a minha, ou sou piloto aprovado dela) — igual à regra do banco
     const canActAsDemo = (acct) => acct === state.user?.id
@@ -866,6 +975,79 @@
           db.attendance.push({ event_id: eventId, user_id: r.user_id, present: r.present });
         });
       },
+      // ----- Sorteio (mesmas regras do banco) -----
+      async raffles() {
+        return db.raffles.slice().sort((a, b) => Date.parse(b.draw_at) - Date.parse(a.draw_at)).map((r) => ({
+          ...r,
+          entries: db.rentries.filter((e) => e.raffle_id === r.id && (isOfficer() || e.user_id === state.user.id))
+            .map((e) => pick(e, ['raffle_id', 'user_id', 'entered_at', 'removed_at'])),
+          winners: db.rwinners.filter((w) => w.raffle_id === r.id).map((w) => ({ ...w })),
+        }));
+      },
+      async runRaffleDraws() {
+        db.raffles.filter((r) => r.status === 'open' && Date.parse(r.draw_at) <= Date.now()).forEach((r) => {
+          const pool = raffleChecksDemo(r).filter((c) => c.eligible).map((c) => c.user_id);
+          for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [pool[i], pool[j]] = [pool[j], pool[i]]; }
+          pool.slice(0, r.winners_count).forEach((u, i) => db.rwinners.push({ raffle_id: r.id, user_id: u, position: i + 1 }));
+          Object.assign(r, { status: 'drawn', drawn_at: new Date().toISOString(), eligible_count: pool.length });
+        });
+      },
+      async raffleStaff(id) {
+        raffleStaffDemo();
+        const r = raffleRow(id);
+        return r ? { wars: raffleWarsDemo(r), checks: raffleChecksDemo(r) } : { wars: [], checks: [] };
+      },
+      async raffleRemovals() {
+        if (!isOfficer()) return [];
+        return db.rentries.filter((e) => e.removed_at).sort((a, b) => Date.parse(b.removed_at) - Date.parse(a.removed_at))
+          .map((e) => pick(e, ['raffle_id', 'user_id', 'removed_at', 'removed_by', 'removed_reason']));
+      },
+      async createRaffle(row) {
+        raffleStaffDemo();
+        const c = cleanRaffleRow(row);
+        if (Date.parse(c.draw_at) <= Date.now()) throw new Error('Escolha um domingo que ainda não passou');
+        if (db.raffles.some((r) => Date.parse(r.draw_at) === Date.parse(c.draw_at))) throw new Error('Já existe um sorteio neste domingo');
+        const r = { id: db.nextId++, ...c, status: 'open', created_by: state.user.id, created_at: new Date().toISOString(), drawn_at: null, eligible_count: null };
+        db.raffles.push(r);
+        return r.id;
+      },
+      async updateRaffle(id, row) {
+        raffleStaffDemo();
+        const r = raffleRow(id);
+        raffleOpenDemo(r, 'O horário deste sorteio já passou');
+        const c = cleanRaffleRow(row);
+        if (Date.parse(c.draw_at) <= Date.now()) throw new Error('Escolha um domingo que ainda não passou');
+        if (db.raffles.some((x) => x.id !== id && Date.parse(x.draw_at) === Date.parse(c.draw_at))) throw new Error('Já existe um sorteio neste domingo');
+        Object.assign(r, c);
+      },
+      async deleteRaffle(id) {
+        raffleStaffDemo();
+        const r = raffleRow(id);
+        if (!r) return;
+        raffleOpenDemo(r, 'Um sorteio já realizado não pode ser cancelado');
+        db.raffles = db.raffles.filter((x) => x.id !== id);
+        db.rentries = db.rentries.filter((e) => e.raffle_id !== id);
+      },
+      async joinRaffle(id) {
+        const r = raffleRow(id);
+        raffleOpenDemo(r, 'As inscrições deste sorteio já fecharam');
+        const e = db.rentries.find((x) => x.raffle_id === id && x.user_id === state.user.id);
+        if (e?.removed_at) throw new Error('Sua inscrição foi removida pela staff. Entre em contato com a staff.');
+        if (!e) db.rentries.push({ raffle_id: id, user_id: state.user.id, entered_at: new Date().toISOString(), removed_at: null, removed_by: null, removed_reason: null });
+      },
+      async leaveRaffle(id) {
+        raffleOpenDemo(raffleRow(id), 'As inscrições deste sorteio já fecharam');
+        db.rentries = db.rentries.filter((e) => !(e.raffle_id === id && e.user_id === state.user.id && !e.removed_at));
+      },
+      async removeRaffleEntry(id, userId, reason) {
+        raffleStaffDemo();
+        const why = String(reason || '').trim();
+        if (why.length < 5) throw new Error('Escreva o motivo da remoção (pelo menos 5 letras)');
+        raffleOpenDemo(raffleRow(id), 'O horário deste sorteio já passou');
+        const e = db.rentries.find((x) => x.raffle_id === id && x.user_id === userId && !x.removed_at);
+        if (!e) throw new Error('Esta inscrição não existe mais');
+        Object.assign(e, { removed_at: new Date().toISOString(), removed_by: state.user.id, removed_reason: why.slice(0, 300) });
+      },
     };
   }
 
@@ -911,6 +1093,10 @@
       { key: 'ticket_reply', label: 'Responder tickets', desc: 'Responder, escrever notas internas e assumir tickets' },
       { key: 'ticket_resolve', label: 'Resolver tickets', desc: 'Mudar o status (Em andamento, Resolvido ou reabrir)' },
       { key: 'ticket_reports', label: 'Ver denúncias', desc: 'Se bloqueado, os tickets de Reclamação / Denúncia ficam só com o líder' },
+    ] }] : []),
+    ...(RAFFLE_ON ? [{ group: 'Sorteio', items: [
+      { key: 'raffle_manage', label: 'Criar, editar e cancelar sorteios', desc: 'Escolher o domingo e o prêmio' },
+      { key: 'raffle_remove', label: 'Remover inscrições do sorteio', desc: 'Sempre com o motivo por escrito' },
     ] }] : []),
   ];
   const PERM_BY_KEY = Object.fromEntries(PERMS.flatMap((g) => g.items).map((p) => [p.key, p]));
@@ -963,6 +1149,11 @@
     postTicketMessage: (raw, id) => ticketGate(raw, id, 'ticket_reply'),
     assignTicket: (raw, id) => ticketGate(raw, id, 'ticket_reply'),
     setTicketStatus: (raw, id) => ticketGate(raw, id, 'ticket_resolve'),
+    // Sorteio: só Permitido ou Bloqueado (sem fila de aprovação)
+    createRaffle: () => ['raffle_manage', ''],
+    updateRaffle: () => ['raffle_manage', ''],
+    deleteRaffle: () => ['raffle_manage', ''],
+    removeRaffleEntry: () => ['raffle_remove', ''],
   };
   async function ticketGate(raw, id, key) {
     const t = await raw.ticket(id);
@@ -1250,6 +1441,7 @@
     if (isMember()) {
       const links = [['#/', 'Próximos', 'upcoming'], ['#/passados', 'Passados', 'past'], ['#/news', 'Malah News', 'news']];
       if (RECRUIT_ON) links.push(['#/recrutamentos', 'Recrutamentos', 'recruits']);
+      if (RAFFLE_ON) links.push(['#/sorteio', 'Sorteio', 'raffle']);
       if (isOfficer()) links.push(['#/membros', 'Membros', 'members']);
       if (can('freq_view')) links.push(['#/frequencia', 'Frequência', 'freq']);
       links.push(['#/perfil', 'Meu perfil', 'profile'], ['#/utils', 'Utils', 'utils']);
@@ -3276,6 +3468,344 @@
     });
   }
 
+  // =====================================================================
+  //  Sorteio: todo domingo às 22h (Brasília) o banco sorteia entre os
+  //  inscritos com presença registrada em todas as Guerras das Sombras da semana.
+  //  Membros: inscrever/retirar e ver o resultado. Staff: painel e remoções.
+  // =====================================================================
+  state.raffles = [];
+  state.raffleRemovals = [];
+  state.raffleError = false;
+  async function loadRaffles() {
+    if (!RAFFLE_ON || !isMember()) { state.raffles = []; state.raffleRemovals = []; return; }
+    try {
+      let list = await api.raffles();
+      // Chegou a hora de algum sorteio? O banco sorteia (uma única vez) e a lista é recarregada
+      if (list.some((r) => r.status === 'open' && Date.parse(r.draw_at) <= Date.now())) {
+        try { await api.runRaffleDraws(); list = await api.raffles(); } catch (e) { console.warn('sorteio: sortear', e); }
+      }
+      state.raffles = list;
+      state.raffleRemovals = isOfficer() ? await api.raffleRemovals().catch(() => []) : [];
+      state.raffleError = false;
+    } catch (e) {
+      console.warn('sorteio', e);
+      state.raffles = []; state.raffleRemovals = []; state.raffleError = true;
+    }
+  }
+  const brt = (iso, o) => new Intl.DateTimeFormat('pt-BR', { timeZone: RAFFLE_TZ, ...o }).format(new Date(iso));
+  const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+  const fmtDraw = (iso) => cap(`${brt(iso, { weekday: 'long' })}, ${brt(iso, { day: '2-digit', month: '2-digit' })} às ${brt(iso, { hour: '2-digit', hour12: false })}h (Brasília)`);
+  const fmtDrawShort = (iso) => `dom ${brt(iso, { day: '2-digit', month: '2-digit' })}`;
+  function prizeText(r) {
+    if (r.prize_kind === 'bp_simple') return `${r.prize_qty} ${r.prize_qty > 1 ? PRIZE.bp_simple.many : PRIZE.bp_simple.label}`;
+    if (r.prize_kind === 'other') return `${r.prize_qty ? `${r.prize_qty}× ` : ''}${r.prize_text || ''}`;
+    return PRIZE[r.prize_kind]?.label || 'Prêmio';
+  }
+  // O que cada ganhador leva (um item por ganhador)
+  function prizeEach(r) {
+    if (r.prize_kind === 'bp_simple') return `1 ${PRIZE.bp_simple.label}`;
+    if (r.prize_kind === 'other') return r.prize_qty > 1 ? `1× ${r.prize_text}` : r.prize_text || '';
+    return PRIZE[r.prize_kind]?.label || 'Prêmio';
+  }
+  const prizeIcon = (r) => PRIZE[r.prize_kind]?.icon || '🎁';
+  const winnersNote = (n) => (n > 1 ? `${n} ganhadores, 1 item para cada` : '1 ganhador');
+  function untilText(iso) {
+    const ms = Date.parse(iso) - Date.now();
+    if (ms <= 0) return 'sorteando agora…';
+    const d = Math.floor(ms / 864e5); const h = Math.floor((ms % 864e5) / 36e5); const m = Math.floor((ms % 36e5) / 6e4);
+    if (d) return `faltam ${d} dia${d > 1 ? 's' : ''}${h ? ` e ${h}h` : ''}`;
+    if (h) return `faltam ${h}h${m ? ` ${m}min` : ''}`;
+    return `faltam ${Math.max(1, m)} min`;
+  }
+  const sortedWinners = (r) => [...(r.winners || [])].sort((a, b) => a.position - b.position);
+  // Troféu dourado
+  const trophy = (cls = '') => `<svg class="trophy ${cls}" viewBox="0 0 64 64" aria-hidden="true">
+      <defs><linearGradient id="trophy-gold" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff0b8"/><stop offset=".45" stop-color="#e9b949"/><stop offset="1" stop-color="#9c6a17"/></linearGradient></defs>
+      <path fill="url(#trophy-gold)" fill-rule="evenodd" d="M18 6H46V12H56V18C56 26 50 32 43 33C41 38 38 41 34 42V48H42V54H22V48H30V42C26 41 23 38 21 33C14 32 8 26 8 18V12H18ZM14 18C14 22 17 26 20 27C19 24 18 21 18 18ZM46 18C46 21 45 24 44 27C47 26 50 22 50 18Z"/>
+      <rect x="18" y="56" width="28" height="4" rx="1.5" fill="url(#trophy-gold)"/></svg>`;
+
+  // Notificações do sininho (o que mudou desde a última visita à página do sorteio)
+  const raffleSeenKey = () => `raffle-seen-${state.user?.id}`;
+  const raffleSeen = () => { try { return Date.parse(localStorage.getItem(raffleSeenKey()) || '') || 0; } catch { return 0; } };
+  const markRaffleSeen = () => { try { localStorage.setItem(raffleSeenKey(), new Date().toISOString()); } catch { /* ignora */ } };
+  function raffleBell(mine, lead) {
+    if (!RAFFLE_ON) return;
+    const me = state.user.id;
+    const since = Math.max(raffleSeen(), Date.now() - 14 * 86400e3);
+    const fresh = (iso) => !!iso && Date.parse(iso) > since;
+    state.raffles.forEach((r) => {
+      const my = (r.entries || []).find((e) => e.user_id === me);
+      if (r.status === 'drawn' && fresh(r.drawn_at) && (r.winners || []).some((w) => w.user_id === me)) {
+        mine.push({ icon: '🏆', text: '<b>Você ganhou o sorteio!</b>', sub: 'Entre em contato com a staff para retirar seu prêmio', href: '#/sorteio' });
+      }
+      if (my?.removed_at && fresh(my.removed_at)) {
+        mine.push({ icon: '⚠️', text: 'Você foi <b>removido do sorteio</b>', sub: `Sorteio de ${esc(fmtDrawShort(r.draw_at))} · entre em contato com a staff`, href: '#/sorteio' });
+      }
+      if (r.status === 'open' && Date.parse(r.draw_at) > Date.now() && !my && fresh(r.created_at)) {
+        mine.push({ icon: '🎟️', text: `Sorteio aberto: <b>${esc(prizeText(r))}</b>`, sub: `${esc(fmtDrawShort(r.draw_at))} às 22h · inscreva-se`, href: '#/sorteio' });
+      }
+    });
+    // Para a staff: remoções feitas pelos outros (quem removeu não recebe o próprio alerta)
+    if (isOfficer()) {
+      state.raffleRemovals.filter((x) => x.removed_by !== me && x.user_id !== me && fresh(x.removed_at)).forEach((x) => {
+        lead.push({ icon: '🎟️', text: `<b>${esc(nameOf(x.user_id))}</b> foi removido do sorteio`, sub: `Por ${esc(nameOf(x.removed_by))}: “${esc(x.removed_reason || '')}”`, href: '#/sorteio' });
+      });
+    }
+  }
+
+  let raffleTimer = null;
+  const RAFFLE_RESULT_DAYS = 6; // por quantos dias o resultado fica em destaque no topo
+  async function viewRaffle() {
+    renderHeader('raffle');
+    clearTimeout(raffleTimer);
+    const me = state.user.id;
+    const staff = isOfficer();
+    const now = Date.now();
+    const byDate = (a, b) => Date.parse(a.draw_at) - Date.parse(b.draw_at);
+    const open = state.raffles.filter((r) => r.status === 'open').sort(byDate);
+    const drawn = state.raffles.filter((r) => r.status === 'drawn').sort((a, b) => byDate(b, a));
+    const latest = drawn[0];
+    const showResult = !!latest && now - Date.parse(latest.draw_at) < RAFFLE_RESULT_DAYS * 86400e3;
+    const history = drawn.flatMap((r) => sortedWinners(r).map((w) => ({ ...w, raffle: r }))).slice(0, 3);
+    const staffData = {};
+    if (staff && open.length) {
+      const rows = await Promise.all(open.map((r) => api.raffleStaff(r.id).catch((e) => { console.warn('sorteio: painel', e); return null; })));
+      open.forEach((r, i) => { staffData[r.id] = rows[i]; });
+    }
+
+    const resultCard = (r) => `<div class="card raffle-result">
+        <h2>🏆 Resultado do sorteio</h2>
+        <div class="muted small">${esc(fmtDraw(r.draw_at))} · Prêmio: <b>${esc(prizeText(r))}</b>${r.winners_count > 1 ? ' (1 item para cada ganhador)' : ''}</div>
+        ${r.winners?.length ? `<ul class="raffle-winners">${sortedWinners(r).map((w) => `<li class="raffle-winner${w.user_id === me ? ' me' : ''}">
+            ${trophy()}
+            <div><div class="raffle-winner-name">${esc(nameOf(w.user_id))}${w.user_id === me ? ' <span class="badge gold">Você</span>' : ''}</div>
+              <div class="raffle-congrats">Parabéns, entre em contato com a staff para retirar seu prêmio!</div></div>
+          </li>`).join('')}</ul>`
+          : '<p class="muted" style="margin:12px 0 0">Nenhum inscrito estava elegível neste sorteio.</p>'}
+      </div>`;
+
+    const openCard = (r) => {
+      const my = (r.entries || []).find((e) => e.user_id === me);
+      const closed = Date.parse(r.draw_at) <= now;
+      let note = ''; let btn = '';
+      if (closed) note = '<p class="small rc-note">⏳ Sorteando… o resultado aparece em instantes.</p>';
+      else if (my?.removed_at) note = '<p class="small rc-note bad">⚠️ Sua inscrição foi removida pela staff. Entre em contato com a staff.</p>';
+      else if (my) {
+        note = '<p class="small rc-note ok">✔ Você está inscrito neste sorteio.</p>';
+        btn = `<button class="btn ghost" data-rf-leave="${r.id}">Retirar inscrição</button>`;
+      } else btn = `<button class="btn primary" data-rf-join="${r.id}">🎟️ Quero participar</button>`;
+      return `<div class="card raffle-card">
+        <div class="raffle-prize"><span class="raffle-ic" aria-hidden="true">${prizeIcon(r)}</span>
+          <div><div class="muted small">Prêmio</div><div class="raffle-prize-name">${esc(prizeText(r))}</div><div class="muted small">${winnersNote(r.winners_count)}</div></div></div>
+        <div class="raffle-when">📅 ${esc(fmtDraw(r.draw_at))}${closed ? '' : ` · <span class="muted">${esc(untilText(r.draw_at))}</span>`}</div>
+        ${note}${btn ? `<div class="row raffle-actions">${btn}</div>` : ''}
+      </div>`;
+    };
+
+    const historyHtml = history.length
+      ? `<div class="section-head"><h2>Últimos sorteados</h2></div>
+        <div class="card raffle-history">${history.map((h) => `<div class="raffle-hist-row">${trophy('sm')}
+          <div><b>${esc(nameOf(h.user_id))}</b><div class="muted small">${esc(prizeEach(h.raffle))} · ${esc(fmtDrawShort(h.raffle.draw_at))}</div></div></div>`).join('')}</div>`
+      : `<div class="raffle-history-empty"><button class="btn ghost" id="rf-history" aria-expanded="false">🏆 Conferir últimos sorteios</button>
+          <p class="muted small" id="rf-history-msg" hidden>Ainda não houve nenhum sorteado. O primeiro resultado aparece aqui depois do próximo sorteio.</p></div>`;
+
+    main.innerHTML = `
+      <div class="page-head"><h1>Sorteio</h1>${staff && can('raffle_manage') ? '<button class="btn primary" id="btn-new-rf">+ Novo sorteio</button>' : ''}</div>
+      <p class="muted small">Todo <b>domingo às 22h (horário de Brasília)</b> o site sorteia um membro inscrito e elegível para cada item do prêmio.
+        Para concorrer, inscreva-se e tenha <b>presença registrada nas duas Guerras das Sombras da semana</b>.</p>
+      ${staff && state.raffleError ? '<div class="card attend-sum warn">O sorteio ainda não está ativo no banco. Rode no Supabase o arquivo <code>supabase/sorteio.sql</code> e recarregue a página.</div>' : ''}
+      ${showResult ? resultCard(latest) : ''}
+      ${open.length ? `<div class="section-head"><h2>${open.length > 1 ? 'Próximos sorteios' : 'Próximo sorteio'}</h2></div>${open.map(openCard).join('')}`
+        : '<div class="card empty">Nenhum sorteio agendado no momento. A staff avisa quando houver um novo.</div>'}
+      ${historyHtml}
+      ${staff ? raffleStaffPanel(open, drawn, staffData) : ''}`;
+
+    markRaffleSeen();
+    renderBell();
+
+    const run = async (fn, msg) => { try { await fn(); if (msg) toast(msg); } catch (e) { fail(e); } await route(); };
+    main.querySelectorAll('[data-rf-join]').forEach((b) => b.addEventListener('click', () =>
+      run(() => api.joinRaffle(Number(b.dataset.rfJoin)), 'Inscrição feita! Esteja presente nas duas Guerras das Sombras da semana para concorrer.')));
+    main.querySelectorAll('[data-rf-leave]').forEach((b) => b.addEventListener('click', async () => {
+      if (!(await confirmDialog('Retirar sua inscrição deste sorteio? Você pode se inscrever de novo até o horário do sorteio.', 'Retirar'))) return;
+      run(() => api.leaveRaffle(Number(b.dataset.rfLeave)), 'Inscrição retirada');
+    }));
+    $('#rf-history')?.addEventListener('click', (e) => {
+      const msg = $('#rf-history-msg');
+      msg.hidden = !msg.hidden;
+      e.currentTarget.setAttribute('aria-expanded', String(!msg.hidden));
+    });
+    $('#btn-new-rf')?.addEventListener('click', () => openRaffleForm());
+    main.querySelectorAll('[data-rf-edit]').forEach((b) => b.addEventListener('click', () => openRaffleForm(state.raffles.find((r) => r.id === Number(b.dataset.rfEdit)))));
+    main.querySelectorAll('[data-rf-delete]').forEach((b) => b.addEventListener('click', async () => {
+      const r = state.raffles.find((x) => x.id === Number(b.dataset.rfDelete));
+      if (!r || !(await confirmDialog(`Cancelar o sorteio de ${fmtDraw(r.draw_at)} (${prizeText(r)})? As inscrições dele são apagadas.`, 'Cancelar sorteio'))) return;
+      run(() => api.deleteRaffle(r.id), 'Sorteio cancelado');
+    }));
+    main.querySelectorAll('[data-rf-remove]').forEach((b) => b.addEventListener('click', () =>
+      openRaffleRemove(state.raffles.find((r) => r.id === Number(b.dataset.rfRemove)), b.dataset.user)));
+
+    // Quem está na página no horário do sorteio vê o resultado sem recarregar
+    const next = open.find((r) => Date.parse(r.draw_at) > now);
+    const wait = next ? Date.parse(next.draw_at) - now : 0;
+    if (next && wait < 2 * 86400e3) raffleTimer = setTimeout(() => { if (currentRouteKey() === 'raffle') route(); }, wait + 2500);
+  }
+
+  // Painel da staff: inscritos, elegibilidade, remoções e sorteios anteriores
+  function raffleStaffPanel(open, drawn, staffData) {
+    const canManage = can('raffle_manage');
+    const canRemove = can('raffle_remove');
+    const card = (r) => {
+      const d = staffData[r.id];
+      const wars = d?.wars || [];
+      const checks = [...(d?.checks || [])].sort((a, b) => (b.eligible - a.eligible) || norm(nameOf(a.user_id)).localeCompare(norm(nameOf(b.user_id))));
+      const removed = state.raffleRemovals.filter((x) => x.raffle_id === r.id);
+      const unreg = wars.filter((w) => !w.registered).length;
+      const closed = Date.parse(r.draw_at) <= Date.now();
+      const nElig = checks.filter((c) => c.eligible).length;
+      const situation = (c) => {
+        if (c.eligible) return '<span class="rf-st ok">✔ Elegível</span>';
+        if (!ACTIVE_ROLES.includes(memberById(c.user_id)?.role)) return '<span class="rf-st bad">✖ Fora do clã</span>';
+        if (!c.wars_total) return '<span class="rf-st bad">✖ Sem Guerras na semana</span>';
+        const missing = c.wars_total - c.wars_present;
+        // Faltas que ainda podem virar presença (Guerras sem presença registrada) = aguardando
+        return missing > unreg
+          ? `<span class="rf-st bad">✖ Faltou em ${plural(missing - unreg, 'Guerra', 'Guerras')}</span>`
+          : '<span class="rf-st wait">⏳ Aguardando registro de presença</span>';
+      };
+      const warn = !d ? 'Não foi possível carregar a situação dos inscritos.'
+        : !wars.length ? 'Nenhuma Guerra das Sombras cadastrada nesta semana: ninguém fica elegível.'
+        : wars.length !== 2 ? `Esta semana tem ${plural(wars.length, 'Guerra das Sombras cadastrada', 'Guerras das Sombras cadastradas')}; para ser elegível, o membro precisa estar presente em todas.`
+        : unreg ? 'Registre a presença das Guerras antes do horário do sorteio: sem presença registrada, o membro não concorre.' : '';
+      return `<div class="card raffle-staff">
+        <div class="row">
+          <span class="raffle-ic sm" aria-hidden="true">${prizeIcon(r)}</span>
+          <div class="spacer"><b>${esc(prizeText(r))}</b><div class="muted small">${esc(fmtDraw(r.draw_at))} · ${winnersNote(r.winners_count)}</div></div>
+          ${canManage && !closed ? `<button class="btn small ghost" data-rf-edit="${r.id}">Editar</button><button class="btn small ghost danger" data-rf-delete="${r.id}">Cancelar sorteio</button>` : ''}
+        </div>
+        <div class="rf-wars"><span class="muted small">Guerras das Sombras da semana:</span>
+          ${wars.length ? wars.map((w) => `<span class="rf-war ${w.registered ? 'ok' : 'wait'}">⚔️ ${esc(fmtShortWeekday(w.starts_at))} ${esc(fmtShortDate(w.starts_at))} · ${w.registered ? 'presença registrada' : 'presença não registrada'}</span>`).join('') : '<span class="muted small">nenhuma</span>'}
+        </div>
+        ${warn ? `<p class="small rc-note">${warn}</p>` : ''}
+        <div class="muted small rf-counts"><b>${checks.length}</b> inscrito${checks.length === 1 ? '' : 's'} · <b>${nElig}</b> elegíve${nElig === 1 ? 'l' : 'is'} · <b>${removed.length}</b> removido${removed.length === 1 ? '' : 's'}</div>
+        <div class="rf-list">${checks.length ? checks.map((c) => {
+          const p = memberById(c.user_id);
+          return `<div class="rf-row">
+            <span class="rf-who">${avatar(p)}<b>${esc(nameOf(c.user_id))}</b></span>
+            <span class="rf-count muted small" title="Presenças nas Guerras das Sombras da semana">${c.wars_present}/${c.wars_total} Guerras</span>
+            ${situation(c)}
+            ${canRemove && !closed ? `<button class="btn small ghost danger" data-rf-remove="${r.id}" data-user="${esc(c.user_id)}">Remover</button>` : '<span></span>'}
+          </div>`;
+        }).join('') : '<p class="muted small" style="margin:0">Ninguém se inscreveu ainda.</p>'}</div>
+        ${removed.length ? `<h3 class="rf-sub">Removidos</h3><div class="rf-list">${removed.map((x) => `<div class="rf-removed">
+            <b>${esc(nameOf(x.user_id))}</b> <span class="muted small">· por ${esc(nameOf(x.removed_by))} em ${esc(fmtWhen(x.removed_at))}</span>
+            <div class="small">“${esc(x.removed_reason || '')}”</div></div>`).join('')}</div>` : ''}
+      </div>`;
+    };
+    return `<div class="section-head"><h2>Painel da staff</h2></div>
+      <p class="muted small">Só a staff vê esta parte. Quem tiver a inscrição removida recebe um aviso para falar com a staff; os outros oficiais e o líder são avisados com o motivo.</p>
+      ${open.length ? open.map(card).join('') : '<div class="card empty">Nenhum sorteio aberto.</div>'}
+      ${drawn.length ? `<div class="section-head"><h2>Sorteios realizados</h2></div>
+        <div class="card rf-past">${drawn.slice(0, 10).map((r) => `<div class="rf-past-row">
+          <div><b>${esc(fmtDrawShort(r.draw_at))}</b> · ${esc(prizeText(r))}</div>
+          <div class="small">${r.winners?.length ? sortedWinners(r).map((w) => `🏆 ${esc(nameOf(w.user_id))}`).join(' · ') : '<span class="muted">Sem ganhadores</span>'}
+            <span class="muted">· ${plural(r.eligible_count || 0, 'elegível', 'elegíveis')}</span></div>
+        </div>`).join('')}</div>` : ''}`;
+  }
+
+  function openRaffleRemove(r, userId) {
+    if (!r) return;
+    openDialog(`<form id="rfr-form" class="stack">
+        <h2>Remover do sorteio</h2>
+        <p class="muted small" style="margin:0">Remover <b>${esc(nameOf(userId))}</b> do sorteio de ${esc(fmtDraw(r.draw_at))}.
+          O membro recebe um aviso para entrar em contato com a staff, e os outros oficiais e o líder são avisados com o motivo.</p>
+        <div class="field"><label for="rfr-reason">Motivo <span class="muted small">(obrigatório)</span></label>
+          <textarea id="rfr-reason" required minlength="5" maxlength="300" placeholder="Ex.: conta compartilhada com outro jogador"></textarea></div>
+        <div class="row end"><button type="button" class="btn ghost" data-close>Cancelar</button><button type="submit" class="btn danger">Remover</button></div>
+      </form>`, (d) => {
+      $('#rfr-form', d).addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const reason = $('#rfr-reason', d).value.trim();
+        if (reason.length < 5) { toast('Escreva o motivo da remoção (pelo menos 5 letras)', true); return; }
+        const submit = $('button[type=submit]', d);
+        submit.disabled = true;
+        try {
+          await api.removeRaffleEntry(r.id, userId, reason);
+          dlg.close();
+          toast('Inscrição removida. O membro e a staff foram avisados.');
+          await route();
+        } catch (err) { fail(err); submit.disabled = false; }
+      });
+    });
+  }
+
+  function openRaffleForm(r) {
+    const editing = !!r;
+    const used = new Set(state.raffles.filter((x) => x.id !== r?.id).map((x) => Date.parse(x.draw_at)));
+    const dates = nextDrawDates(8).filter((d) => !used.has(d.getTime()));
+    if (editing && !dates.some((d) => d.getTime() === Date.parse(r.draw_at))) dates.unshift(new Date(r.draw_at));
+    if (!dates.length) { toast('Os próximos 8 domingos já têm sorteio', true); return; }
+    const kind = r?.prize_kind || 'bp_simple';
+    const opt = (key, inner) => `<label class="rf-opt"><input type="radio" name="rf-kind" value="${key}" ${kind === key ? 'checked' : ''}> ${inner}</label>`;
+    openDialog(`<form id="rf-form" class="stack">
+        <h2>${editing ? 'Editar sorteio' : 'Novo sorteio'}</h2>
+        <div class="field"><label for="rf-when">Data do sorteio</label>
+          <select id="rf-when" required>${dates.map((d) => `<option value="${d.toISOString()}" ${editing && d.getTime() === Date.parse(r.draw_at) ? 'selected' : ''}>${esc(fmtDraw(d.toISOString()))}</option>`).join('')}</select>
+          <div class="muted small field-hint">O sorteio é sempre aos domingos às 22h (horário de Brasília).</div></div>
+        <fieldset class="rf-prizes"><legend>O que será sorteado</legend>
+          ${opt('bp_simple', `${PRIZE.bp_simple.icon} <select id="rf-qty-simple" class="inline" aria-label="Quantidade de passes">${[1, 2, 3, 4, 5].map((n) => `<option value="${n}" ${r?.prize_kind === 'bp_simple' && r.prize_qty === n ? 'selected' : ''}>${n}</option>`).join('')}</select> Passe(s) de Batalha Simples`)}
+          ${opt('bp_boosted', `${PRIZE.bp_boosted.icon} 1 Passe de Batalha Potencializado`)}
+          ${opt('prodigy', `${PRIZE.prodigy.icon} 1 Via do Prodígio`)}
+          ${opt('other', `${PRIZE.other.icon} Outros`)}
+          <div class="rf-other" ${kind === 'other' ? '' : 'hidden'}>
+            <div class="field"><label for="rf-text">O que será sorteado</label>
+              <input id="rf-text" maxlength="100" placeholder="Ex.: Pacote de Platinas" value="${esc(r?.prize_kind === 'other' ? r.prize_text || '' : '')}"></div>
+            <div class="field"><label for="rf-qty-other">Quantidade <span class="muted small">(opcional, de 1 a 10)</span></label>
+              <input id="rf-qty-other" type="number" min="1" max="10" inputmode="numeric" value="${r?.prize_kind === 'other' && r.prize_qty ? r.prize_qty : ''}"></div>
+          </div>
+        </fieldset>
+        <p class="small rc-note" id="rf-winners"></p>
+        <div class="row end"><button type="button" class="btn ghost" data-close>Cancelar</button>
+          <button type="submit" class="btn primary">${editing ? 'Salvar' : 'Criar sorteio'}</button></div>
+      </form>`, (d) => {
+      const read = () => {
+        const k = $('input[name=rf-kind]:checked', d)?.value;
+        return {
+          draw_at: $('#rf-when', d).value, prize_kind: k,
+          prize_qty: k === 'bp_simple' ? $('#rf-qty-simple', d).value : k === 'other' ? $('#rf-qty-other', d).value.trim() : 1,
+          prize_text: k === 'other' ? $('#rf-text', d).value : null,
+        };
+      };
+      const update = () => {
+        const k = $('input[name=rf-kind]:checked', d)?.value;
+        $('.rf-other', d).hidden = k !== 'other';
+        const note = $('#rf-winners', d);
+        try {
+          const c = cleanRaffleRow(read());
+          note.textContent = c.winners_count > 1
+            ? `Serão sorteados ${c.winners_count} ganhadores diferentes; cada um leva ${prizeEach(c)}.`
+            : `Será sorteado 1 ganhador, que leva ${prizeText(c)}.`;
+        } catch { note.textContent = k === 'other' ? 'Escreva o que será sorteado.' : ''; }
+      };
+      d.querySelectorAll('input, select').forEach((el) => { el.addEventListener('input', update); el.addEventListener('change', update); });
+      $('#rf-qty-simple', d).addEventListener('focus', () => { $('input[value=bp_simple]', d).checked = true; update(); });
+      update();
+      $('#rf-form', d).addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const submit = $('button[type=submit]', d);
+        submit.disabled = true;
+        try {
+          const row = read();
+          cleanRaffleRow(row);
+          if (editing) await api.updateRaffle(r.id, row); else await api.createRaffle(row);
+          dlg.close();
+          toast(editing ? 'Sorteio atualizado' : 'Sorteio criado! Os membros já podem se inscrever.');
+          await route();
+        } catch (err) { fail(err); submit.disabled = false; }
+      });
+    });
+  }
+
   // ---------- Painel individual do membro (menu "Meu perfil") ----------
 
   const P = { days: 90 };
@@ -4378,7 +4908,7 @@
       if (!state.user || !isMember()) return;
       try {
         await Promise.all([
-          loadBell(), loadRecruits(), loadTickets(), isOfficer() ? loadPerms() : null,
+          loadBell(), loadRecruits(), loadTickets(), loadRaffles(), isOfficer() ? loadPerms() : null,
           api.pilots().then((p) => { state.pilots = p; }).catch(() => {}),
           isOfficer() ? api.members().then((m) => { state.members = m; }).catch(() => {}) : null,
         ]);
@@ -4461,6 +4991,7 @@
         });
       }
     }
+    raffleBell(mine, lead);
     return { mine, lead };
   }
 
@@ -4501,6 +5032,7 @@
     const key = h === '/passados' ? 'past' : h === '/frequencia' ? 'freq' : h === '/news' ? 'news' : h === '/utils' ? 'utils'
       : h === '/config' ? 'config' : h === '/solicitacoes' ? 'requests'
       : RECRUIT_ON && h === '/recrutamentos' ? 'recruits' : rc ? 'recruits'
+      : RAFFLE_ON && h === '/sorteio' ? 'raffle'
       : TICKETS_ON && h === '/tickets' ? 'tickets' : TICKETS_ON && h === '/atendimento' ? 'support' : tk ? 'ticket'
       : h === '/perfil' ? 'profile' : h === '/membros' ? (isOfficer() ? 'members' : 'profile') : mp ? 'members'
       : tm ? 'teams' : ev ? 'event' : 'upcoming';
@@ -4511,7 +5043,7 @@
   async function route() {
     const { ev, tm, mp, rc, tk, key } = parseRoute();
     if (state.user && isOfficer()) await loadPerms();
-    if (state.user && isMember()) await Promise.all([loadRecruits(), loadTickets(), loadBell()]);
+    if (state.user && isMember()) await Promise.all([loadRecruits(), loadTickets(), loadRaffles(), loadBell()]);
     bellOpen = false;
     renderHeader(key);
     if (!state.user) return viewLogin();
@@ -4520,6 +5052,7 @@
       if (key === 'past') await viewEvents(true);
       else if (key === 'news') await viewNews();
       else if (key === 'utils') viewUtils();
+      else if (key === 'raffle') await viewRaffle();
       else if (key === 'config') await viewConfig();
       else if (key === 'requests') await viewRequests();
       else if (rc) await viewRecruit(Number(rc[1]));

@@ -887,3 +887,66 @@ body.has-fab main { padding-bottom: 90px; }
 .gear { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 50%; border: 1px solid var(--border); background: var(--panel); font-size: 1.1rem; text-decoration: none; }
 .gear:hover { background: var(--panel-2); border-color: #5a4236; }
 .gear.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+
+/* ---------- Sorteio ---------- */
+.rc-note.ok { background: var(--yes-bg); border-color: rgba(79, 176, 109, .35); color: #c9f0d2; }
+.trophy { width: 44px; height: 44px; flex: none; filter: drop-shadow(0 0 10px rgba(233, 185, 73, .45)); }
+.trophy.sm { width: 26px; height: 26px; filter: drop-shadow(0 0 5px rgba(233, 185, 73, .35)); }
+
+.raffle-result { border-color: #6b4a12; background: radial-gradient(circle at 50% 0, rgba(233, 185, 73, .14), transparent 70%), linear-gradient(180deg, var(--panel-2), var(--panel)); margin-bottom: 8px; }
+.raffle-result h2 { margin: 0 0 4px; font-family: "Cinzel", serif; color: var(--gold); }
+.raffle-winners { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 10px; }
+.raffle-winner { display: flex; align-items: center; gap: 14px; padding: 12px 14px; border-radius: 10px; background: rgba(233, 185, 73, .07); border: 1px solid rgba(233, 185, 73, .3); }
+.raffle-winner.me { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold), 0 0 24px rgba(233, 185, 73, .2); }
+.raffle-winner-name { font-family: "Cinzel", serif; font-weight: 900; font-size: 1.35rem; color: #ffe2a0; letter-spacing: .02em; overflow-wrap: anywhere; }
+.raffle-congrats { font-size: .92rem; color: var(--text); margin-top: 2px; }
+
+.raffle-card { display: grid; gap: 10px; margin-bottom: 12px; }
+.raffle-prize { display: flex; align-items: center; gap: 14px; }
+.raffle-ic { flex: none; width: 52px; height: 52px; display: grid; place-items: center; font-size: 1.7rem; border-radius: 12px; background: radial-gradient(circle at 50% 35%, rgba(233, 185, 73, .28), rgba(200, 50, 27, .08)); border: 1px solid var(--border); }
+.raffle-ic.sm { width: 40px; height: 40px; font-size: 1.25rem; }
+.raffle-prize-name { font-family: "Cinzel", serif; font-weight: 700; font-size: 1.2rem; color: var(--gold); }
+.raffle-when { font-weight: 600; }
+.raffle-card .rc-note { margin: 0; }
+.raffle-actions { margin-top: 2px; }
+
+.raffle-history { display: grid; gap: 10px; }
+.raffle-hist-row { display: flex; align-items: center; gap: 12px; }
+.raffle-history-empty { margin-top: 24px; }
+.raffle-history-empty p { margin: 10px 0 0; }
+
+.raffle-staff { display: grid; gap: 10px; margin-bottom: 12px; }
+.raffle-staff .rc-note { margin: 0; }
+.rf-wars { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.rf-war { font-size: .8rem; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--border); }
+.rf-war.ok { background: var(--yes-bg); border-color: rgba(79, 176, 109, .35); color: #c9f0d2; }
+.rf-war.wait { background: rgba(220, 170, 82, .1); border-color: rgba(220, 170, 82, .35); color: #ffe2a8; }
+.rf-list { display: grid; }
+.rf-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid rgba(255, 255, 255, .06); }
+.rf-who { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.rf-who b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rf-st { font-size: .8rem; font-weight: 600; padding: 3px 8px; border-radius: 999px; white-space: nowrap; }
+.rf-st.ok { background: var(--yes-bg); color: var(--yes); }
+.rf-st.bad { background: var(--no-bg); color: #ff9d95; }
+.rf-st.wait { background: rgba(220, 170, 82, .12); color: #ffd98a; }
+.rf-sub { margin: 6px 0 0; font-size: .95rem; color: var(--muted); }
+.rf-removed { padding: 8px 0; border-top: 1px solid rgba(255, 255, 255, .06); }
+.rf-removed .small { margin-top: 2px; color: #ffc9c0; }
+.rf-past { display: grid; }
+.rf-past-row { padding: 8px 0; border-top: 1px solid rgba(255, 255, 255, .06); }
+.rf-past-row:first-child { border-top: 0; padding-top: 0; }
+
+.rf-prizes { border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px 12px; margin: 0; display: grid; gap: 8px; }
+.rf-prizes legend { padding: 0 6px; font-weight: 600; }
+.rf-opt { display: flex; align-items: center; gap: 8px; cursor: pointer; flex-wrap: wrap; }
+.rf-opt input[type=radio] { width: 18px; height: 18px; padding: 0; margin: 0; flex: none; accent-color: var(--accent); }
+.rf-opt select.inline { width: auto; }
+.rf-other { padding-left: 26px; }
+
+@media (max-width: 560px) {
+  .rf-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .rf-row .rf-count { grid-column: 2; grid-row: 1; }
+  .rf-row .rf-st { grid-column: 1; }
+  .rf-row .btn, .rf-row > span:last-child { grid-column: 2; grid-row: 2; justify-self: end; }
+  .raffle-winner-name { font-size: 1.15rem; }
+}
