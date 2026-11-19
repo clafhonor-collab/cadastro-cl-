@@ -691,6 +691,10 @@ h1 { background: linear-gradient(180deg, #fff1da, #e3b878); -webkit-background-c
 .util-body b { font-family: "Cinzel", serif; font-size: 1.05rem; color: var(--gold); }
 .util-host { font-size: .78rem; color: var(--ember); margin-top: 4px; }
 
+/* ---------- Botões "← Voltar" (mesmo visual do "+ Novo evento") ---------- */
+.back-row { margin: 0 0 14px; }
+.back-btn, .back-btn:hover { text-decoration: none; }
+
 /* ---------- Botão "Detalhar evento" nos cards ---------- */
 .event .ev-foot { margin-top: 8px; }
 .event .ev-foot .btn { text-decoration: none; }

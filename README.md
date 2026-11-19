@@ -14,6 +14,10 @@ O nome e o lema aparecem no topo e na tela de login, e podem ser trocados no [`c
 - **Montagem de times** com quem confirmou presença: formato **Guerra** (12 times de 8: Exaltação, Eminência, Renome e Orgulho, de 1 a 3 cada) ou **Rito** (até 10 times de 8).
 - **Frequência**: depois do evento, um oficial marca quem realmente compareceu. O painel mostra a % de presença de cada membro, quem confirmou e faltou e quem não respondeu.
 - Em cada evento aparece quem vai, quem não vai e quem ainda não respondeu. Os botões "Copiar lista" e "Copiar times" geram textos prontos para colar no Discord.
+- **Recrutamentos**: membros procuram gente para um Grupo Guerreiro, um evento PvP ou outra atividade; os candidatos se inscrevem e quem criou escolhe quem entra.
+- **Central de Atendimento**: membros abrem tickets para a liderança (sugestões, dúvidas, problemas no site, denúncias), inclusive de forma anônima.
+- **Configurações do líder**: o líder define o que os oficiais podem fazer sozinhos, o que precisa da aprovação dele e o que fica bloqueado.
+- **Utils**: links úteis para o clã, como o Discord da aliança, builds, gemas e patch notes.
 
 O site fica no **GitHub Pages**, com o domínio próprio `forhonorcla.com.br`, e os dados ficam no **Supabase** (plano free). Só o domínio é pago; o resto é gratuito.
 
@@ -102,7 +106,14 @@ Mande o link https://forhonorcla.com.br no Discord do clã. Cada pessoa entra co
 | Aprovar, recusar ou remover membros comuns | | ✔ | ✔ |
 | Remover oficiais e readmitir ex-membros | | | ✔ |
 | Promover a oficial ou líder | | | ✔ |
+| Criar recrutamentos e se candidatar | ✔ | ✔ | ✔ |
+| Aprovar recrutamentos (menos os próprios, no caso do oficial) | | ✔ | ✔ |
+| Abrir tickets, inclusive anônimos | ✔ | ✔ | ✔ |
+| Responder, assumir e resolver tickets de outros membros | | ✔ | ✔ |
+| Ver quem abriu um ticket anônimo | | | ✔ |
+| Definir as permissões dos oficiais e aprovar as solicitações deles | | | ✔ |
 
+As funções marcadas para oficiais podem ser restringidas pelo líder em **⚙️ Configurações** (veja abaixo).
 As regras ficam no próprio banco (Row Level Security), então ninguém consegue burlar alterando o site.
 
 ## Como usar no dia a dia
@@ -202,8 +213,42 @@ Os membros veem o tipo novo na próxima vez que abrirem o site.
 **Frequência** (menu do topo, só oficiais e líder): mostra a % de presença de cada membro no período escolhido, quantas vezes confirmou e faltou, quantas vezes não respondeu e uma linha com os últimos eventos.
 Só contam eventos com presença registrada e posteriores à entrada do membro. Clique no título de uma coluna para ordenar.
 
+**📣 Recrutamentos** (menu do topo, para todos): para montar um Grupo Guerreiro, um time PvP ou outra atividade.
+1. Clique em **+ Novo recrutamento** e preencha o título, a categoria (**Evento PvP**, **Grupo Guerreiro** ou **Outro**), o número de vagas, a descrição e, se quiser, a data da atividade, o prazo de inscrição e as classes procuradas (ex.: 2 Cruzados e 1 Monge).
+2. O recrutamento fica em **Aguardando aprovação** e só aparece para os outros depois que um oficial ou o líder aprovar. Oficiais não aprovam o próprio recrutamento; o do líder é publicado direto.
+   Se for recusado, quem criou vê o motivo, pode corrigir e enviar de novo, ou apagar.
+3. Os membros clicam em **🙋 Quero participar**. Para se candidatar, é preciso ter classe e atributos preenchidos no perfil, porque é isso que quem criou vê.
+4. Quem criou **aceita** ou **recusa** cada candidato. Quem tem uma das classes procuradas aparece com ★. O contador mostra os aceitos por classe (ex.: 1/2 CRU).
+5. Quando as vagas enchem, o selo **Completo** aparece. Outras pessoas ainda podem se candidatar, caso alguém saia.
+6. Quem criou pode **Encerrar** (ninguém mais se candidata) e **Reabrir** depois. O prazo de inscrição é só informativo.
+
+O filtro no topo separa por categoria. O menu mostra um contador com os recrutamentos para aprovar e os candidatos novos nos seus recrutamentos.
+
+**🎫 Central de Atendimento** (botão 💬 no canto da tela): o canal entre os membros e a liderança.
+- **Membros:** clicam em **+ Novo ticket** e escolhem o assunto, a categoria (Sugestão, Melhorias, Reclamação / Denúncia, Dúvida, Problema no site ou Outros) e a mensagem. Dá para anexar até 3 imagens por mensagem.
+- **🕶️ Anônimo:** marcando **Enviar anonimamente**, o nome fica oculto para oficiais e líder. Em casos graves, o líder pode clicar em **Revelar autor**: só ele vê o nome, e nada fica registrado no ticket.
+- A conversa continua no próprio ticket. O membro vê o selo **Resposta nova** e pode marcar o ticket como resolvido. Se escrever num ticket resolvido, ele é reaberto.
+- **Líder e oficiais:** veem todos os tickets, com os filtros **Em aberto**, **Não iniciado**, **Pendente comigo**, **Pendente autor**, **Abertos por mim**, **Resolvidos** e **Todos**, além do filtro por categoria.
+  Podem **🙋 Assumir** um ticket (ele passa para **Em atendimento**), responder, mudar o status e escrever **🔒 notas internas**, que o membro não vê.
+
+**⚙️ Configurações do líder** (engrenagem no topo, só o líder): para cada função dos oficiais, o líder escolhe:
+- **Permitido:** o oficial faz direto (é o padrão).
+- **Precisa de aprovação:** a ação do oficial vira uma solicitação e só acontece depois que o líder aprovar. Disponível para criar, editar e apagar eventos; aprovar e remover membros; publicar e apagar edições do Malah News; e aprovar, encerrar, editar e apagar recrutamentos de outros membros.
+- **Bloqueado:** a opção some para os oficiais e o banco recusa a ação.
+
+Os oficiais acompanham os pedidos deles em **Solicitações** (menu do topo), que também lista as regras definidas pelo líder. O botão **Restaurar padrão** volta tudo para "Permitido".
+Nos tickets, o líder também pode impedir que os oficiais vejam, respondam ou resolvam tickets, ou deixar as **denúncias** só com ele.
+
+**🔔 Pendências** (sino no topo): reúne o que precisa da sua atenção.
+- **Para você:** eventos sem resposta, respostas novas nos seus tickets, candidatos nos seus recrutamentos, pedidos de piloto e edição nova do Malah News.
+- **Liderança:** membros aguardando aprovação, tickets não iniciados ou pendentes com você e solicitações dos oficiais, conforme as permissões de cada um.
+
+**🧰 Utils** (menu do topo, para todos): links úteis que abrem em uma nova aba. O primeiro é o **Discord da Aliança** (https://discord.gg/YncQxQ4bzB), seguido de builds, gemas, ranking PvP, Reddit, patch notes, fórum oficial, calculadora de gemas e o Discord oficial do jogo.
+Para adicionar, trocar ou remover um link, edite a lista `UTIL_LINKS` no [`app.js`](app.js): cada item tem um ícone, um título, uma descrição e o endereço.
+
 ## Dicas
 - **Atualizando o site:** se você já tinha executado uma versão anterior do `schema.sql`, rode o arquivo inteiro de novo no SQL Editor. Ele só acrescenta o que falta e não apaga dados. Ao publicar arquivos novos, aumente o número `?v=` no `index.html` para os navegadores baixarem a versão nova.
+- **Só Recrutamentos e Tickets:** o [`supabase/recrutamentos_tickets.sql`](supabase/recrutamentos_tickets.sql) instala apenas essas duas partes, sem mexer no resto. Ele depende das Configurações do líder, que já vêm no `schema.sql`. Quem roda o `schema.sql` completo não precisa dele.
 - **Eventos semanais:** ao criar, escolha "Repetir por N semanas"; ou, num evento existente, use "Repetir na próxima semana".
 - **Horários:** cada pessoa vê o horário no fuso do próprio celular ou PC.
 - **Link direto:** "Copiar link" na página do evento gera um link para mandar no Discord.

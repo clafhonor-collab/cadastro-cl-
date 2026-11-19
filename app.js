@@ -76,6 +76,9 @@
 
   const $ = (s, r = document) => r.querySelector(s);
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  // Botão "← Voltar" com o mesmo visual do "+ Novo evento"
+  const backBtn = (href, label) => `<a href="${href}" class="btn primary back-btn">← ${label}</a>`;
+  const backRow = (href, label) => `<p class="back-row">${backBtn(href, label)}</p>`;
   const pad = (n) => String(n).padStart(2, '0');
   const pick = (obj, keys) => Object.fromEntries(keys.map((k) => [k, obj?.[k] ?? null]));
 
@@ -1683,7 +1686,7 @@
   async function viewEvent(id) {
     loading();
     const ev = await api.event(id);
-    if (!ev) { main.innerHTML = '<div class="card empty">Evento não encontrado (talvez tenha sido apagado).<br><br><a href="#/">Voltar</a></div>'; return; }
+    if (!ev) { main.innerHTML = `<div class="card empty">Evento não encontrado (talvez tenha sido apagado).<br><br>${backBtn('#/', 'Voltar')}</div>`; return; }
     const byId = Object.fromEntries(state.members.map((m) => [m.id, m]));
     const sortX = (a, b) => byName(a.p, b.p);
     const withP = (r) => ({ p: byId[r.user_id], r });
@@ -1739,7 +1742,7 @@
 
     const finished = !isOpen(ev);
     main.innerHTML = `
-      <p><a href="${finished ? '#/passados' : '#/'}" class="small">← Voltar${finished ? ' aos eventos passados' : ''}</a></p>
+      ${backRow(finished ? '#/passados' : '#/', finished ? 'Voltar aos eventos passados' : 'Voltar')}
       <div class="card stack">
         <div class="row">
           <div class="spacer">
@@ -2059,7 +2062,7 @@
     if (!can('teams_build')) { location.hash = `#/evento/${id}`; return; }
     loading();
     const ev = await api.event(id);
-    if (!ev) { main.innerHTML = '<div class="card empty">Evento não encontrado.<br><br><a href="#/">Voltar</a></div>'; return; }
+    if (!ev) { main.innerHTML = `<div class="card empty">Evento não encontrado.<br><br>${backBtn('#/', 'Voltar')}</div>`; return; }
     T.ev = ev;
     state.pilots = await api.pilots().catch(() => state.pilots || []);
     T.people = goingPeople(ev);
@@ -2091,7 +2094,7 @@
     const finished = !isOpen(ev);
 
     const head = `
-      <p><a href="#/evento/${ev.id}" class="small">← Voltar ao evento</a></p>
+      ${backRow(`#/evento/${ev.id}`, 'Voltar ao evento')}
       ${finished ? '<div class="lock-banner warn finished-banner">⚠ <b>Evento já finalizado.</b> Você está revisando os times de um evento encerrado. O que for salvo aqui altera o histórico de quem participou de cada time.</div>' : ''}
       <div class="page-head">
         <div style="flex:1;min-width:200px">
@@ -2775,7 +2778,7 @@
     const r = state.recruits.find((x) => x.id === id);
     renderHeader('recruits');
     if (!r) {
-      main.innerHTML = '<p><a href="#/recrutamentos" class="small">← Recrutamentos</a></p><div class="card empty">Recrutamento não encontrado (pode ter sido apagado).</div>';
+      main.innerHTML = backRow('#/recrutamentos', 'Recrutamentos') + '<div class="card empty">Recrutamento não encontrado (pode ter sido apagado).</div>';
       return;
     }
     const mine = isMyRecruit(r);
@@ -2811,7 +2814,7 @@
     if (canOnRecruit(r, 'recruit_delete')) actions.push('<button class="btn ghost danger" id="rc-delete">Apagar</button>');
 
     main.innerHTML = `
-      <p><a href="#/recrutamentos" class="small">← Recrutamentos</a></p>
+      ${backRow('#/recrutamentos', 'Recrutamentos')}
       <div class="page-head"><h1>${cat.icon} ${esc(r.title)}</h1></div>
       <div class="card rc-detail">
         <div class="rc-badges">${recruitBadges(r)}</div>
@@ -3136,7 +3139,7 @@
     const home = supportOn() ? ['#/atendimento', 'Central de Atendimento'] : ['#/tickets', 'Central de Atendimento'];
     renderHeader(supportOn() ? 'support' : 'tickets');
     if (!t) {
-      main.innerHTML = `<p><a href="${home[0]}" class="small">← ${home[1]}</a></p><div class="card empty">Ticket não encontrado.</div>`;
+      main.innerHTML = `${backRow(home[0], home[1])}<div class="card empty">Ticket não encontrado.</div>`;
       return;
     }
     const cat = TICKET_CAT[t.category] || TICKET_CAT.other;
@@ -3170,7 +3173,7 @@
     } else if (t.status !== 'resolved') controls.push('<button class="btn small ghost" id="tk-done">✔ Marcar como resolvido</button>');
 
     main.innerHTML = `
-      <p><a href="${home[0]}" class="small">← ${home[1]}</a></p>
+      ${backRow(home[0], home[1])}
       <div class="page-head"><h1>${cat.icon} ${esc(t.title)}</h1></div>
       <div class="card tk-info">
         <div class="tk-row-top"><div class="rc-badges">${ticketBadges(t)}</div>${staff ? ownerTag(t) : ''}</div>
@@ -3294,7 +3297,7 @@
     state.pilots = pilots;
     state.members = members;
     const me = members.find((m) => m.id === targetId) || (self ? state.me : null);
-    if (!me) { main.innerHTML = '<div class="card empty">Membro não encontrado.<br><br><a href="#/membros">Voltar</a></div>'; return; }
+    if (!me) { main.innerHTML = `<div class="card empty">Membro não encontrado.<br><br>${backBtn('#/membros', 'Voltar')}</div>`; return; }
     const phone = !self && can('view_phone') ? (await api.contacts()).find((c) => c.user_id === me.id)?.phone : null;
     const who = displayName(me);
     const [f] = computeFrequency(past, [me]);
@@ -3353,7 +3356,7 @@
     }).join('') : `<p class="muted">${self ? 'Informe sua classe e seus atributos em “Editar perfil” para comparar com o clã.' : 'Este membro ainda não informou classe e atributos.'}</p>`;
 
     main.innerHTML = `
-      ${self ? '' : '<p><a href="#/membros" class="small">← Membros</a></p>'}
+      ${self ? '' : backRow('#/membros', 'Membros')}
       <div class="page-head">
         <h1>${self ? 'Meu perfil' : 'Perfil do membro'}</h1>
         <select class="inline" id="p-days" aria-label="Período">
@@ -3856,6 +3859,7 @@
   // ---------- Utils: links úteis (todos os membros) ----------
 
   const UTIL_LINKS = [
+    { icon: '🛡️', title: 'Discord da Aliança', desc: 'Servidor da nossa aliança no Discord', url: 'https://discord.gg/YncQxQ4bzB' },
     { icon: '⚔️', title: 'Builds', desc: 'Builds das classes, com itens e gemas recomendados', url: 'https://diablo.tv/builds' },
     { icon: '💎', title: 'Gemas', desc: 'Lista das gemas lendárias e seus efeitos', url: 'https://diablo.tv/legendary-gems' },
     { icon: '🏆', title: 'Rank PvP Mundial', desc: 'Ranking mundial dos jogadores', url: 'https://diablo.tv/leaderboards' },
