@@ -1,6 +1,9 @@
 # FOR HONOR · Eventos do Clã
 
 Site do clã **FOR HONOR** para confirmar presença nos eventos semanais do Diablo Immortal.
+
+🌐 **Acesse:** https://forhonorcla.com.br
+
 O nome e o lema aparecem no topo e na tela de login, e podem ser trocados no [`config.js`](config.js).
 
 - Membros entram com a **conta Google** e respondem **Vou / Não vou** em cada evento.
@@ -12,7 +15,7 @@ O nome e o lema aparecem no topo e na tela de login, e podem ser trocados no [`c
 - **Frequência**: depois do evento, um oficial marca quem realmente compareceu. O painel mostra a % de presença de cada membro, quem confirmou e faltou e quem não respondeu.
 - Em cada evento aparece quem vai, quem não vai e quem ainda não respondeu. Os botões "Copiar lista" e "Copiar times" geram textos prontos para colar no Discord.
 
-Tudo é gratuito: o site fica no **GitHub Pages** e os dados ficam no **Supabase** (plano free).
+O site fica no **GitHub Pages**, com o domínio próprio `forhonorcla.com.br`, e os dados ficam no **Supabase** (plano free). Só o domínio é pago; o resto é gratuito.
 
 > Abrindo o `index.html` sem configurar nada, o site roda em **modo demonstração**, com dados fictícios.
 
@@ -30,7 +33,7 @@ Tudo é gratuito: o site fica no **GitHub Pages** e os dados ficam no **Supabase
 2. Em **APIs e serviços → Tela de consentimento OAuth** (ou **Google Auth Platform → Branding**), escolha o tipo **Externo**, preencha o nome do app (ex.: "FOR HONOR") e o e-mail de suporte, e salve. Em **Público-alvo**, clique em **Publicar app** para que qualquer conta Google possa entrar (sem isso, só os "usuários de teste" cadastrados conseguem).
 3. Em **APIs e serviços → Credenciais → Criar credenciais → ID do cliente OAuth**:
    - Tipo de aplicativo: **Aplicativo da Web**.
-   - **Origens JavaScript autorizadas**: o endereço do site (ex.: `https://SEU-USUARIO.github.io`).
+   - **Origens JavaScript autorizadas**: o endereço do site (`https://forhonorcla.com.br`).
    - **URIs de redirecionamento autorizados**: `https://SEU-PROJETO.supabase.co/auth/v1/callback`
      (use a sua Project URL + `/auth/v1/callback`).
 4. Clique em **Criar** e copie o **ID do cliente** e a **Chave secreta do cliente**.
@@ -44,8 +47,25 @@ Tudo é gratuito: o site fica no **GitHub Pages** e os dados ficam no **Supabase
 3. No repositório: **Settings → Pages → Branch: main / (root) → Save**. Em 1 ou 2 minutos o site estará em
    `https://SEU-USUARIO.github.io/NOME-DO-REPO/`.
 4. No Supabase: **Authentication → URL Configuration**:
-   - **Site URL**: o endereço do site acima.
-   - **Redirect URLs**: adicione o mesmo endereço.
+   - **Site URL**: `https://forhonorcla.com.br/`
+   - **Redirect URLs**: adicione `https://forhonorcla.com.br/`
+
+### Domínio próprio (`forhonorcla.com.br`)
+O domínio está registrado no **registro.br** e aponta para o GitHub Pages. O endereço antigo (`https://clafhonor-collab.github.io/cadastro-cl-/`) e o `www` redirecionam sozinhos para `https://forhonorcla.com.br`.
+
+- **DNS (registro.br → Configurar zona DNS):**
+
+  | Tipo | Nome | Valor |
+  |---|---|---|
+  | A | *(em branco)* | 185.199.108.153 |
+  | A | *(em branco)* | 185.199.109.153 |
+  | A | *(em branco)* | 185.199.110.153 |
+  | A | *(em branco)* | 185.199.111.153 |
+  | CNAME | www | clafhonor-collab.github.io |
+
+  No registro.br, o nome do domínio principal fica **em branco**; o painel não aceita `@`.
+- **GitHub:** em **Settings → Pages → Custom domain** está `forhonorcla.com.br`, com **Enforce HTTPS** marcado. O arquivo [`CNAME`](CNAME) guarda o domínio; não apague.
+- **Se trocar de domínio:** atualize o DNS, o Custom domain no GitHub, a Site URL e as Redirect URLs no Supabase e as Origens JavaScript no Google Cloud. O código não precisa mudar.
 
 ### 5. Tornar-se líder
 1. Abra o site e entre com a sua conta Google. Você verá "Aguardando aprovação". Isso é esperado.
@@ -56,7 +76,7 @@ Tudo é gratuito: o site fica no **GitHub Pages** e os dados ficam no **Supabase
 3. Recarregue o site. Agora você é o líder: vá em **Membros** e promova os oficiais.
 
 ### 6. Convidar o clã
-Mande o link no Discord do clã. Cada pessoa entra com a conta Google e aparece em **Membros → Aguardando aprovação**. Um oficial ou o líder clica em **Aprovar**.
+Mande o link https://forhonorcla.com.br no Discord do clã. Cada pessoa entra com a conta Google e aparece em **Membros → Aguardando aprovação**. Um oficial ou o líder clica em **Aprovar**.
 
 ---
 
