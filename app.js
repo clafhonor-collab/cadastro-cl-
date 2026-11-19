@@ -37,6 +37,30 @@
   const FORMAT_LABEL = { guerra: 'Guerra', rito: 'Outros' };
   const TEAM_NAME_MAX = 30;
 
+  // Recrutamentos: membros procurando gente para Grupo Guerreiro, PvP etc.
+  const RECRUIT_ON = true;
+  const RECRUIT_CATS = [
+    { key: 'pvp', label: 'Evento PvP', icon: '⚔️' },
+    { key: 'warband', label: 'Grupo Guerreiro', icon: '🛡️' },
+    { key: 'other', label: 'Outro', icon: '📣' },
+  ];
+  const RECRUIT_CAT = Object.fromEntries(RECRUIT_CATS.map((c) => [c.key, c]));
+  const RECRUIT_STATUS = { pending: 'Aguardando aprovação', open: 'Aberto', closed: 'Encerrado', rejected: 'Recusado' };
+
+  // Tickets: membros falam com a liderança (podem ser anônimos)
+  const TICKETS_ON = true;
+  const TICKET_CATS = [
+    { key: 'suggestion', label: 'Sugestão', icon: '💡' },
+    { key: 'improvement', label: 'Melhorias', icon: '🛠️' },
+    { key: 'report', label: 'Reclamação / Denúncia', icon: '🚩' },
+    { key: 'question', label: 'Dúvida', icon: '❓' },
+    { key: 'site', label: 'Problema no site', icon: '🐞' },
+    { key: 'other', label: 'Outros', icon: '📝' },
+  ];
+  const TICKET_CAT = Object.fromEntries(TICKET_CATS.map((c) => [c.key, c]));
+  const TICKET_STATUS = { open: 'Aberto', progress: 'Em atendimento', resolved: 'Resolvido' };
+  const TICKET_MAX_IMAGES = 3;
+
   // Sugestões no campo "título" — o oficial pode digitar qualquer outro nome.
   const EVENT_SUGGESTIONS = [
     'Guerra das Sombras', 'Rito do Exílio', 'Portões Demoníacos', 'Assalto ao Cofre',
@@ -78,6 +102,18 @@
     });
     const ok = ({ data, error }) => { if (error) throw error; return data; };
     const full = '*, rsvps(*), team_slots(user_id, team), attendance(user_id, present)';
+    // Tickets visíveis para mim, com links temporários para as imagens
+    async function listTickets() {
+      const rows = ok(await sb.rpc('list_tickets')) || [];
+      const paths = [...new Set(rows.flatMap((t) => (t.messages || []).flatMap((m) => m.images || [])))];
+      let urls = {};
+      if (paths.length) {
+        const { data, error } = await sb.storage.from('tickets').createSignedUrls(paths, 3600);
+        if (!error) urls = Object.fromEntries((data || []).map((d) => [d.path, d.signedUrl]));
+      }
+      rows.forEach((t) => (t.messages || []).forEach((m) => { m.images = (m.images || []).map((p) => urls[p]).filter(Boolean); }));
+      return rows;
+    }
     return {
       async currentUser() { const { data } = await sb.auth.getSession(); return data.session?.user ?? null; },
       onAuthChange(cb) { sb.auth.onAuthStateChange((evt, s) => { if (evt === 'SIGNED_IN' || evt === 'SIGNED_OUT') cb(s?.user ?? null); }); },
@@ -174,6 +210,37 @@
         const { error } = await sb.from('news_posts').insert({ title, caption: caption || null, image_path: path });
         if (error) { await sb.storage.from('news').remove([path]); throw error; }
       },
+      // ----- Recrutamentos (regras garantidas pelas funções do banco) -----
+      async recruitments() { return ok(await sb.from('recruitments').select('*, applications:recruit_applications(*)').order('created_at', { ascending: false }).limit(300)); },
+      async recruitment(id) { return ok(await sb.from('recruitments').select('*, applications:recruit_applications(*)').eq('id', id).maybeSingle()); },
+      async createRecruit(row) { return ok(await sb.rpc('create_recruit', { p: row })); },
+      async updateRecruit(id, row) { ok(await sb.rpc('update_recruit', { p_id: id, p: row })); },
+      async deleteRecruit(id) { ok(await sb.rpc('delete_recruit', { p_id: id })); },
+      async decideRecruit(id, approve, note) { ok(await sb.rpc('decide_recruit', { p_id: id, p_approve: !!approve, p_note: note || null })); },
+      async closeRecruit(id, reopen = false) { ok(await sb.rpc('close_recruit', { p_id: id, p_reopen: !!reopen })); },
+      async applyRecruit(id) { ok(await sb.rpc('apply_recruit', { p_id: id })); },
+      async withdrawRecruit(id) { ok(await sb.rpc('withdraw_recruit', { p_id: id })); },
+      async decideApplication(id, userId, status) { ok(await sb.rpc('decide_application', { p_id: id, p_user: userId, p_status: status })); },
+      // ----- Tickets (o banco esconde o autor dos anônimos; imagens no bucket privado "tickets") -----
+      async tickets() { return listTickets(); },
+      async ticket(id) { return (await listTickets()).find((t) => t.id === id) || null; },
+      async uploadTicketImage(file) {
+        const ext = { 'image/webp': 'webp', 'image/png': 'png', 'image/gif': 'gif' }[file.type] || 'jpg';
+        // o caminho não leva o id de quem enviou (para não revelar autores anônimos)
+        const path = `${new Date().getFullYear()}/${crypto.randomUUID()}.${ext}`;
+        const up = await sb.storage.from('tickets').upload(path, file, { contentType: file.type, upsert: false });
+        if (up.error) throw up.error;
+        return path;
+      },
+      async createTicket({ title, category, anonymous, body, images }) {
+        return ok(await sb.rpc('create_ticket', { p_title: title, p_category: category, p_anonymous: !!anonymous, p_body: body, p_images: images || [] }));
+      },
+      async postTicketMessage(id, { body, internal, images }) {
+        ok(await sb.rpc('post_ticket_message', { p_ticket: id, p_body: body || '', p_internal: !!internal, p_images: images || [] }));
+      },
+      async setTicketStatus(id, status) { ok(await sb.rpc('set_ticket_status', { p_ticket: id, p_status: status })); },
+      async assignTicket(id, userId) { ok(await sb.rpc('assign_ticket', { p_ticket: id, p_user: userId || null })); },
+      async revealTicketAuthor(id) { return ok(await sb.rpc('reveal_ticket_author', { p_ticket: id })); },
       // ----- Configurações do líder -----
       async perms() { return ok(await sb.from('officer_permissions').select('perm_key, mode')); },
       async setPerm(key, mode) { ok(await sb.from('officer_permissions').upsert({ perm_key: key, mode, updated_by: state.user.id, updated_at: new Date().toISOString() })); },
@@ -362,6 +429,71 @@
     Object.assign(db.rsvps.find((r) => r.event_id === 12 && r.user_id === 'u0'), { going: true, ...pick(profile('u0'), BUILD_KEYS) });
     db.rsvps.filter((r) => r.event_id === 12 && r.going).sort((a, b) => (a.user_id === 'u0' ? -1 : b.user_id === 'u0' ? 1 : 0)).slice(0, 20)
       .forEach((r, i) => db.slots.push({ event_id: 12, user_id: r.user_id, team: ['Revenge', 'Time 2', 'Time 3'][Math.floor(i / 8)] }));
+
+    // Recrutamentos de exemplo
+    db.recruits = [
+      { id: 700, title: 'Grupo Guerreiro para a temporada', category: 'warband', description: 'Grupo fixo para jogar à noite (20h–23h). Precisamos de gente ativa e com Discord.',
+        slots: 7, activity_at: null, deadline_at: day(5, 23, 59), wanted: { cruzado: 1, monge: 1 }, created_by: 'u3', created_at: day(-2, 19),
+        status: 'open', decided_by: 'u1', decided_at: day(-2, 20), note: null, closed_by: null, closed_at: null },
+      { id: 701, title: 'Time PvP — Evento global', category: 'pvp', description: 'Fechando o time para o evento global de fim de semana. Treino na sexta às 21h.',
+        slots: 4, activity_at: day(3, 21), deadline_at: day(2, 20), wanted: { bk: 1, tempest: 1 }, created_by: 'u0', created_at: day(-1, 18),
+        status: 'open', decided_by: 'u0', decided_at: day(-1, 18), note: null, closed_by: null, closed_at: null },
+      { id: 702, title: 'Grupo para Fendas Desafiadoras', category: 'other', description: 'Subir Fendas Desafiadoras juntos todo dia depois da Vigília.',
+        slots: 3, activity_at: null, deadline_at: null, wanted: {}, created_by: 'u7', created_at: day(-1, 9),
+        status: 'pending', decided_by: null, decided_at: null, note: null, closed_by: null, closed_at: null },
+      { id: 703, title: 'Grupo Guerreiro — madrugada', category: 'warband', description: 'Para quem joga depois da meia-noite.',
+        slots: 7, activity_at: null, deadline_at: null, wanted: {}, created_by: 'u2', created_at: day(-20, 22),
+        status: 'closed', decided_by: 'u0', decided_at: day(-20, 23), note: null, closed_by: 'u2', closed_at: day(-12, 10) },
+    ];
+    db.applications = [];
+    const apply = (rid, uid, status, d = -1) => db.applications.push({ recruit_id: rid, user_id: uid, status, applied_at: day(d, 10 + (db.applications.length % 9)), decided_at: status === 'applied' ? null : day(d, 22) });
+    ['u4', 'u6', 'u9', 'u11'].forEach((u, i) => apply(700, u, i < 3 ? 'accepted' : 'applied'));
+    ['u14', 'u15'].forEach((u) => apply(700, u, 'applied'));
+    apply(700, 'u16', 'declined');
+    ['u5', 'u8', 'u10', 'u13', 'u17'].forEach((u, i) => apply(701, u, i === 0 ? 'accepted' : 'applied', 0));
+    ['u18', 'u19', 'u20', 'u21', 'u22', 'u23', 'u24'].forEach((u) => apply(703, u, 'accepted', -15));
+    // O que cada um pode ver (igual às regras do banco): abertos para todos; pendentes, recusados e encerrados só para quem criou e os oficiais
+    const listRecruits = () => db.recruits
+      .filter((r) => r.status === 'open' || r.created_by === state.user.id || isOfficer())
+      .map((r) => ({ ...r, wanted: { ...r.wanted }, applications: db.applications.filter((a) => a.recruit_id === r.id).map((a) => ({ ...a })) }));
+
+    // Tickets de exemplo
+    const bugSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360"><rect width="640" height="360" fill="#1a0f0b"/><rect x="40" y="40" width="560" height="280" rx="12" fill="#2a1a14" stroke="#e0524a" stroke-width="3"/><text x="320" y="170" font-family="Arial" font-size="28" fill="#ffc9c0" text-anchor="middle">Erro ao confirmar presença</text><text x="320" y="215" font-family="Arial" font-size="18" fill="#cdbdb2" text-anchor="middle">(print de exemplo)</text></svg>`;
+    const bugImg = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(bugSvg)}`;
+    db.tickets = [
+      { id: 800, title: 'Evento de treino PvP às quartas', category: 'suggestion', anonymous: false, author_id: 'u4', status: 'open', assigned_to: null, created_at: day(-1, 21) },
+      { id: 801, title: 'Botão de confirmar presença travou', category: 'site', anonymous: true, author_id: 'u0', status: 'progress', assigned_to: 'u1', created_at: day(-3, 22) },
+      { id: 802, title: 'Comportamento na última Guerra', category: 'report', anonymous: true, author_id: 'u9', status: 'open', assigned_to: null, created_at: day(-1, 23) },
+      { id: 803, title: 'Como funciona o Rito do Exílio?', category: 'question', anonymous: false, author_id: 'u6', status: 'resolved', assigned_to: 'u0', created_at: day(-9, 19) },
+    ];
+    db.tmsgs = [
+      { id: 1, ticket_id: 800, author_id: 'u4', body: 'Que tal um treino PvP toda quarta às 21h? Ajudaria muito o pessoal novo.', internal: false, images: [], created_at: day(-1, 21) },
+      { id: 2, ticket_id: 801, author_id: 'u0', body: 'Quando clico em "Vou" aparece um erro e nada acontece. Segue o print.', internal: false, images: [bugImg], created_at: day(-3, 22) },
+      { id: 3, ticket_id: 801, author_id: 'u1', body: 'Obrigado pelo aviso! Já estamos vendo. Isso aconteceu no celular ou no computador?', internal: false, images: [], created_at: day(-2, 10) },
+      { id: 4, ticket_id: 801, author_id: 'u1', body: 'Parece ser o mesmo erro que o Lobo relatou no Discord.', internal: true, images: [], created_at: day(-2, 10, 5) },
+      { id: 5, ticket_id: 802, author_id: 'u9', body: 'Um membro ficou xingando o time inteiro no Discord durante a Guerra. Não quero me expor.', internal: false, images: [], created_at: day(-1, 23) },
+      { id: 6, ticket_id: 803, author_id: 'u6', body: 'Sou novo no clã. Como funciona o Rito do Exílio?', internal: false, images: [], created_at: day(-9, 19) },
+      { id: 7, ticket_id: 803, author_id: 'u0', body: 'Bem-vindo! É a disputa pelo trono entre os clãs vencedores. Confirme presença no evento que montamos os times.', internal: false, images: [], created_at: day(-9, 21) },
+      { id: 8, ticket_id: 803, author_id: 'u6', body: 'Entendi, valeu!', internal: false, images: [], created_at: day(-8, 12) },
+    ];
+    // Quem atende pode ver este ticket? (igual às regras do banco)
+    const staffSeesTicket = (t) => isOfficer() && (isLeader()
+      || (permMode('ticket_view') !== 'deny' && (t.category !== 'report' || permMode('ticket_reports') !== 'deny')));
+    const isStaffOn = (t) => t.author_id !== state.user.id && staffSeesTicket(t);
+    // O autor de um ticket anônimo nunca sai do "banco" para quem atende
+    const listTickets = () => db.tickets
+      .filter((t) => t.author_id === state.user.id || staffSeesTicket(t))
+      .map((t) => {
+        const mine = t.author_id === state.user.id;
+        const hide = t.anonymous && !mine;
+        return {
+          ...t, mine, author_id: hide ? null : t.author_id,
+          messages: db.tmsgs.filter((m) => m.ticket_id === t.id && (!m.internal || !mine))
+            .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
+            .map((m) => ({ ...m, images: [...m.images], from_author: m.author_id === t.author_id, author_id: hide && m.author_id === t.author_id ? null : m.author_id })),
+        };
+      });
+    const ticketRow = (id) => db.tickets.find((t) => t.id === id);
 
     // Tipos de evento (no site real vêm da tabela event_types)
     db.types = [
@@ -583,6 +715,106 @@
         if (r) Object.assign(r, { status, note: note || null, decided_by: state.user.id, decided_at: new Date().toISOString(), ...(summary ? { summary } : {}) });
       },
       async deleteNews(post) { db.news = db.news.filter((n) => n.id !== post.id); },
+      // ----- Tickets (mesmas regras que o banco terá) -----
+      async tickets() { return listTickets(); },
+      async ticket(id) { return listTickets().find((t) => t.id === id) || null; },
+      async uploadTicketImage(file) { return URL.createObjectURL(file); },
+      async createTicket({ title, category, anonymous, body, images }) {
+        if (!isMember()) throw new Error('Só membros do clã podem abrir tickets');
+        const now = new Date().toISOString();
+        const t = { id: db.nextId++, title, category, anonymous: !!anonymous, author_id: state.user.id, status: 'open', assigned_to: null, created_at: now };
+        db.tickets.push(t);
+        db.tmsgs.push({ id: db.nextId++, ticket_id: t.id, author_id: state.user.id, body, internal: false, images: images || [], created_at: now });
+        return t.id;
+      },
+      async postTicketMessage(id, { body, internal, images }) {
+        const t = ticketRow(id);
+        if (!t) throw new Error('Este ticket não existe mais');
+        const mine = t.author_id === state.user.id;
+        if (!mine && !isStaffOn(t)) throw new Error('Sem permissão para responder este ticket');
+        if (internal && mine) throw new Error('Notas internas são só para quem atende');
+        db.tmsgs.push({ id: db.nextId++, ticket_id: id, author_id: state.user.id, body, internal: !!internal, images: images || [], created_at: new Date().toISOString() });
+        // Membro escrevendo num ticket resolvido reabre; resposta de quem atende põe "Em andamento"
+        if (mine && t.status === 'resolved') t.status = 'open';
+        if (!mine && !internal && t.status === 'open') t.status = 'progress';
+      },
+      async setTicketStatus(id, status) {
+        const t = ticketRow(id);
+        if (!t) throw new Error('Este ticket não existe mais');
+        const mine = t.author_id === state.user.id;
+        if (!mine && !isStaffOn(t)) throw new Error('Sem permissão');
+        if (mine && !['open', 'resolved'].includes(status)) throw new Error('Você só pode resolver ou reabrir o seu ticket');
+        t.status = status;
+      },
+      async assignTicket(id, userId) {
+        const t = ticketRow(id);
+        if (!t || !isStaffOn(t)) throw new Error('Sem permissão');
+        t.assigned_to = userId || null;
+        if (userId && t.status === 'open') t.status = 'progress'; // assumiu = Em atendimento
+      },
+      async revealTicketAuthor(id) {
+        if (!isLeader()) throw new Error('Só o líder pode ver o autor de um ticket anônimo');
+        return ticketRow(id)?.author_id || null;
+      },
+      // ----- Recrutamentos (mesmas regras que o banco terá) -----
+      async recruitments() { return listRecruits(); },
+      async recruitment(id) { return listRecruits().find((r) => r.id === id) || null; },
+      async createRecruit(row) {
+        if (!isMember()) throw new Error('Só membros do clã podem criar recrutamentos');
+        const now = new Date().toISOString();
+        // O líder publica direto; os demais passam pela aprovação de um oficial ou do líder
+        const direct = isLeader();
+        const r = { id: db.nextId++, ...row, created_by: state.user.id, created_at: now, status: direct ? 'open' : 'pending',
+          decided_by: direct ? state.user.id : null, decided_at: direct ? now : null, note: null, closed_by: null, closed_at: null };
+        db.recruits.push(r);
+        return { id: r.id, status: r.status };
+      },
+      async updateRecruit(id, row) {
+        const r = db.recruits.find((x) => x.id === id);
+        if (!r) throw new Error('O recrutamento não existe mais');
+        if (r.created_by !== state.user.id && !isOfficer()) throw new Error('Só quem criou pode editar');
+        const accepted = db.applications.filter((a) => a.recruit_id === id && a.status === 'accepted').length;
+        if (row.slots != null && row.slots < accepted) throw new Error(`Já há ${accepted} aceitos; as vagas não podem ser menos que isso`);
+        Object.assign(r, row);
+        // Recusado e corrigido por quem criou: volta para a fila de aprovação
+        if (r.status === 'rejected' && r.created_by === state.user.id) Object.assign(r, { status: 'pending', note: null, decided_by: null, decided_at: null });
+      },
+      async deleteRecruit(id) {
+        const r = db.recruits.find((x) => x.id === id);
+        if (r && r.created_by !== state.user.id && !isOfficer()) throw new Error('Só quem criou pode apagar');
+        db.recruits = db.recruits.filter((x) => x.id !== id);
+        db.applications = db.applications.filter((a) => a.recruit_id !== id);
+      },
+      async decideRecruit(id, approve, note) {
+        const r = db.recruits.find((x) => x.id === id);
+        if (!r || r.status !== 'pending') throw new Error('Este recrutamento não está aguardando aprovação');
+        if (!isOfficer()) throw new Error('Só oficiais e o líder aprovam recrutamentos');
+        if (r.created_by === state.user.id && !isLeader()) throw new Error('Você não pode aprovar o próprio recrutamento');
+        Object.assign(r, { status: approve ? 'open' : 'rejected', decided_by: state.user.id, decided_at: new Date().toISOString(), note: approve ? null : (note || null) });
+      },
+      async closeRecruit(id, reopen = false) {
+        const r = db.recruits.find((x) => x.id === id);
+        if (!r) throw new Error('O recrutamento não existe mais');
+        if (r.created_by !== state.user.id && !isOfficer()) throw new Error('Só quem criou pode encerrar');
+        if (reopen) Object.assign(r, { status: 'open', closed_by: null, closed_at: null });
+        else Object.assign(r, { status: 'closed', closed_by: state.user.id, closed_at: new Date().toISOString() });
+      },
+      async applyRecruit(id) {
+        const r = db.recruits.find((x) => x.id === id);
+        if (!r || r.status !== 'open') throw new Error('Este recrutamento não está aberto');
+        if (r.created_by === state.user.id) throw new Error('Você criou este recrutamento');
+        db.applications = db.applications.filter((a) => !(a.recruit_id === id && a.user_id === state.user.id));
+        db.applications.push({ recruit_id: id, user_id: state.user.id, status: 'applied', applied_at: new Date().toISOString(), decided_at: null });
+      },
+      async withdrawRecruit(id) { db.applications = db.applications.filter((a) => !(a.recruit_id === id && a.user_id === state.user.id)); },
+      async decideApplication(id, userId, status) {
+        const r = db.recruits.find((x) => x.id === id);
+        if (!r || r.created_by !== state.user.id) throw new Error('Só quem criou o recrutamento escolhe os participantes');
+        const a = db.applications.find((x) => x.recruit_id === id && x.user_id === userId);
+        if (!a) throw new Error('Esta candidatura não existe mais');
+        if (status === 'accepted' && a.status !== 'accepted' && db.applications.filter((x) => x.recruit_id === id && x.status === 'accepted').length >= r.slots) throw new Error('Todas as vagas já foram preenchidas');
+        Object.assign(a, { status, decided_at: status === 'applied' ? null : new Date().toISOString() });
+      },
       async membershipLog(userId) {
         return db.mlog.filter((h) => (!userId || h.user_id === userId) && (isOfficer() || canActAsDemo(h.user_id)))
           .sort((a, b) => Date.parse(b.changed_at) - Date.parse(a.changed_at)).map((h) => ({ ...h }));
@@ -665,6 +897,18 @@
       { key: 'news_publish', label: 'Publicar e editar edições', approval: true },
       { key: 'news_delete', label: 'Apagar edições', approval: true },
     ] },
+    ...(RECRUIT_ON ? [{ group: 'Recrutamentos', items: [
+      { key: 'recruit_approve', label: 'Aprovar recrutamentos', desc: 'Aprovar ou recusar recrutamentos criados pelos membros', approval: true },
+      { key: 'recruit_close', label: 'Encerrar recrutamentos', desc: 'Encerrar ou reabrir recrutamentos de outros membros', approval: true },
+      { key: 'recruit_edit', label: 'Editar recrutamentos', desc: 'Alterar recrutamentos de outros membros', approval: true },
+      { key: 'recruit_delete', label: 'Apagar recrutamentos', desc: 'Apagar recrutamentos de outros membros', approval: true },
+    ] }] : []),
+    ...(TICKETS_ON ? [{ group: 'Tickets', items: [
+      { key: 'ticket_view', label: 'Ver tickets', desc: 'Se bloqueado, a aba Atendimento some para os oficiais' },
+      { key: 'ticket_reply', label: 'Responder tickets', desc: 'Responder, escrever notas internas e assumir tickets' },
+      { key: 'ticket_resolve', label: 'Resolver tickets', desc: 'Mudar o status (Em andamento, Resolvido ou reabrir)' },
+      { key: 'ticket_reports', label: 'Ver denúncias', desc: 'Se bloqueado, os tickets de Reclamação / Denúncia ficam só com o líder' },
+    ] }] : []),
   ];
   const PERM_BY_KEY = Object.fromEntries(PERMS.flatMap((g) => g.items).map((p) => [p.key, p]));
   const PERM_MODES = [['allow', 'Permitido'], ['approval', 'Precisa de aprovação'], ['deny', 'Bloqueado']];
@@ -707,7 +951,26 @@
     createNewsFromPath: (raw, o) => ['news_publish', `Publicar a edição “${o.title}” na Malah News`],
     updateNews: (raw, id, f) => ['news_publish', `Editar a edição “${f.title}” da Malah News`],
     deleteNews: (raw, post) => ['news_delete', `Apagar a edição “${post.title}” da Malah News`],
+    // Recrutamentos: a permissão só vale quando o oficial mexe no recrutamento de outra pessoa
+    decideRecruit: (raw, id, approve, note) => recruitGate(raw, id, 'recruit_approve', (r) => `${approve ? 'Aprovar' : 'Recusar'} o recrutamento “${r.title}” de ${nameOf(r.created_by)}${!approve && note ? ` · motivo: “${note}”` : ''}`),
+    closeRecruit: (raw, id, reopen) => recruitGate(raw, id, 'recruit_close', (r) => `${reopen ? 'Reabrir' : 'Encerrar'} o recrutamento “${r.title}” de ${nameOf(r.created_by)}`),
+    updateRecruit: (raw, id, row) => recruitGate(raw, id, 'recruit_edit', (r) => `Editar o recrutamento “${r.title}” de ${nameOf(r.created_by)}${row?.title && row.title !== r.title ? ` (novo título: “${row.title}”)` : ''}`),
+    deleteRecruit: (raw, id) => recruitGate(raw, id, 'recruit_delete', (r) => `Apagar o recrutamento “${r.title}” de ${nameOf(r.created_by)}`),
+    // Tickets: só vale para quem atende (no próprio ticket, o oficial é um membro como os outros)
+    postTicketMessage: (raw, id) => ticketGate(raw, id, 'ticket_reply'),
+    assignTicket: (raw, id) => ticketGate(raw, id, 'ticket_reply'),
+    setTicketStatus: (raw, id) => ticketGate(raw, id, 'ticket_resolve'),
   };
+  async function ticketGate(raw, id, key) {
+    const t = await raw.ticket(id);
+    if (!t) throw new Error('Este ticket não existe mais');
+    return t.mine ? null : [key, ''];
+  }
+  async function recruitGate(raw, id, key, text) {
+    const r = await raw.recruitment(id);
+    if (!r) throw new Error('O recrutamento não existe mais');
+    return r.created_by === state.user.id ? null : [key, text(r)];
+  }
   // Para ir para a fila de aprovação, a operação precisa virar dados (JSON)
   const PREPARE = {
     createNews: async (raw, o) => ['createNewsFromPath', [{ image_path: await raw.uploadNewsImage(o.file), title: o.title, caption: o.caption || null }]],
@@ -724,6 +987,10 @@
     createNewsFromPath: ([o]) => [{ image_path: String(o?.image_path || ''), title: String(o?.title || ''), caption: o?.caption ? String(o.caption) : null }],
     updateNews: ([id, f]) => [Number(id), { title: String(f?.title || ''), caption: f?.caption ? String(f.caption) : null }],
     deleteNews: ([p]) => [{ id: Number(p?.id), image_path: String(p?.image_path || ''), title: String(p?.title || '') }],
+    decideRecruit: ([id, approve, note]) => [Number(id), !!approve, note ? String(note).slice(0, 300) : null],
+    closeRecruit: ([id, reopen]) => [Number(id), !!reopen],
+    updateRecruit: ([id, row]) => [Number(id), cleanRecruitRow(row)],
+    deleteRecruit: ([id]) => [Number(id)],
   };
   let RAW = null; // operações sem a checagem de permissão (o líder usa ao aprovar)
   function withPermissions(raw) {
@@ -952,13 +1219,19 @@
     const nav = $('#nav');
     if (isMember()) {
       const links = [['#/', 'Próximos', 'upcoming'], ['#/passados', 'Passados', 'past'], ['#/news', 'Malah News', 'news']];
+      if (RECRUIT_ON) links.push(['#/recrutamentos', 'Recrutamentos', 'recruits']);
+      if (TICKETS_ON && !supportOn()) links.push(['#/tickets', 'Tickets', 'tickets']);
       if (isOfficer()) links.push(['#/membros', 'Membros', 'members']);
       if (can('freq_view')) links.push(['#/frequencia', 'Frequência', 'freq']);
       links.push(['#/perfil', 'Meu perfil', 'profile'], ['#/utils', 'Utils', 'utils']);
+      if (TICKETS_ON && supportOn()) links.push(['#/atendimento', 'Atendimento', 'support']);
       if (isLeader()) links.push(['#/config', 'Configurações', 'config']);
       else if (isOfficer()) links.push(['#/solicitacoes', 'Solicitações', 'requests']);
       const dot = (key) => (key === 'news' && hasUnreadNews() ? '<span class="dot-new" title="Edição nova"></span>'
-        : key === 'config' && pendingRequests().length ? `<span class="nav-count" title="Aprovações pendentes">${pendingRequests().length}</span>` : '');
+        : key === 'config' && pendingRequests().length ? `<span class="nav-count" title="Aprovações pendentes">${pendingRequests().length}</span>`
+        : key === 'recruits' && recruitBadge() ? `<span class="nav-count" title="Recrutamentos aguardando você">${recruitBadge()}</span>`
+        : key === 'tickets' && ticketBadgeMine() ? `<span class="nav-count" title="Respostas novas nos seus tickets">${ticketBadgeMine()}</span>`
+        : key === 'support' && ticketBadgeStaff() ? `<span class="nav-count" title="Tickets aguardando resposta">${ticketBadgeStaff()}</span>` : '');
       nav.innerHTML = links.map(([href, label, key]) => `<a href="${href}" class="${currentKey === key ? 'active' : ''}">${label}${dot(key)}</a>`).join('');
     } else nav.innerHTML = '';
 
@@ -2363,6 +2636,620 @@
     });
   }
 
+  // =====================================================================
+  //  Recrutamentos: membros procurando gente para Grupo Guerreiro, PvP etc.
+  //  O membro cria → oficial/líder aprova → candidatos se inscrevem → o criador escolhe.
+  // =====================================================================
+  state.recruits = [];
+  async function loadRecruits() {
+    if (!RECRUIT_ON || !isMember()) { state.recruits = []; return; }
+    try { state.recruits = await api.recruitments(); } catch (e) { console.warn('recrutamentos', e); state.recruits = []; }
+  }
+  const recruitApps = (r, status) => (r.applications || []).filter((a) => !status || a.status === status);
+  const myApplication = (r) => (r.applications || []).find((a) => a.user_id === state.user.id);
+  const isMyRecruit = (r) => r.created_by === state.user.id;
+  // Posso fazer isto neste recrutamento? (quem criou sempre; oficiais conforme as Configurações do líder)
+  const canOnRecruit = (r, key) => isMyRecruit(r) || can(key);
+  const canApproveRecruit = (r) => r.status === 'pending' && (isLeader() || (!isMyRecruit(r) && can('recruit_approve')));
+  // Contador no menu: recrutamentos para eu aprovar + candidatos novos nos meus recrutamentos abertos
+  function recruitBadge() {
+    return (state.recruits || []).reduce((n, r) => n + (canApproveRecruit(r) && !isMyRecruit(r) ? 1 : 0)
+      + (isMyRecruit(r) && r.status === 'open' ? recruitApps(r, 'applied').length : 0), 0);
+  }
+  // Só os campos conhecidos e dentro dos limites (usado no formulário e ao aprovar pedidos)
+  function cleanRecruitRow(row) {
+    const iso = (v) => (v && Number.isFinite(Date.parse(v)) ? new Date(v).toISOString() : null);
+    const wanted = {};
+    Object.entries(row?.wanted || {}).forEach(([k, n]) => { const v = Math.min(50, Math.max(0, parseInt(n, 10) || 0)); if (CLASS[k] && v) wanted[k] = v; });
+    return {
+      title: String(row?.title || '').trim().slice(0, 80),
+      category: RECRUIT_CAT[row?.category] ? row.category : 'other',
+      description: String(row?.description || '').trim().slice(0, 1000) || null,
+      slots: Math.min(50, Math.max(1, parseInt(row?.slots, 10) || 1)),
+      activity_at: iso(row?.activity_at),
+      deadline_at: iso(row?.deadline_at),
+      wanted,
+    };
+  }
+  const fmtWhenShort = (iso) => `${fmtShortWeekday(iso)} ${fmtShortDate(iso)} às ${fmtTime(iso)}`;
+  function recruitPerson(id) {
+    const p = memberById(id);
+    return p ? { id: p.id, name: displayName(p), profile: p, build: pick(p, BUILD_KEYS), discord: false } : null;
+  }
+  // "Procura: 1/2 CRU · 0/1 MON" (aceitos / pedidos de cada classe)
+  function wantedLine(r, withAccepted = true) {
+    const acc = recruitApps(r, 'accepted').map((a) => memberById(a.user_id)?.char_class);
+    const parts = Object.entries(r.wanted || {}).filter(([, n]) => n > 0)
+      .map(([k, n]) => `<span class="rc-want">${withAccepted ? `<b>${acc.filter((c) => c === k).length}/${n}</b>` : `${n}×`} ${classTag(k)}</span>`);
+    return parts.length ? `<span class="rc-want-list">Procura: ${parts.join('')}</span>` : '';
+  }
+  function recruitBadges(r) {
+    const acc = recruitApps(r, 'accepted').length;
+    const mine = myApplication(r);
+    const fresh = isMyRecruit(r) && r.status === 'open' ? recruitApps(r, 'applied').length : 0;
+    return [
+      `<span class="badge rc-cat cat-${esc(r.category)}">${esc(RECRUIT_CAT[r.category]?.label || 'Outro')}</span>`,
+      r.status === 'pending' ? '<span class="badge warn">Aguardando aprovação</span>' : '',
+      r.status === 'rejected' ? '<span class="badge rc-rejected">Recusado</span>' : '',
+      r.status === 'closed' ? '<span class="badge rc-closed">Encerrado</span>' : '',
+      r.status === 'open' && acc >= r.slots ? '<span class="badge gold">Completo</span>' : '',
+      isMyRecruit(r) ? '<span class="badge rc-mine">Seu recrutamento</span>' : '',
+      fresh ? `<span class="badge warn">${fresh} candidato${fresh > 1 ? 's' : ''} aguardando</span>` : '',
+      mine?.status === 'applied' ? '<span class="badge rc-mine">Você se candidatou</span>' : '',
+      mine?.status === 'accepted' ? '<span class="badge rc-ok">✔ Você foi aceito</span>' : '',
+      mine?.status === 'declined' ? '<span class="badge rc-closed">Não selecionado</span>' : '',
+    ].join('');
+  }
+  function recruitMeta(r) {
+    const acc = recruitApps(r, 'accepted').length;
+    const late = r.deadline_at && Date.parse(r.deadline_at) < Date.now();
+    return `<div class="rc-meta">
+      <span title="Aceitos / vagas">👥 <b>${acc}/${r.slots}</b> vaga${r.slots > 1 ? 's' : ''}</span>
+      ${r.activity_at ? `<span title="Data da atividade">📅 ${esc(fmtWhenShort(r.activity_at))}</span>` : ''}
+      ${r.deadline_at ? `<span title="Prazo de inscrição (informativo)" class="${late ? 'muted' : ''}">⏳ Inscrições até ${esc(fmtWhenShort(r.deadline_at))}${late ? ' (prazo passou)' : ''}</span>` : ''}
+      ${wantedLine(r)}
+    </div>`;
+  }
+  function recruitCard(r) {
+    const cat = RECRUIT_CAT[r.category] || RECRUIT_CAT.other;
+    return `<div class="card recruit cat-${esc(r.category)}">
+      <div class="rc-icon" aria-hidden="true">${cat.icon}</div>
+      <div class="rc-body">
+        <a class="title" href="#/recrutamento/${r.id}">${esc(r.title)}</a>
+        <div class="rc-badges">${recruitBadges(r)}</div>
+        <div class="muted small">Criado por <b>${esc(nameOf(r.created_by))}</b> · ${esc(fmtShortDate(r.created_at))}</div>
+        ${recruitMeta(r)}
+        ${r.description ? `<div class="desc">${esc(r.description)}</div>` : ''}
+        <div class="ev-foot"><a class="btn small ghost" href="#/recrutamento/${r.id}">🔎 Ver recrutamento</a></div>
+      </div>
+    </div>`;
+  }
+
+  let recruitFilter = '';
+  async function viewRecruits() {
+    renderHeader('recruits');
+    const list = state.recruits.filter((r) => !recruitFilter || r.category === recruitFilter);
+    const byNew = (a, b) => Date.parse(b.created_at) - Date.parse(a.created_at);
+    const waiting = list.filter((r) => r.status === 'pending' || (r.status === 'rejected' && isMyRecruit(r))).sort(byNew);
+    const open = list.filter((r) => r.status === 'open').sort(byNew);
+    const closed = list.filter((r) => r.status === 'closed').sort((a, b) => Date.parse(b.closed_at || b.created_at) - Date.parse(a.closed_at || a.created_at)).slice(0, 10);
+    main.innerHTML = `
+      <div class="page-head"><h1>Recrutamentos</h1><button class="btn primary" id="btn-new-rc">+ Novo recrutamento</button></div>
+      <p class="muted small">Procurando gente para um Grupo Guerreiro, um time PvP ou outra atividade? Crie um recrutamento: ele aparece para todos depois que um oficial ou o líder aprovar. Os candidatos aparecem com classe e atributos do perfil, e quem criou escolhe quem entra.</p>
+      <div class="seg rc-filter" role="group" aria-label="Filtrar por categoria">
+        <button class="${recruitFilter ? '' : 'on'}" data-rc-cat="">Todos</button>
+        ${RECRUIT_CATS.map((c) => `<button class="${recruitFilter === c.key ? 'on' : ''}" data-rc-cat="${c.key}">${c.icon} ${esc(c.label)}</button>`).join('')}
+      </div>
+      ${waiting.length ? `<div class="section-head"><h2>Aguardando aprovação</h2></div>${waiting.map(recruitCard).join('')}` : ''}
+      <div class="section-head"><h2>Abertos</h2></div>
+      ${open.length ? open.map(recruitCard).join('') : '<div class="card empty">Nenhum recrutamento aberto agora.<br><br>Crie um em “+ Novo recrutamento”.</div>'}
+      ${closed.length ? `<div class="section-head"><h2>Encerrados</h2></div>${closed.map(recruitCard).join('')}` : ''}`;
+    $('#btn-new-rc').addEventListener('click', () => openRecruitForm());
+    main.querySelectorAll('[data-rc-cat]').forEach((b) => b.addEventListener('click', () => { recruitFilter = b.dataset.rcCat; viewRecruits(); }));
+  }
+
+  async function viewRecruit(id) {
+    const r = state.recruits.find((x) => x.id === id);
+    renderHeader('recruits');
+    if (!r) {
+      main.innerHTML = '<p><a href="#/recrutamentos" class="small">← Recrutamentos</a></p><div class="card empty">Recrutamento não encontrado (pode ter sido apagado).</div>';
+      return;
+    }
+    const mine = isMyRecruit(r);
+    const app = myApplication(r);
+    const acc = recruitApps(r, 'accepted');
+    const cands = recruitApps(r, 'applied').sort((a, b) => Date.parse(a.applied_at) - Date.parse(b.applied_at));
+    const declined = recruitApps(r, 'declined');
+    const full = acc.length >= r.slots;
+    const wanted = new Set(Object.keys(r.wanted || {}));
+    const cat = RECRUIT_CAT[r.category] || RECRUIT_CAT.other;
+    const person = (a, buttons) => {
+      const p = recruitPerson(a.user_id);
+      if (!p) return '';
+      const want = wanted.has(p.build.char_class);
+      return `<div class="rc-person${want ? ' want' : ''}">${chip(p)}
+        <div class="rc-act">${want ? '<span class="rc-want-flag" title="Classe que o recrutamento procura">★ classe procurada</span>' : ''}
+          <span class="muted small">${esc(fmtShortDate(a.applied_at))}</span>${buttons || ''}</div></div>`;
+    };
+    const btn = (attr, uid, label, cls = 'ghost') => `<button class="btn small ${cls}" ${attr}="${esc(uid)}">${label}</button>`;
+    const decided = r.decided_by && r.decided_by !== r.created_by && r.status !== 'pending'
+      ? `${r.status === 'rejected' ? 'Recusado' : 'Aprovado'} por ${esc(nameOf(r.decided_by))} em ${esc(fmtShortDate(r.decided_at))}` : '';
+
+    const actions = [];
+    if (r.status === 'open' && !mine) {
+      if (!app) actions.push(`<button class="btn primary" id="rc-apply">🙋 Quero participar</button>`);
+      else if (app.status === 'applied') actions.push(`<button class="btn ghost" id="rc-withdraw">Desistir da candidatura</button>`);
+      else if (app.status === 'accepted') actions.push(`<button class="btn ghost danger" id="rc-withdraw">Sair do grupo</button>`);
+    }
+    if (canApproveRecruit(r)) actions.push('<button class="btn primary" id="rc-approve">✔ Aprovar</button>', '<button class="btn ghost danger" id="rc-reject">Recusar</button>');
+    if (['open', 'pending', 'rejected'].includes(r.status) && canOnRecruit(r, 'recruit_edit')) actions.push('<button class="btn ghost" id="rc-edit">Editar</button>');
+    if (r.status === 'open' && canOnRecruit(r, 'recruit_close')) actions.push('<button class="btn ghost" id="rc-close">Encerrar recrutamento</button>');
+    if (r.status === 'closed' && canOnRecruit(r, 'recruit_close')) actions.push('<button class="btn ghost" id="rc-reopen">Reabrir</button>');
+    if (canOnRecruit(r, 'recruit_delete')) actions.push('<button class="btn ghost danger" id="rc-delete">Apagar</button>');
+
+    main.innerHTML = `
+      <p><a href="#/recrutamentos" class="small">← Recrutamentos</a></p>
+      <div class="page-head"><h1>${cat.icon} ${esc(r.title)}</h1></div>
+      <div class="card rc-detail">
+        <div class="rc-badges">${recruitBadges(r)}</div>
+        <div class="muted small">Criado por <b>${esc(nameOf(r.created_by))}</b> em ${esc(fmtShortDate(r.created_at))}${decided ? ` · ${decided}` : ''}${r.status === 'closed' && r.closed_by ? ` · encerrado por ${esc(nameOf(r.closed_by))} em ${esc(fmtShortDate(r.closed_at))}` : ''}</div>
+        ${recruitMeta(r)}
+        ${r.description ? `<p class="rc-desc">${esc(r.description)}</p>` : ''}
+        ${r.status === 'pending' ? `<p class="small rc-note">⏳ ${mine ? 'Seu recrutamento está aguardando a aprovação de um oficial ou do líder. Ninguém vê ele ainda.' : 'Este recrutamento só aparece para os membros depois de aprovado.'}</p>` : ''}
+        ${r.status === 'rejected' ? `<p class="small rc-note bad">✖ Recusado${r.note ? `: “${esc(r.note)}”` : ''}. Você pode editar e enviar de novo, ou apagar.</p>` : ''}
+        ${app?.status === 'declined' ? '<p class="small rc-note">Você não foi selecionado desta vez.</p>' : ''}
+        ${r.status === 'open' && full && !mine && !app ? '<p class="small rc-note">As vagas estão preenchidas, mas você ainda pode se candidatar: se alguém sair, quem criou pode chamar você.</p>' : ''}
+        ${actions.length ? `<div class="row rc-actions">${actions.join('')}</div>` : ''}
+      </div>
+
+      <div class="section-head"><h2>Participantes aceitos <span class="muted">${acc.length}/${r.slots}</span></h2></div>
+      <div class="card rc-people">${acc.length ? acc.map((a) => person(a, mine && r.status === 'open' ? btn('data-rc-undo', a.user_id, 'Remover') : '')).join('') : '<p class="muted small" style="margin:0">Ninguém aceito ainda.</p>'}</div>
+
+      ${r.status !== 'pending' && r.status !== 'rejected' ? `<div class="section-head"><h2>Candidatos <span class="muted">${cands.length}</span></h2></div>
+      <div class="card rc-people">${cands.length ? cands.map((a) => person(a, mine && r.status === 'open'
+        ? `${btn('data-rc-decline', a.user_id, 'Recusar', 'ghost danger')}${full ? '<button class="btn small ghost" disabled title="Todas as vagas estão preenchidas. Tire alguém ou aumente as vagas em Editar.">Aceitar</button>' : btn('data-rc-accept', a.user_id, 'Aceitar', 'primary')}` : '')).join('')
+        : '<p class="muted small" style="margin:0">Nenhum candidato aguardando.</p>'}</div>` : ''}
+
+      ${declined.length && (mine || isOfficer()) ? `<div class="section-head"><h2>Não selecionados <span class="muted">${declined.length}</span></h2></div>
+      <div class="card rc-people">${declined.map((a) => person(a, mine && r.status === 'open' ? btn('data-rc-undo', a.user_id, 'Voltar para candidatos') : '')).join('')}</div>` : ''}`;
+
+    const refresh = () => route();
+    const run = async (fn, msg) => { try { await fn(); if (msg) toast(msg); } catch (e) { fail(e); } await refresh(); };
+
+    $('#rc-apply')?.addEventListener('click', async () => {
+      if (!hasBuild(state.me)) {
+        if (await confirmDialog('Para se candidatar, preencha primeiro sua classe e seus atributos no perfil: é isso que quem criou o recrutamento vai ver.', 'Abrir meu perfil')) openProfile();
+        return;
+      }
+      const b = pick(state.me, BUILD_KEYS);
+      if (!(await confirmDialog(`Candidatar-se a “${r.title}”? Você vai aparecer como ${displayName(state.me)} · ${CLASS[b.char_class]?.label} · ${ATTRS.map((a) => `${a.short} ${fmtNum(b[a.key])}`).join(' · ')}. Se algo mudou, atualize o perfil antes.`, 'Candidatar'))) return;
+      run(() => api.applyRecruit(r.id), 'Candidatura enviada! Agora é só aguardar quem criou o recrutamento.');
+    });
+    $('#rc-withdraw')?.addEventListener('click', async () => {
+      if (!(await confirmDialog(app?.status === 'accepted' ? 'Sair do grupo? Sua vaga fica livre para outra pessoa.' : 'Desistir da candidatura?', app?.status === 'accepted' ? 'Sair' : 'Desistir'))) return;
+      run(() => api.withdrawRecruit(r.id), app?.status === 'accepted' ? 'Você saiu do grupo' : 'Candidatura retirada');
+    });
+    $('#rc-approve')?.addEventListener('click', () => run(() => api.decideRecruit(r.id, true), 'Recrutamento aprovado: já aparece para todos'));
+    $('#rc-reject')?.addEventListener('click', () => openRecruitReject(r));
+    $('#rc-edit')?.addEventListener('click', () => openRecruitForm(r));
+    $('#rc-close')?.addEventListener('click', async () => {
+      if (!(await confirmDialog(`Encerrar “${r.title}”? Ninguém mais poderá se candidatar. ${mine ? 'Você' : 'Quem criou'} pode reabrir depois.`, 'Encerrar'))) return;
+      run(() => api.closeRecruit(r.id, false), 'Recrutamento encerrado');
+    });
+    $('#rc-reopen')?.addEventListener('click', () => run(() => api.closeRecruit(r.id, true), 'Recrutamento reaberto'));
+    $('#rc-delete')?.addEventListener('click', async () => {
+      if (!(await confirmDialog(`Apagar “${r.title}” e todas as candidaturas? Isso não pode ser desfeito.`, 'Apagar'))) return;
+      try { await api.deleteRecruit(r.id); toast('Recrutamento apagado'); location.hash = '#/recrutamentos'; } catch (e) { fail(e); }
+    });
+    const decide = (attr, status, msg) => main.querySelectorAll(`[${attr}]`).forEach((b) => b.addEventListener('click', () =>
+      run(() => api.decideApplication(r.id, b.getAttribute(attr), status), msg)));
+    decide('data-rc-accept', 'accepted', 'Candidato aceito');
+    decide('data-rc-decline', 'declined', 'Candidato recusado');
+    decide('data-rc-undo', 'applied', 'Voltou para a lista de candidatos');
+  }
+
+  function openRecruitReject(r) {
+    openDialog(`<form id="rcr-form" class="stack">
+        <h2>Recusar recrutamento</h2>
+        <p class="muted small" style="margin:0">“${esc(r.title)}” de ${esc(nameOf(r.created_by))}</p>
+        <div class="field"><label for="rcr-note">Motivo <span class="muted small">(opcional, quem criou vê)</span></label>
+          <textarea id="rcr-note" maxlength="300" placeholder="Ex.: já existe um recrutamento igual aberto"></textarea></div>
+        <div class="row end"><button type="button" class="btn ghost" data-close>Cancelar</button><button type="submit" class="btn danger">Recusar</button></div>
+      </form>`, (d) => {
+      $('#rcr-form', d).addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const submit = $('button[type=submit]', d);
+        submit.disabled = true;
+        try {
+          await api.decideRecruit(r.id, false, $('#rcr-note', d).value.trim() || null);
+          dlg.close();
+          toast('Recrutamento recusado');
+          await route();
+        } catch (err) { fail(err); submit.disabled = false; }
+      });
+    });
+  }
+
+  function openRecruitForm(r) {
+    const editing = !!r;
+    const v = r || { category: 'warband', slots: 7, wanted: {} };
+    openDialog(`
+      <form id="rc-form" class="stack">
+        <h2>${editing ? 'Editar recrutamento' : 'Novo recrutamento'}</h2>
+        ${!editing && !isLeader() ? '<p class="muted small" style="margin:0">Depois de criado, o recrutamento passa pela aprovação de um oficial ou do líder antes de aparecer para todos.</p>' : ''}
+        <div class="field"><label for="rc-title">Título</label>
+          <input id="rc-title" maxlength="80" required placeholder="Ex.: Procuro 7 para Grupo Guerreiro" value="${esc(v.title || '')}"></div>
+        <div class="row rc-form-row">
+          <div class="field spacer"><label for="rc-cat">Categoria</label>
+            <select id="rc-cat" required>${RECRUIT_CATS.map((c) => `<option value="${c.key}" ${v.category === c.key ? 'selected' : ''}>${c.icon} ${esc(c.label)}</option>`).join('')}</select></div>
+          <div class="field"><label for="rc-slots">Vagas</label>
+            <input id="rc-slots" type="number" min="1" max="50" step="1" required value="${esc(v.slots)}" style="width:90px"></div>
+        </div>
+        <div class="field"><label for="rc-desc">Descrição <span class="muted small">(opcional)</span></label>
+          <textarea id="rc-desc" maxlength="1000" placeholder="Horários, o que o grupo vai fazer, se precisa de Discord…">${esc(v.description || '')}</textarea></div>
+        <div class="row rc-form-row">
+          <div class="field spacer"><label for="rc-when">Data e hora da atividade <span class="muted small">(opcional)</span></label>
+            <input id="rc-when" type="datetime-local" value="${v.activity_at ? toLocalInput(v.activity_at) : ''}"></div>
+          <div class="field spacer"><label for="rc-deadline">Prazo de inscrição <span class="muted small">(opcional)</span></label>
+            <input id="rc-deadline" type="datetime-local" value="${v.deadline_at ? toLocalInput(v.deadline_at) : ''}"></div>
+        </div>
+        <fieldset class="rc-classes">
+          <legend>Classes procuradas <span class="muted small">(opcional: quantas de cada; qualquer classe pode se candidatar)</span></legend>
+          <div class="rc-class-grid">${CLASSES.map((c) => `<label>${classTag(c.key)}<span>${esc(c.label)}</span>
+            <input type="number" min="0" max="50" step="1" inputmode="numeric" data-want="${c.key}" value="${v.wanted?.[c.key] || ''}" placeholder="0" aria-label="${esc(c.label)}"></label>`).join('')}</div>
+        </fieldset>
+        <div class="row end">
+          <button type="button" class="btn ghost" data-close>Cancelar</button>
+          <button type="submit" class="btn primary">${editing ? 'Salvar' : isLeader() ? 'Publicar' : 'Enviar para aprovação'}</button>
+        </div>
+      </form>`, (d) => {
+      $('#rc-form', d).addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const wanted = {};
+        d.querySelectorAll('[data-want]').forEach((i) => { wanted[i.dataset.want] = i.value; });
+        const row = cleanRecruitRow({
+          title: $('#rc-title', d).value, category: $('#rc-cat', d).value, description: $('#rc-desc', d).value,
+          slots: $('#rc-slots', d).value, activity_at: $('#rc-when', d).value, deadline_at: $('#rc-deadline', d).value, wanted,
+        });
+        if (!row.title) return;
+        const asked = Object.values(row.wanted).reduce((a, b) => a + b, 0);
+        if (asked > row.slots) { toast(`As classes procuradas somam ${asked}, mais que as ${row.slots} vagas`, true); return; }
+        const submit = $('button[type=submit]', d);
+        submit.disabled = true;
+        try {
+          if (editing) {
+            await api.updateRecruit(r.id, row);
+            dlg.close();
+            toast('Recrutamento atualizado');
+            await route();
+          } else {
+            const res = await api.createRecruit(row);
+            dlg.close();
+            toast(res.status === 'open' ? 'Recrutamento publicado!' : 'Recrutamento enviado! Ele aparece para todos depois que um oficial ou o líder aprovar.');
+            location.hash = `#/recrutamento/${res.id}`;
+          }
+        } catch (err) { fail(err); submit.disabled = false; }
+      });
+    });
+  }
+
+  // =====================================================================
+  //  Tickets: o membro fala com a liderança (pode ser anônimo)
+  //  Aba "Tickets" = os meus; aba "Atendimento" = líder e oficiais respondem.
+  // =====================================================================
+  state.tickets = [];
+  state.revealed = {}; // autor revelado pelo líder (só na memória desta página)
+  async function loadTickets() {
+    if (!TICKETS_ON || !isMember()) { state.tickets = []; return; }
+    try { state.tickets = await api.tickets(); } catch (e) { console.warn('tickets', e); state.tickets = []; }
+  }
+  const ticketSeenKey = (id) => `tk-seen-${state.user?.id}-${id}`;
+  const ticketSeen = (id) => { try { return Number(localStorage.getItem(ticketSeenKey(id))) || 0; } catch { return 0; } };
+  const markTicketSeen = (id) => { try { localStorage.setItem(ticketSeenKey(id), String(Date.now())); } catch { /* ignora */ } };
+  const lastPublic = (t) => [...(t.messages || [])].reverse().find((m) => !m.internal);
+  const lastActivity = (t) => t.messages?.[t.messages.length - 1]?.created_at || t.created_at;
+  // Meu ticket com resposta nova da liderança que eu ainda não abri
+  const ticketHasNews = (t) => { if (!t.mine) return false; const m = lastPublic(t); return !!m && !m.from_author && Date.parse(m.created_at) > ticketSeen(t.id); };
+  // Pendência pela última mensagem pública: 'staff' = pendente atendimento; 'author' = pendente autor
+  const ticketPending = (t) => (t.status === 'resolved' ? null : lastPublic(t)?.from_author ? 'staff' : 'author');
+  // Ticket de outra pessoa esperando a liderança
+  const ticketAwaiting = (t) => !t.mine && ticketPending(t) === 'staff';
+  // Líder e oficiais (com "Ver tickets") usam só a aba Atendimento, que também tem os tickets deles
+  const supportOn = () => TICKETS_ON && isOfficer() && can('ticket_view');
+  const ticketBadgeMine = () => (state.tickets || []).filter(ticketHasNews).length;
+  const ticketBadgeStaff = () => (supportOn() ? (state.tickets || []).filter(ticketAwaiting).length + ticketBadgeMine() : 0);
+  const ownerLabel = (t) => (t.assigned_to === state.user.id ? 'Com você' : `Responsável: ${nameOf(t.assigned_to)}`);
+  function ticketAuthorLabel(t) {
+    if (t.mine) return t.anonymous ? 'Você (anônimo)' : 'Você';
+    if (t.author_id) return nameOf(t.author_id);
+    return state.revealed[t.id] ? `🕶️ Anônimo (${nameOf(state.revealed[t.id])})` : '🕶️ Anônimo';
+  }
+  function ticketBadges(t, staff = supportOn()) {
+    const cat = TICKET_CAT[t.category] || TICKET_CAT.other;
+    const pend = ticketPending(t);
+    return [
+      `<span class="badge rc-cat tk-cat-${esc(t.category)}">${esc(cat.label)}</span>`,
+      `<span class="badge tk-st tk-st-${esc(t.status)}">${esc(TICKET_STATUS[t.status] || t.status)}</span>`,
+      t.anonymous ? '<span class="badge rc-closed">🕶️ Anônimo</span>' : '',
+      t.mine && staff ? '<span class="badge rc-mine">Seu ticket</span>' : '',
+      ticketHasNews(t) ? '<span class="badge warn">Resposta nova</span>' : '',
+      staff && !t.mine && pend ? `<span class="badge tk-pend-${pend}">${pend === 'staff' ? '⏳ Pendente atendimento' : '💬 Pendente autor'}</span>` : '',
+    ].join('');
+  }
+  // Responsável em destaque (quem atende)
+  function ownerTag(t) {
+    if (t.status === 'resolved' && !t.assigned_to) return '';
+    return t.assigned_to
+      ? `<span class="tk-owner${t.assigned_to === state.user.id ? ' me' : ''}">👤 ${esc(ownerLabel(t))}</span>`
+      : '<span class="tk-owner none">👤 Sem responsável</span>';
+  }
+  function ticketRowHtml(t, staff) {
+    const cat = TICKET_CAT[t.category] || TICKET_CAT.other;
+    const n = t.messages.filter((m) => !m.internal).length;
+    return `<a class="card tk-row" href="#/ticket/${t.id}">
+      <span class="rc-icon" aria-hidden="true">${cat.icon}</span>
+      <div class="rc-body">
+        <div class="tk-row-top"><div class="tk-title">${esc(t.title)}</div>${staff ? ownerTag(t) : ''}</div>
+        <div class="rc-badges">${ticketBadges(t, staff)}</div>
+        <div class="muted small">${staff ? `Aberto por <b>${esc(ticketAuthorLabel(t))}</b> · ` : ''}${n} mensage${n === 1 ? 'm' : 'ns'} · atualizado ${esc(fmtWhen(lastActivity(t)))}${!staff && t.assigned_to ? ` · com ${esc(nameOf(t.assigned_to))}` : ''}</div>
+      </div>
+    </a>`;
+  }
+
+  // ---------- Anexos (imagens) ----------
+  const imagePickerHtml = () => `<div class="tk-files">
+      <label class="btn small ghost tk-attach">📎 Anexar imagens<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden></label>
+      <span class="muted small">até ${TICKET_MAX_IMAGES} por mensagem</span>
+      <div class="tk-previews"></div>
+    </div>`;
+  function bindImagePicker(root) {
+    const input = $('.tk-files input[type=file]', root);
+    const prev = $('.tk-previews', root);
+    let files = [];
+    const draw = () => {
+      prev.innerHTML = files.map((f, i) => `<span class="tk-thumb"><img src="${esc(f.url)}" alt=""><button type="button" data-rm="${i}" title="Tirar esta imagem" aria-label="Tirar esta imagem">×</button></span>`).join('');
+      prev.querySelectorAll('[data-rm]').forEach((b) => b.addEventListener('click', () => {
+        const [f] = files.splice(Number(b.dataset.rm), 1);
+        URL.revokeObjectURL(f.url);
+        draw();
+      }));
+    };
+    input.addEventListener('change', () => {
+      const add = [...input.files].filter((f) => f.type.startsWith('image/'));
+      if (files.length + add.length > TICKET_MAX_IMAGES) toast(`Máximo de ${TICKET_MAX_IMAGES} imagens por mensagem`, true);
+      add.slice(0, TICKET_MAX_IMAGES - files.length).forEach((f) => files.push({ file: f, url: URL.createObjectURL(f) }));
+      input.value = '';
+      draw();
+    });
+    return { files: () => files.map((f) => f.file) };
+  }
+  async function uploadTicketImages(files, status) {
+    const urls = [];
+    for (const raw of files) {
+      if (status) status.textContent = `Enviando imagem ${urls.length + 1} de ${files.length}…`;
+      const f = await prepareImage(raw);
+      if (f.size > 5 * 1024 * 1024) throw new Error('Uma das imagens passa de 5 MB mesmo depois de otimizada. Use uma imagem menor.');
+      urls.push(await api.uploadTicketImage(f));
+    }
+    return urls;
+  }
+  const imagesHtml = (imgs) => (imgs?.length ? `<div class="tk-imgs">${imgs.map((u) => `<a href="${esc(u)}" target="_blank" rel="noopener" title="Abrir imagem"><img src="${esc(u)}" alt="Imagem anexada" loading="lazy"></a>`).join('')}</div>` : '');
+
+  // ---------- Aba "Tickets" (os meus) ----------
+  async function viewTickets() {
+    if (supportOn()) { location.hash = '#/atendimento'; return; }
+    renderHeader('tickets');
+    const mine = state.tickets.filter((t) => t.mine).sort((a, b) => Date.parse(lastActivity(b)) - Date.parse(lastActivity(a)));
+    const open = mine.filter((t) => t.status !== 'resolved');
+    const done = mine.filter((t) => t.status === 'resolved');
+    main.innerHTML = `
+      <div class="page-head"><h1>Tickets</h1><button class="btn primary" id="btn-new-tk">+ Novo ticket</button></div>
+      <p class="muted small">Fale com a liderança do clã: sugestões, melhorias, dúvidas, problemas no site, reclamações ou denúncias. O líder e os oficiais respondem aqui mesmo, e você pode abrir o ticket de forma anônima.</p>
+      <div class="section-head"><h2>Em aberto</h2></div>
+      ${open.length ? open.map((t) => ticketRowHtml(t, false)).join('') : '<div class="card empty">Você não tem tickets em aberto.</div>'}
+      ${done.length ? `<div class="section-head"><h2>Resolvidos</h2></div>${done.map((t) => ticketRowHtml(t, false)).join('')}` : ''}`;
+    $('#btn-new-tk').addEventListener('click', openTicketForm);
+  }
+
+  // ---------- Aba "Atendimento" (líder e oficiais) ----------
+  const SUP = { view: 'open', cat: '' };
+  const SUP_VIEWS = [
+    ['open', 'Em aberto'], ['new', 'Não iniciado'], ['mine_pending', 'Pendente comigo'], ['p_author', 'Pendente autor'],
+    ['opened', 'Abertos por mim'], ['resolved', 'Resolvidos'], ['all', 'Todos'],
+  ];
+  const SUP_PICK = {
+    open: (t) => !t.mine && t.status !== 'resolved',
+    // Ninguém assumiu nem respondeu ainda
+    new: (t) => !t.mine && t.status !== 'resolved' && !t.assigned_to && !t.messages.some((m) => !m.from_author && !m.internal),
+    // Estou atendendo e a última mensagem é do autor
+    mine_pending: (t) => !t.mine && t.assigned_to === state.user.id && ticketPending(t) === 'staff',
+    p_author: (t) => !t.mine && ticketPending(t) === 'author',
+    opened: (t) => t.mine,
+    resolved: (t) => !t.mine && t.status === 'resolved',
+    all: () => true,
+  };
+  async function viewSupport() {
+    if (!supportOn()) { location.hash = '#/tickets'; return; }
+    renderHeader('support');
+    const all = state.tickets;
+    const list = all.filter(SUP_PICK[SUP.view] || SUP_PICK.all).filter((t) => !SUP.cat || t.category === SUP.cat)
+      .sort((a, b) => (ticketAwaiting(b) - ticketAwaiting(a)) || (Date.parse(lastActivity(b)) - Date.parse(lastActivity(a))));
+    const nNew = all.filter(SUP_PICK.new).length;
+    const nMine = all.filter(SUP_PICK.mine_pending).length;
+    const nNews = all.filter(ticketHasNews).length;
+    const nWaiting = all.filter(ticketAwaiting).length;
+    const reportsHidden = !isLeader() && permMode('ticket_reports') === 'deny';
+    const fcount = { new: nNew, mine_pending: nMine, opened: nNews };
+    // Em "Todos" e "Abertos por mim", os resolvidos ficam numa seção separada
+    const split = ['all', 'opened'].includes(SUP.view);
+    const active = list.filter((t) => t.status !== 'resolved');
+    const done = list.filter((t) => t.status === 'resolved');
+    const rows = (arr) => arr.map((t) => ticketRowHtml(t, true)).join('');
+    main.innerHTML = `
+      <div class="page-head"><h1>Atendimento</h1><button class="btn primary" id="btn-new-tk">+ Abrir ticket</button></div>
+      <p class="muted small">Tickets dos membros; os que você abriu ficam em “Abertos por mim”. <b>${nNew}</b> não iniciado${nNew === 1 ? '' : 's'} · <b>${nMine}</b> pendente${nMine === 1 ? '' : 's'} com você · <b>${nWaiting}</b> pendente${nWaiting === 1 ? '' : 's'} de atendimento no total.${reportsHidden ? ' Os tickets de Reclamação / Denúncia ficam só com o líder.' : ''}</p>
+      <div class="row tk-filters">
+        <div class="seg rc-filter" role="group" aria-label="Filtrar tickets">
+          ${SUP_VIEWS.map(([k, l]) => `<button class="${SUP.view === k ? 'on' : ''}" data-sup-v="${k}">${l}${fcount[k] ? ` <span class="tk-fcount">${fcount[k]}</span>` : ''}</button>`).join('')}
+        </div>
+        <select class="inline" id="sup-cat" aria-label="Filtrar por categoria">
+          <option value="">Todas as categorias</option>
+          ${TICKET_CATS.filter((c) => !(reportsHidden && c.key === 'report')).map((c) => `<option value="${c.key}" ${SUP.cat === c.key ? 'selected' : ''}>${c.icon} ${esc(c.label)}</option>`).join('')}
+        </select>
+      </div>
+      ${!list.length ? '<div class="card empty">Nenhum ticket aqui.</div>'
+        : split ? `${active.length ? `<div class="section-head"><h2>Em aberto</h2></div>${rows(active)}` : ''}${done.length ? `<div class="section-head"><h2>Resolvidos</h2></div>${rows(done)}` : ''}`
+        : rows(list)}`;
+    $('#btn-new-tk').addEventListener('click', openTicketForm);
+    main.querySelectorAll('[data-sup-v]').forEach((b) => b.addEventListener('click', () => { SUP.view = b.dataset.supV; viewSupport(); }));
+    $('#sup-cat').addEventListener('change', (e) => { SUP.cat = e.target.value; viewSupport(); });
+  }
+
+  // ---------- Um ticket (conversa) ----------
+  async function viewTicket(id) {
+    const t = state.tickets.find((x) => x.id === id);
+    if (t?.mine) markTicketSeen(t.id);
+    const staff = !!t && !t.mine;
+    const home = supportOn() ? ['#/atendimento', 'Atendimento'] : ['#/tickets', 'Meus tickets'];
+    renderHeader(supportOn() ? 'support' : 'tickets');
+    if (!t) {
+      main.innerHTML = `<p><a href="${home[0]}" class="small">← ${home[1]}</a></p><div class="card empty">Ticket não encontrado.</div>`;
+      return;
+    }
+    const cat = TICKET_CAT[t.category] || TICKET_CAT.other;
+    const canReply = t.mine || can('ticket_reply');
+    const canStatus = t.mine || can('ticket_resolve');
+    const who = (m) => {
+      if (m.from_author) return t.mine ? 'Você' : ticketAuthorLabel(t);
+      return m.author_id === state.user.id ? 'Você' : nameOf(m.author_id);
+    };
+    const msgs = t.messages.map((m) => {
+      const me = m.author_id === state.user.id || (t.mine && m.from_author);
+      return `<div class="tk-msg${me ? ' me' : ''}${m.internal ? ' internal' : ''}${m.from_author ? '' : ' staff'}">
+        <div class="tk-msg-head"><b>${esc(who(m))}</b>${!m.from_author ? ' <span class="tk-role">Liderança</span>' : ''}${m.internal ? ' <span class="tk-int">🔒 Nota interna</span>' : ''}<span class="muted small">${esc(fmtWhen(m.created_at))}</span></div>
+        ${m.body ? `<div class="tk-text">${esc(m.body)}</div>` : ''}
+        ${imagesHtml(m.images)}
+      </div>`;
+    }).join('');
+
+    const controls = [];
+    if (staff) {
+      if (can('ticket_reply')) {
+        controls.push(t.assigned_to === state.user.id
+          ? '<button class="btn small ghost" id="tk-unassign">Deixar de ser o responsável</button>'
+          : `<button class="btn small ${t.assigned_to ? 'ghost' : 'primary'}" id="tk-assign">🙋 Assumir${t.assigned_to ? ' no lugar' : ''}</button>`);
+      }
+      if (can('ticket_resolve')) {
+        controls.push(`<div class="seg" role="group" aria-label="Status do ticket">${Object.entries(TICKET_STATUS)
+          .map(([k, l]) => `<button class="${t.status === k ? 'on' : ''}" data-tk-st="${k}">${l}</button>`).join('')}</div>`);
+      }
+      if (isLeader() && t.anonymous && !t.author_id && !state.revealed[t.id]) controls.push('<button class="btn small ghost" id="tk-reveal">🕶️ Revelar autor</button>');
+    } else if (t.status !== 'resolved') controls.push('<button class="btn small ghost" id="tk-done">✔ Marcar como resolvido</button>');
+
+    main.innerHTML = `
+      <p><a href="${home[0]}" class="small">← ${home[1]}</a></p>
+      <div class="page-head"><h1>${cat.icon} ${esc(t.title)}</h1></div>
+      <div class="card tk-info">
+        <div class="tk-row-top"><div class="rc-badges">${ticketBadges(t)}</div>${staff ? ownerTag(t) : ''}</div>
+        <div class="muted small">Aberto por <b>${esc(ticketAuthorLabel(t))}</b> em ${esc(fmtWhen(t.created_at))}${!staff && t.assigned_to ? ` · Responsável: <b>${esc(nameOf(t.assigned_to))}</b>` : ''}</div>
+        ${staff && state.revealed[t.id] ? `<p class="small rc-note">🕶️ Autor: <b>${esc(nameOf(state.revealed[t.id]))}</b>. Só você está vendo; nada fica registrado no ticket.</p>` : ''}
+        ${t.mine && t.anonymous ? '<p class="small rc-note">🕶️ Seu nome fica oculto para os oficiais e o líder. Em casos graves, o líder pode ver quem abriu.</p>' : ''}
+        ${!staff && t.status === 'resolved' ? '<p class="small rc-note">✔ Ticket resolvido. Se precisar, escreva abaixo que ele é reaberto.</p>' : ''}
+        ${controls.length ? `<div class="row tk-controls">${controls.join('')}</div>` : ''}
+      </div>
+      <div class="tk-thread">${msgs}</div>
+      ${canReply ? `<form id="tk-reply" class="card tk-compose stack">
+        <textarea id="tk-body" maxlength="2000" placeholder="${staff ? 'Responder ao membro…' : 'Escreva uma mensagem…'}"></textarea>
+        ${imagePickerHtml()}
+        <div class="row">
+          ${staff ? '<label class="tk-check"><input type="checkbox" id="tk-internal"> 🔒 Nota interna <span class="muted small">(só líder e oficiais veem)</span></label>' : ''}
+          <span class="spacer"></span><span class="muted small" id="tk-status"></span>
+          <button class="btn primary" type="submit">Enviar</button>
+        </div>
+      </form>` : '<p class="muted small">O líder não permite que oficiais respondam tickets.</p>'}`;
+    const thread = $('.tk-thread');
+    thread.lastElementChild?.scrollIntoView({ block: 'nearest' });
+
+    const run = async (fn, msg) => { try { await fn(); if (msg) toast(msg); } catch (e) { fail(e); } await route(); };
+    $('#tk-assign')?.addEventListener('click', () => run(() => api.assignTicket(t.id, state.user.id), 'Você assumiu o ticket: agora ele está Em atendimento'));
+    $('#tk-unassign')?.addEventListener('click', () => run(() => api.assignTicket(t.id, null), 'Ticket sem responsável'));
+    main.querySelectorAll('[data-tk-st]').forEach((b) => b.addEventListener('click', () => {
+      if (b.dataset.tkSt !== t.status) run(() => api.setTicketStatus(t.id, b.dataset.tkSt), `Status: ${TICKET_STATUS[b.dataset.tkSt]}`);
+    }));
+    $('#tk-done')?.addEventListener('click', () => run(() => api.setTicketStatus(t.id, 'resolved'), 'Ticket marcado como resolvido'));
+    $('#tk-reveal')?.addEventListener('click', async () => {
+      if (!(await confirmDialog('Ver quem abriu este ticket anônimo? Só você vai ver o nome, e nada fica registrado no ticket. Use apenas em casos graves.', 'Revelar autor'))) return;
+      try { state.revealed[t.id] = await api.revealTicketAuthor(t.id); } catch (e) { fail(e); }
+      await viewTicket(t.id);
+    });
+    const form = $('#tk-reply');
+    if (form) {
+      const picker = bindImagePicker(form);
+      const internal = $('#tk-internal');
+      internal?.addEventListener('change', () => form.classList.toggle('internal', internal.checked));
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const body = $('#tk-body').value.trim();
+        const files = picker.files();
+        if (!body && !files.length) { toast('Escreva uma mensagem ou anexe uma imagem', true); return; }
+        const submit = $('button[type=submit]', form);
+        const status = $('#tk-status');
+        submit.disabled = true;
+        try {
+          const images = await uploadTicketImages(files, status);
+          await api.postTicketMessage(t.id, { body, internal: !!internal?.checked, images });
+          toast(internal?.checked ? 'Nota interna salva' : 'Mensagem enviada');
+          await route();
+        } catch (err) { fail(err); status.textContent = ''; submit.disabled = false; }
+      });
+    }
+  }
+
+  function openTicketForm() {
+    openDialog(`
+      <form id="tk-form" class="stack">
+        <h2>Novo ticket</h2>
+        <div class="field"><label for="tk-title">Assunto</label>
+          <input id="tk-title" maxlength="100" required placeholder="Ex.: Sugestão de horário para a Vigília"></div>
+        <div class="field"><label for="tk-cat">Categoria</label>
+          <select id="tk-cat" required>
+            <option value="" disabled selected hidden>Selecione…</option>
+            ${TICKET_CATS.map((c) => `<option value="${c.key}">${c.icon} ${esc(c.label)}</option>`).join('')}
+          </select></div>
+        <div class="field"><label for="tk-msg">Mensagem</label>
+          <textarea id="tk-msg" maxlength="2000" required placeholder="Conte com detalhes. Você poderá continuar a conversa depois."></textarea></div>
+        ${imagePickerHtml()}
+        <label class="tk-check tk-anon"><input type="checkbox" id="tk-anon"> 🕶️ Enviar anonimamente</label>
+        <p class="muted small tk-anon-note" hidden>Seu nome fica oculto para os oficiais e o líder; só você vê que o ticket é seu. Em casos graves, o líder pode ver quem abriu.</p>
+        <div class="row end">
+          <span class="muted small" id="tk-fstatus"></span><span class="spacer"></span>
+          <button type="button" class="btn ghost" data-close>Cancelar</button>
+          <button type="submit" class="btn primary">Abrir ticket</button>
+        </div>
+      </form>`, (d) => {
+      const picker = bindImagePicker(d);
+      const anon = $('#tk-anon', d);
+      anon.addEventListener('change', () => { $('.tk-anon-note', d).hidden = !anon.checked; });
+      $('#tk-form', d).addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const title = $('#tk-title', d).value.trim();
+        const body = $('#tk-msg', d).value.trim();
+        const category = $('#tk-cat', d).value;
+        if (!title || !body || !TICKET_CAT[category]) return;
+        const submit = $('button[type=submit]', d);
+        const status = $('#tk-fstatus', d);
+        submit.disabled = true;
+        try {
+          const images = await uploadTicketImages(picker.files(), status);
+          const id = await api.createTicket({ title, category, anonymous: anon.checked, body, images });
+          dlg.close();
+          toast(anon.checked ? 'Ticket anônimo aberto! A liderança vai responder aqui.' : 'Ticket aberto! A liderança vai responder aqui.');
+          location.hash = `#/ticket/${id}`;
+        } catch (err) { fail(err); status.textContent = ''; submit.disabled = false; }
+      });
+    });
+  }
+
   // ---------- Painel individual do membro (menu "Meu perfil") ----------
 
   const P = { days: 90 };
@@ -2491,6 +3378,7 @@
       </div>
       ${pilotsCard(me, self)}
       ${membershipCard(mlog.filter((h) => h.user_id === me.id), members)}
+      ${ticketsCard(me, self)}
       ${showNotes ? notesCard(me, allNotes.filter((n) => n.member_id === me.id), members) : ''}`;
 
     $('#btn-edit-pf')?.addEventListener('click', openProfile);
@@ -2510,6 +3398,28 @@
       if (!(await confirmDialog('Apagar esta anotação? Não dá para desfazer.', 'Apagar'))) return;
       try { await api.deleteNote(Number(b.dataset.delNote)); toast('Anotação apagada'); await viewMyPanel(userId); } catch (err) { fail(err); }
     }));
+  }
+
+  // ---------- Tickets no perfil ----------
+  // No próprio perfil: todos os meus (inclusive anônimos). No perfil de outra pessoa (liderança): só os não anônimos.
+  function ticketsCard(person, self) {
+    if (!TICKETS_ON || !(self || supportOn())) return '';
+    const list = (state.tickets || [])
+      .filter((t) => (self ? t.mine : !t.anonymous && t.author_id === person.id))
+      .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+    const open = list.filter((t) => t.status !== 'resolved').length;
+    return `<div class="card" style="margin-top:12px">
+      <h2>${self ? 'Meus tickets' : 'Tickets abertos por este membro'} ${open ? `<span class="badge warn">${open} em aberto</span>` : ''}</h2>
+      ${list.length ? `<div class="tk-mini-list">${list.map((t) => {
+        const cat = TICKET_CAT[t.category] || TICKET_CAT.other;
+        return `<a class="tk-mini" href="#/ticket/${t.id}">
+          <span aria-hidden="true">${cat.icon}</span>
+          <span class="spacer"><b>${esc(t.title)}</b>${t.anonymous ? ' <span class="muted small">🕶️ anônimo</span>' : ''}<br><span class="muted small">${esc(cat.label)} · aberto em ${esc(fmtShortDate(t.created_at))}${t.assigned_to && !self ? ` · com ${esc(t.assigned_to === state.user.id ? 'você' : nameOf(t.assigned_to))}` : ''}</span></span>
+          <span class="badge tk-st tk-st-${esc(t.status)}">${esc(TICKET_STATUS[t.status] || t.status)}</span>
+        </a>`;
+      }).join('')}</div>` : `<p class="muted">${self ? 'Você ainda não abriu nenhum ticket.' : 'Nenhum ticket aberto por este membro.'}</p>`}
+      ${!self ? '<p class="muted small" style="margin:8px 0 0">Tickets enviados de forma anônima não aparecem aqui.</p>' : ''}
+    </div>`;
   }
 
   // ---------- Contas pilotadas no perfil ----------
@@ -3425,17 +4335,22 @@
     const ev = h.match(/^\/evento\/(\d+)$/);
     const tm = h.match(/^\/evento\/(\d+)\/times$/);
     const mp = h.match(/^\/membro\/([\w%-]+)$/); // perfil de um membro (oficiais e líder)
+    const rc = RECRUIT_ON ? h.match(/^\/recrutamento\/(\d+)$/) : null;
+    const tk = TICKETS_ON ? h.match(/^\/ticket\/(\d+)$/) : null;
     const key = h === '/passados' ? 'past' : h === '/frequencia' ? 'freq' : h === '/news' ? 'news' : h === '/utils' ? 'utils'
       : h === '/config' ? 'config' : h === '/solicitacoes' ? 'requests'
+      : RECRUIT_ON && h === '/recrutamentos' ? 'recruits' : rc ? 'recruits'
+      : TICKETS_ON && h === '/tickets' ? 'tickets' : TICKETS_ON && h === '/atendimento' ? 'support' : tk ? 'ticket'
       : h === '/perfil' ? 'profile' : h === '/membros' ? (isOfficer() ? 'members' : 'profile') : mp ? 'members'
       : tm ? 'teams' : ev ? 'event' : 'upcoming';
-    return { ev, tm, mp, key };
+    return { ev, tm, mp, rc, tk, key };
   }
   const currentRouteKey = () => parseRoute().key;
 
   async function route() {
-    const { ev, tm, mp, key } = parseRoute();
+    const { ev, tm, mp, rc, tk, key } = parseRoute();
     if (state.user && isOfficer()) await loadPerms();
+    if (state.user && isMember()) await Promise.all([loadRecruits(), loadTickets()]);
     renderHeader(key);
     if (!state.user) return viewLogin();
     if (!isMember()) return state.me?.role === 'former' ? viewFormer() : viewPending();
@@ -3445,6 +4360,11 @@
       else if (key === 'utils') viewUtils();
       else if (key === 'config') await viewConfig();
       else if (key === 'requests') await viewRequests();
+      else if (rc) await viewRecruit(Number(rc[1]));
+      else if (tk) await viewTicket(Number(tk[1]));
+      else if (key === 'tickets') await viewTickets();
+      else if (key === 'support') await viewSupport();
+      else if (key === 'recruits') await viewRecruits();
       else if (mp) await viewMyPanel(decodeURIComponent(mp[1]));
       else if (key === 'profile') await viewMyPanel();
       else if (key === 'members') await viewMembers();
