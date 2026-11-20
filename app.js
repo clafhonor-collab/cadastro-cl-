@@ -313,6 +313,7 @@
       async pilotageBoard() { return ok(await sb.rpc('pilotage_board')) || { offers: [], requests: [] }; },
       async savePilotOffer(about, active) { ok(await sb.rpc('save_pilot_offer', { p_about: about, p_active: !!active })); },
       async deletePilotOffer(pilotId) { ok(await sb.rpc('delete_pilot_offer', { p_pilot: pilotId })); },
+      async reviewPilotOffer(pilotId, approve, note) { ok(await sb.rpc('review_pilot_offer', { p_pilot: pilotId, p_approve: !!approve, p_note: note || null })); },
       async requestPilotage(pilotId, message) { ok(await sb.rpc('request_pilotage', { p_pilot: pilotId, p_message: message || null })); },
       async cancelPilotage(id) { ok(await sb.rpc('cancel_pilotage', { p_id: id })); },
       async answerPilotage(id, accept, answer) { ok(await sb.rpc('answer_pilotage', { p_id: id, p_accept: !!accept, p_answer: answer || null })); },
@@ -590,9 +591,9 @@
     Object.assign(profile('u0'), { is_pilot: true, pilot_note: 'Conta do Gelo' });
     Object.assign(profile('u5'), { is_pilot: true });
     db.pilotOffers = [
-      { pilot_id: 'pl1', about: 'Piloto Guerras e Ritos à noite (20h–23h). Já piloto a conta do Granito.', active: true, created_at: day(-10, 20), updated_at: day(-10, 20) },
-      { pilot_id: 'u5', about: 'Posso pilotar nos fins de semana, de tarde.', active: true, created_at: day(-6, 15), updated_at: day(-6, 15) },
-      { pilot_id: 'u0', about: 'Piloto em Portões e Guerras quando você precisar viajar.', active: true, created_at: day(-3, 21), updated_at: day(-3, 21) },
+      { pilot_id: 'pl1', about: 'Piloto Guerras e Ritos à noite (20h–23h). Já piloto a conta do Granito.', active: true, created_at: day(-10, 20), updated_at: day(-10, 20), status: 'approved', reviewed_by: 'u1', reviewed_at: day(-10, 21), review_note: null },
+      { pilot_id: 'u5', about: 'Posso pilotar nos fins de semana, de tarde.', active: true, created_at: day(-6, 15), updated_at: day(0, 8), status: 'pending', reviewed_by: null, reviewed_at: null, review_note: null },
+      { pilot_id: 'u0', about: 'Piloto em Portões e Guerras quando você precisar viajar.', active: true, created_at: day(-3, 21), updated_at: day(-3, 21), status: 'approved', reviewed_by: 'u1', reviewed_at: day(-3, 22), review_note: null },
     ];
     db.pilotReqs = [
       { id: 900, account_id: 'u7', pilot_id: 'u0', requested_by: 'u7', message: 'Vou viajar sábado, consegue jogar a Guerra na minha conta?', status: 'pending', answer: null, created_at: day(-1, 10), decided_at: null },
@@ -1178,8 +1179,10 @@
         if (!isMember()) return null;
         const me = state.user.id;
         const active = (p) => p && ['member', 'officer', 'leader'].includes(p.role);
-        const offers = db.pilotOffers.filter((o) => { const p = profile(o.pilot_id); return active(p) && (p.is_pilot || p.pilot_only); })
+        const offers = db.pilotOffers.filter((o) => { const p = profile(o.pilot_id); return active(p) && (p.is_pilot || p.pilot_only) && (o.status === 'approved' || o.pilot_id === me || isOfficer()); })
           .map((o) => ({ ...o, name: displayName(profile(o.pilot_id)), pilot_only: !!profile(o.pilot_id).pilot_only,
+            reviewed_by_name: isOfficer() || o.pilot_id === me ? (o.reviewed_by ? displayName(profile(o.reviewed_by)) : null) : null,
+            review_note: isOfficer() || o.pilot_id === me ? o.review_note : null,
             accounts: db.pilots.filter((x) => x.pilot_id === o.pilot_id && x.status === 'approved' && active(profile(x.account_id))).length }))
           .sort((a, b) => (b.active - a.active) || a.name.localeCompare(b.name, 'pt-BR'));
         const recent = Date.now() - 60 * 86400e3;
@@ -1197,8 +1200,19 @@
         if (!text) throw new Error('Escreva como você pode ajudar (horários, eventos, etc.)');
         const now = new Date().toISOString();
         const o = db.pilotOffers.find((x) => x.pilot_id === p.id);
-        if (o) Object.assign(o, { about: text, active: !!active, updated_at: now });
-        else db.pilotOffers.push({ pilot_id: p.id, about: text, active: !!active, created_at: now, updated_at: now });
+        const review = { status: 'pending', reviewed_by: null, reviewed_at: null, review_note: null };
+        if (!o) db.pilotOffers.push({ pilot_id: p.id, about: text, active: !!active, created_at: now, updated_at: now, ...review });
+        else if (o.about !== text || o.status === 'rejected') Object.assign(o, { about: text, active: !!active, updated_at: now, ...review });
+        else Object.assign(o, { active: !!active, updated_at: now });
+      },
+      async reviewPilotOffer(pilotId, approve, note) {
+        const me = profile(state.user.id).role;
+        if (!['leader', 'officer'].includes(me)) throw new Error('Só oficiais e o líder podem aprovar anúncios de pilotagem');
+        if (me === 'officer' && permMode('pilots') !== 'allow') throw new Error('O líder não permite esta ação para oficiais (pilots)');
+        if (pilotId === state.user.id && me !== 'leader') throw new Error('Outra pessoa da staff precisa aprovar o seu próprio anúncio');
+        const o = db.pilotOffers.find((x) => x.pilot_id === pilotId);
+        if (!o) throw new Error('Anúncio não encontrado');
+        Object.assign(o, { status: approve ? 'approved' : 'rejected', reviewed_by: state.user.id, reviewed_at: new Date().toISOString(), review_note: String(note || '').trim().slice(0, 300) || null });
       },
       async deletePilotOffer(pilotId) {
         if (!(pilotId === state.user.id || isOfficer())) throw new Error('Sem permissão');
@@ -1212,7 +1226,7 @@
         if (profile(me).pilot_only) throw new Error('Membro piloto não tem conta própria para ser pilotada');
         if (pilotId === me) throw new Error('Você não pode pedir a si mesmo');
         const o = db.pilotOffers.find((x) => x.pilot_id === pilotId);
-        if (!o || !o.active || !ACTIVE_ROLES.includes(profile(pilotId)?.role)) throw new Error('Este piloto não está disponível no momento');
+        if (!o || !o.active || o.status !== 'approved' || !ACTIVE_ROLES.includes(profile(pilotId)?.role)) throw new Error('Este piloto não está disponível no momento');
         if (db.pilots.some((x) => x.account_id === me && x.pilot_id === pilotId && x.status === 'approved')) throw new Error('Este piloto já pilota a sua conta');
         if (db.pilotReqs.some((r) => r.account_id === me && r.pilot_id === pilotId && r.status === 'pending')) throw new Error('Você já tem um pedido em aberto com este piloto');
         if (db.pilotReqs.filter((r) => r.requested_by === me && r.status === 'pending').length >= 3) throw new Error('Limite de 3 pedidos de pilotagem em aberto. Aguarde a resposta ou cancele um pedido.');
@@ -1808,7 +1822,7 @@
   }
 
   // Depois de qualquer ação que muda dados, o sininho recalcula as pendências
-  const MUTATES = /^(set|clear|request|cancel|decide|create|update|delete|save|post|assign|close|reopen|apply|withdraw|remove|approve|reject|add|record|mark|reveal|lock|unlock|leave|join|publish|answer)/;
+  const MUTATES = /^(set|clear|request|cancel|decide|create|update|delete|save|post|assign|close|reopen|apply|withdraw|remove|approve|reject|add|record|mark|reveal|lock|unlock|leave|join|publish|answer|review)/;
   function withBellRefresh(raw) {
     const out = {};
     Object.keys(raw).forEach((k) => {
@@ -6191,7 +6205,7 @@
         <a class="card util-card util-internal" href="#/pilotagem">
           <span class="util-icon" aria-hidden="true">✈️</span>
           <span class="util-body"><b>Pilotagem</b><span class="muted small">Pilotos do clã: ofereça seus serviços ou peça alguém para pilotar a sua conta</span>
-            <span class="util-host">${pilotageInbox().length ? `${plural(pilotageInbox().length, 'pedido', 'pedidos')} para você · ` : ''}Abrir →</span></span>
+            <span class="util-host">${pilotageInbox().length ? `${plural(pilotageInbox().length, 'pedido', 'pedidos')} para você · ` : ''}${offersToReview().length ? `${plural(offersToReview().length, 'anúncio aguardando', 'anúncios aguardando')} aprovação · ` : ''}Abrir →</span></span>
         </a>
         ${UTIL_LINKS.map((l) => `<a class="card util-card" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">
           <span class="util-icon" aria-hidden="true">${l.icon}</span>
@@ -6212,6 +6226,10 @@
   }
   // Pedidos de pilotagem esperando a minha resposta (sou o piloto)
   const pilotageInbox = () => (state.pilotage?.requests || []).filter((r) => r.pilot_id === state.user?.id && r.status === 'pending');
+  // Anúncios esperando a aprovação da staff (líder e oficiais com a permissão "Gerenciar pilotos de contas")
+  const canReviewOffers = () => isOfficer() && can('pilots');
+  const canReviewOffer = (o) => canReviewOffers() && (o.pilot_id !== state.user?.id || isLeader());
+  const offersToReview = () => (canReviewOffers() ? (state.pilotage?.offers || []).filter((o) => o.status === 'pending') : []);
 
   async function viewPilotage() {
     loading();
@@ -6246,7 +6264,25 @@
       if (openOut.length >= PILOTAGE_MAX_OPEN) return `<span class="muted small" title="Aguarde a resposta ou cancele um pedido">Limite de ${PILOTAGE_MAX_OPEN} pedidos em aberto</span>`;
       return `<button class="btn small primary" data-pg-ask="${esc(o.pilot_id)}">Solicitar pilotagem</button>`;
     };
-    const offers = board.offers.filter((o) => o.active || o.pilot_id === myId || isOfficer());
+    // Pilotos disponíveis: só anúncios aprovados pela staff
+    const offers = board.offers.filter((o) => (o.status || 'approved') === 'approved' && (o.active || o.pilot_id === myId || isOfficer()));
+    const review = offersToReview();
+    const rejected = canReviewOffers() ? board.offers.filter((o) => o.status === 'rejected') : [];
+    const reviewedBy = (o) => (o.reviewed_by_name ? ` por ${esc(o.reviewed_by_name)}` : '');
+    const reviewCard = (o) => `<div class="pilot-row pg-req">
+        <div class="spacer"><b>${esc(o.name)}</b>${o.pilot_only ? ' <span class="pilot-tag">membro piloto</span>' : ''}
+          <div class="muted small">${o.status === 'rejected' ? `recusado${reviewedBy(o)} em ${fmtD(o.reviewed_at)}${o.review_note ? ` · “${esc(o.review_note)}”` : ''}` : `enviado em ${fmtD(o.updated_at)}`}</div>
+          <p class="pg-about" style="margin-top:6px">${esc(o.about)}</p></div>
+        ${o.status === 'pending' ? (canReviewOffer(o) ? `<button class="btn small ghost danger" data-pg-reject="${esc(o.pilot_id)}">Recusar</button>
+          <button class="btn small primary" data-pg-approve="${esc(o.pilot_id)}">Aprovar</button>`
+          : '<span class="muted small">Outra pessoa da staff aprova o seu anúncio</span>') : ''}
+      </div>`;
+    // Situação do meu anúncio
+    const myStatus = (o) => (o.status === 'pending'
+      ? '<span class="c-gold small">⏳ Aguardando aprovação da staff: ainda não aparece para os membros</span>'
+      : o.status === 'rejected'
+        ? `<span class="c-no small">✖ Recusado${reviewedBy(o)}${o.review_note ? `: “${esc(o.review_note)}”` : ''}. Edite o texto e salve para enviar de novo.</span>`
+        : `<span class="${o.active ? 'c-yes' : 'muted'} small">${o.active ? '● Aprovado e disponível: aparece para os membros' : '● Pausado: não aparece para os membros'}</span>`);
     const offerCard = (o) => `<div class="card pg-offer${o.active ? '' : ' paused'}">
         <div class="pg-offer-head"><span class="pg-icon" aria-hidden="true">✈️</span>
           <div class="spacer"><b>${esc(o.name)}</b>${o.pilot_only ? ' <span class="pilot-tag">membro piloto</span>' : ''}${o.active ? '' : ' <span class="badge">Pausado</span>'}
@@ -6268,15 +6304,18 @@
     main.innerHTML = `${head}
       <p class="muted small" style="margin-top:0">Peça a um piloto para jogar na sua conta (por exemplo, quando você for viajar). Quando ele aceita, passa a pilotar a sua conta:
         pode responder aos eventos por ela em <b>“Respondendo como”</b>. Você tira o piloto quando quiser em <b>Meu perfil → Pilotos</b>. Até ${PILOTAGE_MAX_OPEN} pedidos em aberto por pessoa.</p>
+      ${review.length ? `<h2>🛡 Anúncios aguardando aprovação (${review.length})</h2>
+        <p class="muted small" style="margin:0 0 8px">Só a staff vê. O anúncio aparece em “Pilotos disponíveis” depois de aprovado.</p>
+        <div class="card" style="margin-bottom:16px">${review.map(reviewCard).join('')}</div>` : ''}
       ${inbox.length ? `<h2>📨 Pedidos para você (${inbox.length})</h2><div class="card" style="margin-bottom:16px">${inbox.map((r) => reqRow(r, { asPilot: true })).join('')}</div>` : ''}
       <div class="card pg-mine" style="margin-bottom:16px">
         <h2>Seu anúncio</h2>
         ${!amPilot ? `<p class="muted small" style="margin:0 0 8px">Quer pilotar contas de outros membros? Marque <b>“Também sou piloto”</b> em Editar perfil e depois cadastre seus serviços aqui.</p>
             <button class="btn small" id="pg-become">✎ Editar perfil</button>`
           : myOffer ? `<p class="pg-about">${esc(myOffer.about)}</p>
-            <div class="row" style="gap:8px"><span class="${myOffer.active ? 'c-yes' : 'muted'} small">${myOffer.active ? '● Disponível: aparece para os membros' : '● Pausado: não aparece para os membros'}</span><span class="spacer"></span>
+            <div class="row" style="gap:8px">${myStatus(myOffer)}<span class="spacer"></span>
               <button class="btn small" id="pg-edit">Editar</button>
-              <button class="btn small" id="pg-toggle">${myOffer.active ? 'Pausar' : 'Ficar disponível'}</button>
+              ${(myOffer.status || 'approved') === 'approved' ? `<button class="btn small" id="pg-toggle">${myOffer.active ? 'Pausar' : 'Ficar disponível'}</button>` : ''}
               <button class="btn small ghost danger" id="pg-leave">Sair da Pilotagem</button></div>`
             : `<p class="muted small" style="margin:0 0 8px">Você é piloto. Cadastre seus serviços para que os membros possam pedir a pilotagem da conta deles.</p>
               <button class="btn small primary" id="pg-edit">+ Cadastrar meus serviços</button>`}
@@ -6287,6 +6326,8 @@
       ${mineOut.length ? `<h2 style="margin-top:20px">Seus pedidos</h2><div class="card">${mineOut.map((r) => reqRow(r)).join('')}</div>` : ''}
       ${answered.length ? `<details class="former-box" style="margin-top:16px"><summary>Pedidos que você já respondeu (${answered.length})</summary>
           <div class="card">${answered.map((r) => reqRow(r, { asPilot: true })).join('')}</div></details>` : ''}
+      ${rejected.length ? `<details class="former-box" style="margin-top:16px"><summary>Anúncios recusados (${rejected.length}) <span class="muted small">· liderança</span></summary>
+          <div class="card">${rejected.map(reviewCard).join('')}</div></details>` : ''}
       ${staffOthers.length ? `<details class="former-box" style="margin-top:16px"><summary>Todos os pedidos de pilotagem <span class="muted small">· liderança, últimos 60 dias</span> (${staffOthers.length})</summary>
           <div class="card">${staffOthers.map((r) => reqRow(r, { staff: true })).join('')}</div></details>` : ''}`;
 
@@ -6297,7 +6338,18 @@
       renderHeader('pilotage');
     };
     $('#pg-become')?.addEventListener('click', () => openProfile());
-    $('#pg-edit')?.addEventListener('click', () => openPilotOfferForm(myOffer, () => after(myOffer ? 'Anúncio atualizado' : 'Pronto! Seu anúncio já aparece na Pilotagem')));
+    $('#pg-edit')?.addEventListener('click', () => openPilotOfferForm(myOffer, (changed) => after(!myOffer
+      ? 'Anúncio enviado! Ele aparece na Pilotagem depois que a staff aprovar.'
+      : changed ? 'Anúncio enviado para nova aprovação da staff' : 'Anúncio atualizado')));
+    main.querySelectorAll('[data-pg-approve]').forEach((b) => b.addEventListener('click', async () => {
+      const o = board.offers.find((x) => x.pilot_id === b.dataset.pgApprove);
+      if (!(await confirmDialog(`Aprovar o anúncio de ${o?.name || 'este piloto'}? Ele passa a aparecer em “Pilotos disponíveis” para todos os membros.`, 'Aprovar'))) return;
+      try { await api.reviewPilotOffer(o.pilot_id, true, null); await after(`Anúncio de ${o.name} aprovado`); } catch (e) { fail(e); }
+    }));
+    main.querySelectorAll('[data-pg-reject]').forEach((b) => b.addEventListener('click', () => {
+      const o = board.offers.find((x) => x.pilot_id === b.dataset.pgReject);
+      if (o) openOfferReject(o, () => after('Anúncio recusado'));
+    }));
     $('#pg-toggle')?.addEventListener('click', async () => {
       try { await api.savePilotOffer(myOffer.about, !myOffer.active); await after(myOffer.active ? 'Anúncio pausado' : 'Você está disponível de novo'); } catch (e) { fail(e); }
     });
@@ -6335,13 +6387,35 @@
         <div class="field"><label for="pg-about">Como você pode ajudar</label>
           <textarea id="pg-about" rows="4" maxlength="300" required placeholder="Ex.: piloto Guerras e Ritos à noite (20h–23h), nos fins de semana também.">${esc(offer?.about || '')}</textarea>
           <span class="muted small">Até 300 caracteres. Todos os membros do clã veem o seu nome e este texto.</span></div>
+        <p class="muted small" style="margin:0">🛡 A staff aprova o anúncio antes de ele aparecer para os membros. Se você mudar o texto depois, ele passa por nova aprovação.</p>
         <label class="check-line"><input type="checkbox" id="pg-active" ${!offer || offer.active ? 'checked' : ''}> <span>Disponível para novos pedidos</span></label>
         <div class="row end"><button type="button" class="btn ghost" data-close>Cancelar</button><button type="submit" class="btn primary">Salvar</button></div>
       </form>`, (d) => {
       $('#pg-form', d).addEventListener('submit', async (e) => {
         e.preventDefault();
         e.submitter && (e.submitter.disabled = true);
-        try { await api.savePilotOffer($('#pg-about', d).value.trim(), $('#pg-active', d).checked); dlg.close(); await after(); }
+        const about = $('#pg-about', d).value.trim();
+        const changed = !!offer && (about !== offer.about || offer.status === 'rejected');
+        try { await api.savePilotOffer(about, $('#pg-active', d).checked); dlg.close(); await after(changed); }
+        catch (err) { fail(err); if (e.submitter) e.submitter.disabled = false; }
+      });
+    });
+  }
+
+  // Staff recusa um anúncio (o motivo aparece para o piloto)
+  function openOfferReject(o, after) {
+    openDialog(`<form class="stack" id="por-form">
+        <h2>Recusar o anúncio de ${esc(o.name)}</h2>
+        <p class="pg-about">${esc(o.about)}</p>
+        <div class="field"><label for="por-msg">Motivo <span class="muted small">(opcional, aparece para o piloto)</span></label>
+          <textarea id="por-msg" rows="3" maxlength="300" placeholder="Ex.: escreva os horários em que você pode pilotar"></textarea></div>
+        <p class="muted small" style="margin:0">O piloto pode editar o texto e enviar de novo.</p>
+        <div class="row end"><button type="button" class="btn ghost" data-close>Voltar</button><button type="submit" class="btn danger">Recusar anúncio</button></div>
+      </form>`, (d) => {
+      $('#por-form', d).addEventListener('submit', async (e) => {
+        e.preventDefault();
+        e.submitter && (e.submitter.disabled = true);
+        try { await api.reviewPilotOffer(o.pilot_id, false, $('#por-msg', d).value.trim()); dlg.close(); await after(); }
         catch (err) { fail(err); if (e.submitter) e.submitter.disabled = false; }
       });
     });
@@ -6983,6 +7057,10 @@
       if (can('pilots')) {
         const n = (state.pilots || []).filter((p) => p.status === 'pending' && p.account_id !== me).length;
         if (n) lead.push({ icon: '🧑‍✈️', text: `${plural(n, 'pedido de piloto', 'pedidos de piloto')}`, href: '#/membros' });
+      }
+      if (offersToReview().length) {
+        const n = offersToReview().length;
+        lead.push({ icon: '🧑‍✈️', text: `${plural(n, 'anúncio de pilotagem', 'anúncios de pilotagem')} aguardando aprovação`, href: '#/pilotagem' });
       }
       if (can('withdraw_decide')) {
         state.bellUp.forEach((ev) => {
