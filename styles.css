@@ -1171,3 +1171,28 @@ body.has-fab main { padding-bottom: 90px; }
 .pg-offer.focus { border-color: var(--gold); box-shadow: 0 0 0 2px rgba(220, 170, 82, .55), 0 10px 30px rgba(220, 170, 82, .18); }
 .pg-share-img { display: block; width: 100%; max-width: 360px; margin: 0 auto; border-radius: 10px; border: 1px solid var(--border); }
 .pg-share-dlg input[readonly] { font-size: .85rem; }
+
+/* Aviso de novidades nos tickets (resposta ou encerramento pela staff) */
+.tk-notice { position: fixed; z-index: 60; right: 16px; bottom: 92px; width: min(380px, calc(100vw - 32px)); background: var(--panel, #1a100c);
+  border: 1px solid var(--accent-hi); border-radius: 12px; box-shadow: 0 14px 40px rgba(0, 0, 0, .55), 0 0 0 1px rgba(232, 70, 31, .25); padding: 10px 12px; display: grid; gap: 6px; }
+.tk-notice-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.tk-notice-x { background: transparent; border: 0; color: var(--muted); font-size: 1rem; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
+.tk-notice-x:hover { color: var(--text); background: var(--panel-2); }
+.tk-notice-item { display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 8px; background: var(--panel-2); color: var(--text); text-decoration: none; }
+.tk-notice-item:hover { outline: 1px solid var(--gold); text-decoration: none; }
+.tk-notice-txt { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.tk-notice-txt b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tk-notice-txt small { color: var(--muted); }
+.tk-notice-more { font-size: .85rem; color: var(--gold); }
+@media (max-width: 560px) { .tk-notice { right: 16px; left: 16px; width: auto; bottom: 84px; } }
+
+/* Eventos com dia e horário fixos */
+.ev-sched.ok { color: var(--gold); }
+.ev-sched.bad { color: #ff9b8a; font-weight: 600; }
+
+/* Evolução do personagem: recorde em azul */
+.line-chart .pt.record { fill: #3b82f6; stroke: #bfdbfe; stroke-width: 2.5; filter: drop-shadow(0 0 4px rgba(59, 130, 246, .8)); }
+.line-chart .pt.record:hover { fill: #60a5fa; }
+.evo-legend { display: flex; gap: 14px; flex-wrap: wrap; color: var(--muted); margin-top: 4px; }
+.evo-legend b { color: var(--text); }
+.lg-record { display: inline-block; width: 11px; height: 11px; border-radius: 50%; background: #3b82f6; border: 2px solid #bfdbfe; margin-right: 6px; vertical-align: -1px; }

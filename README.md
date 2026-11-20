@@ -194,6 +194,7 @@ Membros comuns não conseguem abrir o perfil de outra pessoa. O painel mostra:
 - a frequência no período escolhido, as presenças, a sequência atual de presenças e quantas vezes confirmou e faltou;
 - os próximos eventos, com a resposta dada e o time, destacando os que ainda estão sem resposta;
 - os 5 atributos comparados com a média do clã;
+- **📈 Evolução do personagem**: gráfico de cada atributo ao longo do tempo. O **recorde** (maior valor já registrado) aparece como um **ponto azul** no gráfico, com a legenda embaixo; quando o valor atual está abaixo do recorde, o quadro também mostra **🏔️ Maior já registrado** em destaque no canto superior direito;
 - os últimos eventos, com o resultado de cada um (presente, confirmou e faltou, avisou, faltou sem responder);
 - o histórico das próprias alterações de nome, classe e atributos. Se alguém mudar a resposta para "Não vou", sai do time automaticamente.
 
@@ -295,8 +296,8 @@ O filtro no topo separa por categoria. O menu mostra um contador com os recrutam
   O aviso fica visível no topo da Central de Atendimento, com quantos tickets você já abriu hoje. Ao chegar a 3, o botão de novo ticket fica desativado até o dia seguinte.
 - **🕶️ Anônimo:** marcando **Enviar anonimamente**, o nome fica oculto para oficiais e líder. Em casos graves, o líder pode clicar em **Revelar autor**: só ele vê o nome, e nada fica registrado no ticket.
 - A conversa continua no próprio ticket. O membro pode marcar o ticket como resolvido. Se escrever num ticket resolvido, ele é reaberto.
-- **🔔 Aviso de resposta:** quando a staff responde, quem abriu o ticket recebe:
-  - um aviso na tela ("A staff respondeu seu ticket …"), uma única vez por resposta;
+- **🔔 Aviso de resposta ou encerramento:** quando a staff responde ou resolve (encerra) um ticket, quem abriu recebe:
+  - ao entrar no site, um aviso **📬 Novidades nos seus tickets** no canto da tela, com cada ticket ("A staff respondeu", "A staff resolveu e encerrou") e o botão **Abrir →** que leva direto a ele. O aviso continua até a pessoa abrir o ticket ou fechar o aviso no **✕**;
   - um contador dourado no botão **💬**;
   - o item "A staff respondeu seu ticket" no 🔔;
   - o selo **Resposta nova** no ticket.
@@ -392,6 +393,12 @@ Como o site só usa o login do Google, desligue também o login por e-mail: no S
 - **Ativar o Sorteio:** no Supabase, abra o **SQL Editor**, cole todo o conteúdo de [`supabase/sorteio.sql`](supabase/sorteio.sql) e clique em **Run**. Ele só acrescenta o que falta e pode ser executado de novo sem problema. O mesmo trecho também está no fim do `schema.sql`.
   O script também agenda o sorteio às 22h com o **pg_cron** do Supabase. Se aparecer o aviso "pg_cron indisponível", ative a extensão em **Database → Extensions → pg_cron** e rode o arquivo de novo. Enquanto ela não estiver ativa, o sorteio acontece na primeira visita ao site depois das 22h.
 - **Só Recrutamentos e Tickets:** o [`supabase/recrutamentos_tickets.sql`](supabase/recrutamentos_tickets.sql) instala apenas essas duas partes, sem mexer no resto. Ele depende das Configurações do líder, que já vêm no `schema.sql`. Quem roda o `schema.sql` completo não precisa dele.
+- **Dias e horários fixos:** ao criar ou editar um evento destes tipos, o site já coloca a data no próximo dia permitido e não deixa salvar fora dele (horário de Brasília):
+  - **Guerra das Sombras:** só quintas e sábados, às 19:30;
+  - **Vigília:** só domingos, às 20:00;
+  - **Torre Amaldiçoada (Torres):** só quintas e sábados, às 20:00.
+
+  Os outros tipos continuam livres. Para mudar as regras, altere `TYPE_SCHEDULE` no `app.js`.
 - **Eventos semanais:** ao criar, escolha "Repetir por N semanas"; ou, num evento existente, use "Repetir na próxima semana".
 - **Horários:** cada pessoa vê o horário no fuso do próprio celular ou PC.
 - **Link direto:** "Copiar link" na página do evento gera um link para mandar no Discord.

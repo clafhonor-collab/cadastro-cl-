@@ -689,6 +689,7 @@
       { id: 801, title: 'Botão de confirmar presença travou', category: 'site', anonymous: true, author_id: 'u0', status: 'progress', assigned_to: 'u1', created_at: day(-3, 22) },
       { id: 802, title: 'Comportamento na última Guerra', category: 'report', anonymous: true, author_id: 'u9', status: 'open', assigned_to: null, created_at: day(-1, 23) },
       { id: 803, title: 'Como funciona o Rito do Exílio?', category: 'question', anonymous: false, author_id: 'u6', status: 'resolved', assigned_to: 'u0', created_at: day(-9, 19) },
+      { id: 804, title: 'Meu nome não aparece no sorteio', category: 'site', anonymous: false, author_id: 'u0', status: 'resolved', assigned_to: 'u1', created_at: day(-2, 18) },
     ];
     db.tmsgs = [
       { id: 1, ticket_id: 800, author_id: 'u4', body: 'Que tal um treino PvP toda quarta às 21h? Ajudaria muito o pessoal novo.', internal: false, images: [], created_at: day(-1, 21) },
@@ -699,12 +700,14 @@
       { id: 6, ticket_id: 803, author_id: 'u6', body: 'Sou novo no clã. Como funciona o Rito do Exílio?', internal: false, images: [], created_at: day(-9, 19) },
       { id: 7, ticket_id: 803, author_id: 'u0', body: 'Bem-vindo! É a disputa pelo trono entre os clãs vencedores. Confirme presença no evento que montamos os times.', internal: false, images: [], created_at: day(-9, 21) },
       { id: 8, ticket_id: 803, author_id: 'u6', body: 'Entendi, valeu!', internal: false, images: [], created_at: day(-8, 12) },
+      { id: 9, ticket_id: 804, author_id: 'u0', body: 'Me inscrevi no sorteio, mas meu nome não aparece na lista.', internal: false, images: [], created_at: day(-2, 18) },
     ];
     // Histórico de status (quem encerrou, reabriu ou pôs em atendimento)
     db.tlog = [
       { ticket_id: 801, at: day(-2, 10), actor: 'u1', by_author: false, from_status: 'open', to_status: 'progress' },
       { ticket_id: 803, at: day(-9, 21), actor: 'u0', by_author: false, from_status: 'open', to_status: 'progress' },
       { ticket_id: 803, at: day(-8, 12, 2), actor: 'u6', by_author: true, from_status: 'progress', to_status: 'resolved' },
+      { ticket_id: 804, at: day(-1, 9), actor: 'u1', by_author: false, from_status: 'open', to_status: 'resolved' },
     ];
     const tlogStatus = (t, to) => {
       if (t.status === to) return;
@@ -4261,8 +4264,19 @@
   const markTicketSeen = (id) => { try { localStorage.setItem(ticketSeenKey(id), String(Date.now())); } catch { /* ignora */ } };
   const lastPublic = (t) => [...(t.messages || [])].reverse().find((m) => !m.internal);
   const lastActivity = (t) => t.messages?.[t.messages.length - 1]?.created_at || t.created_at;
-  // Meu ticket com resposta nova da liderança que eu ainda não abri
-  const ticketHasNews = (t) => { if (!t.mine) return false; const m = lastPublic(t); return !!m && !m.from_author && Date.parse(m.created_at) > ticketSeen(t.id); };
+  // Novidade num ticket meu que eu ainda não abri: resposta da staff e/ou encerramento pela staff
+  function ticketNews(t) {
+    if (!t.mine) return null;
+    const seen = ticketSeen(t.id);
+    const m = lastPublic(t);
+    const reply = m && !m.from_author && Date.parse(m.created_at) > seen ? m : null;
+    const close = (t.log || []).filter((l) => l.to_status === 'resolved' && !l.by_author && Date.parse(l.at) > seen).pop() || null;
+    if (!reply && !close) return null;
+    const at = Math.max(reply ? Date.parse(reply.created_at) : 0, close && t.status === 'resolved' ? Date.parse(close.at) : 0);
+    return { reply, resolved: !!close && t.status === 'resolved', at, key: `${reply?.created_at || ''}|${close?.at || ''}` };
+  }
+  const ticketHasNews = (t) => !!ticketNews(t)?.at;
+  const ticketNewsText = (n) => (n.reply && n.resolved ? '💬 A staff respondeu e encerrou' : n.resolved ? '✔ A staff resolveu e encerrou' : '💬 A staff respondeu');
   // Pendência pela última mensagem pública: 'staff' = pendente atendimento; 'author' = pendente autor
   const ticketPending = (t) => (t.status === 'resolved' ? null : lastPublic(t)?.from_author ? 'staff' : 'author');
   // Ticket de outra pessoa esperando a liderança
@@ -4284,21 +4298,37 @@
     fab.title = mine ? `Central de Atendimento: a staff respondeu ${mine === 1 ? '1 ticket seu' : `${mine} tickets seus`}`
       : supportOn() ? 'Central de Atendimento: tickets dos membros' : 'Central de Atendimento: fale com a liderança';
   }
-  // Aviso na tela quando a staff responde um ticket meu (uma vez por resposta, também entre visitas)
-  const tkToastKey = () => `tk-toasted-${state.user?.id}`;
+  // Aviso ao entrar no site (e enquanto ele está aberto) quando a staff responde ou resolve um ticket meu,
+  // com atalho direto para o ticket. Some ao abrir o ticket ou ao fechar o aviso (✕).
+  const tkToastKey = () => `tk-notice-${state.user?.id}`;
   function notifyTicketReplies() {
-    if (!TICKETS_ON || !state.user || !isMember()) return;
+    const old = $('#tk-notice');
+    if (!TICKETS_ON || !state.user || !isMember()) { old?.remove(); return; }
     let done = {};
     try { done = JSON.parse(localStorage.getItem(tkToastKey()) || '{}') || {}; } catch { done = {}; }
     const here = parseRoute().tk;
-    const fresh = (state.tickets || []).filter((t) => ticketHasNews(t) && !(here && Number(here[1]) === t.id)
-      && done[t.id] !== lastPublic(t)?.created_at);
-    if (!fresh.length) return;
-    fresh.forEach((t) => { done[t.id] = lastPublic(t).created_at; });
-    try { localStorage.setItem(tkToastKey(), JSON.stringify(done)); } catch { /* ignora */ }
-    toast(fresh.length === 1
-      ? `💬 A staff respondeu seu ticket “${fresh[0].title}”. Toque no 💬 para ver.`
-      : `💬 A staff respondeu ${fresh.length} tickets seus. Toque no 💬 para ver.`);
+    const items = (state.tickets || []).map((t) => ({ t, n: ticketNews(t) }))
+      .filter(({ t, n }) => n && !(here && Number(here[1]) === t.id) && done[t.id] !== n.key)
+      .sort((a, b) => b.n.at - a.n.at);
+    if (!items.length) { old?.remove(); return; }
+    const box = old || document.createElement('div');
+    box.id = 'tk-notice';
+    box.className = 'tk-notice';
+    box.setAttribute('role', 'status');
+    box.innerHTML = `<div class="tk-notice-head"><b>📬 ${items.length === 1 ? 'Novidade no seu ticket' : `Novidades em ${items.length} tickets seus`}</b>
+        <button type="button" class="tk-notice-x" aria-label="Fechar aviso" title="Fechar (o ticket continua marcado no 💬)">✕</button></div>
+      ${items.slice(0, 4).map(({ t, n }) => `<a class="tk-notice-item" href="#/ticket/${t.id}">
+        <span class="tk-notice-txt"><b>${esc(t.title)}</b><small>${ticketNewsText(n)} · ${esc(fmtWhenShort(new Date(n.at).toISOString()))}</small></span>
+        <span class="btn small primary">Abrir →</span></a>`).join('')}
+      ${items.length > 4 ? `<a class="tk-notice-more" href="#/tickets">Ver todos os ${items.length} tickets →</a>` : ''}`;
+    if (!old) document.body.appendChild(box);
+    const dismiss = () => {
+      items.forEach(({ t, n }) => { done[t.id] = n.key; });
+      try { localStorage.setItem(tkToastKey(), JSON.stringify(done)); } catch { /* ignora */ }
+      box.remove();
+    };
+    box.querySelector('.tk-notice-x').addEventListener('click', dismiss);
+    box.querySelectorAll('a').forEach((a) => a.addEventListener('click', () => box.remove()));
   }
   // Enquanto o site está aberto, confere novas respostas a cada minuto (e ao voltar para a aba)
   let ticketPollBusy = false;
@@ -5312,7 +5342,8 @@
           <span class="muted">Agora: <b>${fmtNum(cur)}</b>${last ? ` · última atualização em ${new Date(last).toLocaleDateString('pt-BR')}` : ''}</span></span>
           ${peak}
         </div>
-        ${lineChart(pts, { time: true, aria: `${attr.label} ao longo do tempo` })}`;
+        ${lineChart(pts.map((p, i) => (i === top.i ? { ...p, record: true } : p)), { time: true, aria: `${attr.label} ao longo do tempo` })}
+        <div class="evo-legend small"><span><i class="lg-record" aria-hidden="true"></i>Recorde de ${esc(attr.label)}: <b>${fmtNum(top.p.v)}</b> (${topWhen})</span></div>`;
     };
     document.querySelectorAll('.evo-tab').forEach((b) => b.addEventListener('click', () => show(b.dataset.evo)));
     show('resonance');
@@ -5952,7 +5983,7 @@
         <text class="axis" x="${L - 8}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end">${intFmt(v)}</text>`).join('')}
       <path d="${area}" fill="url(#g-area)"/>
       <path class="line" d="${line}"/>
-      ${points.map((p, i) => (p.dot === false ? '' : `<circle class="pt" cx="${x(i).toFixed(1)}" cy="${y(p.v).toFixed(1)}" r="4"><title>${esc(p.tip || `${p.label}: ${intFmt(p.v)} (${p.n} membros)`)}</title></circle>`)).join('')}
+      ${points.map((p, i) => (p.dot === false && !p.record ? '' : `<circle class="pt${p.record ? ' record' : ''}" cx="${x(i).toFixed(1)}" cy="${y(p.v).toFixed(1)}" r="${p.record ? 7 : 4}"><title>${esc(p.tip || `${p.label}: ${intFmt(p.v)} (${p.n} membros)`)}${p.record ? ' · recorde' : ''}</title></circle>`)).join('')}
       ${points.map((p, i) => (labelAt(i)
         ? `<text class="axis" x="${x(i).toFixed(1)}" y="${H - 8}" text-anchor="${opts.time && i === last ? 'end' : opts.time && i === 0 ? 'start' : 'middle'}">${esc(p.label)}</text>` : '')).join('')}
     </svg>`;
@@ -6891,6 +6922,34 @@
   //  Formulários
   // =====================================================================
 
+  // ---------- Dias e horários fixos de alguns tipos de evento (horário de Brasília) ----------
+  const TYPE_SCHEDULE = [
+    { match: (n) => n.includes('guerra das sombras'), days: [4, 6], hh: 19, mm: 30, label: 'quintas e sábados, às 19:30' },
+    { match: (n) => n.includes('vigilia'), days: [0], hh: 20, mm: 0, label: 'domingos, às 20:00' },
+    { match: (n) => n.includes('torre'), days: [4, 6], hh: 20, mm: 0, label: 'quintas e sábados, às 20:00' },
+  ];
+  const typeNameOf = (id) => state.types.find((t) => t.id === id)?.name || '';
+  const scheduleFor = (typeId) => { const n = norm(typeNameOf(typeId)); return n ? TYPE_SCHEDULE.find((x) => x.match(n)) || null : null; };
+  // Dia da semana, hora e minuto em Brasília
+  function brWhen(d) {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: RAFFLE_TZ, weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+      .formatToParts(d).map((x) => [x.type, x.value]));
+    return { day: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(parts.weekday), hh: Number(parts.hour) % 24, mm: Number(parts.minute) };
+  }
+  const fitsSchedule = (sc, d) => { const w = brWhen(d); return sc.days.includes(w.day) && w.hh === sc.hh && w.mm === sc.mm; };
+  // Próximo dia permitido a partir de uma data (no horário fixo, em Brasília; o Brasil não tem horário de verão)
+  function nextScheduleSlot(sc, from) {
+    const min = Math.max(Date.now(), from.getTime() - 86400e3);
+    for (let i = 0; i < 15; i++) {
+      const ymd = brDay(new Date(from.getTime() + i * 86400e3));
+      const day = new Date(`${ymd}T12:00:00Z`).getUTCDay();
+      if (!sc.days.includes(day)) continue;
+      const slot = new Date(`${ymd}T${pad(sc.hh)}:${pad(sc.mm)}:00-03:00`);
+      if (slot.getTime() > min) return slot;
+    }
+    return from;
+  }
+
   function openEventForm(ev) {
     const editing = !!ev;
     let start = ev?.starts_at;
@@ -6910,6 +6969,7 @@
             ${state.types.map((t) => `<option value="${t.id}" ${t.id === ev?.type_id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}
           </select>
           <div class="muted small field-hint">Agrupa os eventos no painel de Frequência. Novos tipos são cadastrados na tabela <code>event_types</code>.</div>
+          <div class="small field-hint ev-sched" id="f-sched" hidden></div>
         </div>
         <div class="grid2">
           <div class="field"><label for="f-start">Data e hora</label><input id="f-start" type="datetime-local" required value="${toLocalInput(start)}"></div>
@@ -6953,6 +7013,30 @@
       });
       typeSel.addEventListener('change', () => { typeSel.dataset.touched = '1'; suggestFormat(); });
       fmt?.addEventListener('change', () => { fmt.dataset.touched = '1'; });
+      // Tipos com dia e horário fixos: ajusta a data para o próximo dia permitido e avisa se estiver fora
+      const startInput = $('#f-start', d);
+      const schedHint = $('#f-sched', d);
+      let lastType = typeSel.value;
+      const checkSchedule = (adjust) => {
+        const sc = scheduleFor(Number(typeSel.value));
+        if (!sc) { schedHint.hidden = true; startInput.setCustomValidity(''); return; }
+        let when = new Date(startInput.value);
+        if (adjust && (Number.isNaN(when.getTime()) || !fitsSchedule(sc, when))) {
+          when = nextScheduleSlot(sc, Number.isNaN(when.getTime()) ? new Date() : when);
+          startInput.value = toLocalInput(when.toISOString());
+        }
+        const ok = !Number.isNaN(when.getTime()) && fitsSchedule(sc, when);
+        schedHint.hidden = false;
+        schedHint.className = `small field-hint ev-sched ${ok ? 'ok' : 'bad'}`;
+        schedHint.textContent = `⏰ ${typeNameOf(Number(typeSel.value))}: só ${sc.label} (horário de Brasília).${ok ? '' : ' Escolha um desses dias e horários.'}`;
+        startInput.setCustomValidity(ok ? '' : `${typeNameOf(Number(typeSel.value))} só ${sc.label}`);
+      };
+      // Ao trocar o tipo (escolhido ou sugerido pelo nome), já coloca no próximo dia e horário permitidos
+      const onType = () => { if (typeSel.value !== lastType) { lastType = typeSel.value; checkSchedule(true); } };
+      typeSel.addEventListener('change', onType);
+      titleInput.addEventListener('input', onType);
+      startInput.addEventListener('input', () => checkSchedule(false));
+      if (!editing && typeSel.value) checkSchedule(true); else checkSchedule(false);
 
       $('#ev-form', d).addEventListener('submit', async (e) => {
         e.preventDefault();
@@ -6964,6 +7048,10 @@
         const closeVal = $('#f-close', d).value;
         const rsvp_close_minutes = closeVal === '' ? null : Number(closeVal);
         if (!title || !type_id || Number.isNaN(startDate.getTime())) return;
+        // Dia e horário fixos (ao editar, só confere se a data ou o tipo mudaram)
+        const sc = scheduleFor(type_id);
+        const changedWhen = !editing || type_id !== ev.type_id || startDate.getTime() !== Date.parse(ev.starts_at);
+        if (sc && changedWhen && !fitsSchedule(sc, startDate)) { toast(`${typeNameOf(type_id)} só ${sc.label} (horário de Brasília).`, true); return; }
         submit.disabled = true;
         try {
           if (editing) {
@@ -7259,7 +7347,8 @@
       mine.push({ icon: '📅', text: `Responder: <b>${esc(ev.title)}</b>`, sub: `${esc(fmtWhenShort(ev.starts_at))}${d ? ` · responda até ${esc(fmtDeadline(d))}` : ''}${who}`, href: `#/evento/${ev.id}` });
     });
     (state.tickets || []).filter(ticketHasNews).forEach((t) => {
-      mine.push({ icon: '💬', text: `A staff respondeu seu ticket <b>${esc(t.title)}</b>`, sub: 'Toque para ver a resposta', href: `#/ticket/${t.id}` });
+      const n = ticketNews(t);
+      mine.push({ icon: n.resolved && !n.reply ? '✔' : '💬', text: `${ticketNewsText(n).replace(/^\S+ /, '')} seu ticket <b>${esc(t.title)}</b>`, sub: n.reply ? 'Toque para ver a resposta' : 'Toque para ver o ticket', href: `#/ticket/${t.id}` });
     });
     (state.recruits || []).filter((r) => isMyRecruit(r) && r.status === 'open' && recruitApps(r, 'applied').length).forEach((r) => {
       mine.push({ icon: '📣', text: `${plural(recruitApps(r, 'applied').length, 'candidato aguardando', 'candidatos aguardando')} você`, sub: `Recrutamento “${esc(r.title)}”`, href: `#/recrutamento/${r.id}` });
