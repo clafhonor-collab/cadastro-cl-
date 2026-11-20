@@ -2300,7 +2300,7 @@
       <p class="muted small" style="margin:0 0 12px"><b>${esc(ev.title)}</b> · ${esc(fmtDay(ev.starts_at))} às ${fmtTime(ev.starts_at)}</p>
       <div class="stack cal-opts">
         <a class="btn" href="${esc(googleCalUrl(ev))}" target="_blank" rel="noopener">Google Agenda</a>
-        <button class="btn" type="button" id="cal-ics">Celular / Outlook <span class="muted small">(arquivo .ics, com aviso 30 min antes)</span></button>
+        <button class="btn" type="button" id="cal-ics">Celular / Outlook</button>
       </div>
       <div class="row end" style="margin-top:12px"><button class="btn ghost" data-close>Fechar</button></div>`, (d) => {
       $('#cal-ics', d).addEventListener('click', () => {
