@@ -218,6 +218,11 @@
       async absences() { return ok(await sb.from('absences').select('*').order('starts_on', { ascending: false }).limit(500)); },
       async saveAbsence(userId, start, end, reason) { return ok(await sb.rpc('save_absence', { p_user: userId, p_start: start, p_end: end, p_reason: reason })); },
       async deleteAbsence(id) { ok(await sb.rpc('delete_absence', { p_id: id })); },
+      // Pedidos para sair do clã (a pessoa, quem pilota a conta e a liderança veem)
+      async leaves() { return ok(await sb.from('leave_requests').select('*').order('requested_at', { ascending: false }).limit(300)); },
+      async requestLeave(userId, reason) { return ok(await sb.rpc('request_leave', { p_user: userId, p_reason: reason })); },
+      async cancelLeave(id) { ok(await sb.rpc('cancel_leave', { p_id: id })); },
+      async decideLeave(id, approve, note) { ok(await sb.rpc('decide_leave', { p_id: id, p_approve: !!approve, p_note: note || null })); },
       // Resultado da guerra: todos os membros veem; as observações só a liderança
       async eventResult(id) {
         const r = await sb.from('event_results').select('*').eq('event_id', id).maybeSingle();
@@ -545,6 +550,8 @@
     // Pilotos: você pilota o "Ceifador" (sem login) e a conta do Rúnico; o Brasa pediu para pilotar a sua
     db.perms = {};
     db.requests = [];
+    // Pedido para sair do clã esperando a liderança
+    db.leaves = [{ id: 700, user_id: 'u9', reason: 'Vou dar um tempo do jogo por causa dos estudos.', requested_by: 'u9', requested_at: day(-1, 22), status: 'pending', decided_by: null, decided_at: null, note: null }];
     db.pilots = [
       { account_id: 'm1', pilot_id: 'u0', status: 'approved', reason: null, requested_at: day(-30, 20), decided_at: day(-30, 20), decided_by: 'u0' },
       { account_id: 'u12', pilot_id: 'u0', status: 'approved', reason: 'Jogo na conta dele nas Guerras', requested_at: day(-15, 20), decided_at: day(-15, 21), decided_by: 'u12' },
@@ -937,6 +944,42 @@
         db.rsvps = db.rsvps.filter((r) => !(r.absence_id === id && !r.going && freed.has(r.event_id)));
         if (ongoing) a.ends_on = today;
         else db.absences = db.absences.filter((x) => x.id !== id);
+      },
+      async leaves() { return db.leaves.filter((l) => isOfficer() || canActAsDemo(l.user_id)).map((l) => ({ ...l })); },
+      async requestLeave(userId, reason) {
+        if (!canActAsDemo(userId)) throw new Error('Você não pode pedir a saída desta conta');
+        const p = profile(userId);
+        if (p.role === 'leader') throw new Error('O líder não pode sair do clã por aqui');
+        if (!['member', 'officer'].includes(p.role)) throw new Error('Esta conta não está ativa no clã');
+        if (!String(reason || '').trim()) throw new Error('Informe o motivo da saída');
+        if (db.leaves.some((l) => l.user_id === userId && l.status === 'pending')) throw new Error('Já existe um pedido de saída em aberto para esta conta');
+        const l = { id: db.nextId++, user_id: userId, reason: String(reason).trim().slice(0, 300), requested_by: state.user.id, requested_at: new Date().toISOString(), status: 'pending', decided_by: null, decided_at: null, note: null };
+        db.leaves.unshift(l);
+        return l.id;
+      },
+      async cancelLeave(id) {
+        const l = db.leaves.find((x) => x.id === id);
+        if (!l || l.status !== 'pending') throw new Error('Este pedido não está mais em aberto');
+        if (!canActAsDemo(l.user_id)) throw new Error('Sem permissão');
+        Object.assign(l, { status: 'cancelled', decided_by: state.user.id, decided_at: new Date().toISOString() });
+      },
+      async decideLeave(id, approve, note) {
+        const l = db.leaves.find((x) => x.id === id);
+        if (!l || l.status !== 'pending') throw new Error('Este pedido já foi decidido');
+        if (canActAsDemo(l.user_id)) throw new Error('Você não pode decidir o pedido da sua própria conta');
+        const p = profile(l.user_id);
+        const me = profile(state.user.id).role;
+        if (!(me === 'leader' || (me === 'officer' && ['member', 'former'].includes(p.role)))) throw new Error('Sem permissão para decidir este pedido');
+        if (approve && p.role !== 'former') {
+          db.mlog.push({ id: db.mlog.length + 1, user_id: p.id, from_role: p.role, to_role: 'former', changed_by: state.user.id, reason: `Pediu para sair do clã: ${l.reason}`.slice(0, 300), changed_at: new Date().toISOString() });
+          p.role = 'former';
+          const future = new Set(db.events.filter((e) => Date.parse(e.starts_at) > Date.now()).map((e) => e.id));
+          db.rsvps = db.rsvps.filter((r) => !(r.user_id === p.id && future.has(r.event_id)));
+          db.slots = db.slots.filter((s) => !(s.user_id === p.id && future.has(s.event_id)));
+          db.contacts = db.contacts.filter((c) => c.user_id !== p.id);
+          db.pilots = db.pilots.filter((x) => x.pilot_id !== p.id);
+        }
+        Object.assign(l, { status: approve ? 'approved' : 'rejected', decided_by: state.user.id, decided_at: new Date().toISOString(), note: String(note || '').trim().slice(0, 300) || null });
       },
       async eventResult(id) {
         const r = db.results.find((x) => x.event_id === id);
@@ -1386,6 +1429,7 @@
       { key: 'member_approve', label: 'Aprovar novos membros', approval: true },
       { key: 'member_remove', label: 'Remover ou recusar membros', approval: true },
       { key: 'member_rename', label: 'Editar o nick dos membros', desc: 'Trocar o nome do personagem de membros e de quem aguarda aprovação', approval: true },
+      { key: 'leave_approve', label: 'Aprovar saída do clã', desc: 'Pedidos de membros que querem sair do clã (o de oficiais fica com o líder)', approval: true },
       { key: 'pilots', label: 'Gerenciar pilotos de contas', desc: 'Aprovar pedidos de piloto e adicionar pilotos' },
       { key: 'notes', label: 'Anotações internas', desc: 'Ver e escrever anotações sobre os membros' },
       { key: 'view_phone', label: 'Ver telefones' },
@@ -1451,6 +1495,11 @@
       const ev = await raw.event(id);
       if (!ev) throw new Error('O evento não existe mais');
       return ['results', `Tirar o resultado do evento “${ev.title}” de ${fmtShortDate(ev.starts_at)}`];
+    },
+    decideLeave: async (raw, id, approve, note) => {
+      const l = (await raw.leaves()).find((x) => x.id === id);
+      if (!l || l.status !== 'pending') throw new Error('Este pedido já foi decidido');
+      return ['leave_approve', `${approve ? 'Aprovar' : 'Recusar'} a saída do clã de ${nameOf(l.user_id)} · motivo: “${l.reason}”${note ? ` · observação: “${note}”` : ''}`];
     },
     saveTeams: () => ['teams_build'],
     renameTeam: () => ['teams_build'],
@@ -1522,6 +1571,7 @@
     updateRaffle: ([id, row]) => [Number(id), only(row, ['draw_at', 'prize_kind', 'prize_qty', 'prize_text'])],
     deleteRaffle: ([id]) => [Number(id)],
     saveResult: ([id, o]) => [Number(id), cleanResult(o)],
+    decideLeave: ([id, approve, note]) => [Number(id), !!approve, note ? String(note).slice(0, 300) : null],
     deleteResult: ([id]) => [Number(id)],
   };
   let RAW = null; // operações sem a checagem de permissão (o líder usa ao aprovar)
@@ -1768,7 +1818,7 @@
       fab.innerHTML = '<span class="help-fab-icon" aria-hidden="true">💬</span><span class="help-fab-label">Central de Atendimento</span>';
       document.body.appendChild(fab);
     }
-    fab.hidden = !(TICKETS_ON && isMember()) || currentKey === 'teams';
+    fab.hidden = !(TICKETS_ON && memberUI()) || currentKey === 'teams';
     fab.href = supportOn() ? '#/atendimento' : '#/tickets';
     fab.title = supportOn() ? 'Central de Atendimento: tickets dos membros' : 'Central de Atendimento: fale com a liderança';
     fab.setAttribute('aria-label', 'Central de Atendimento');
@@ -1776,7 +1826,7 @@
     document.body.classList.toggle('has-fab', !fab.hidden);
 
     const nav = $('#nav');
-    if (isMember()) {
+    if (memberUI()) {
       const links = [['#/', 'Próximos', 'upcoming'], ['#/passados', 'Passados', 'past'], ['#/news', 'Malah News', 'news']];
       if (RECRUIT_ON) links.push(['#/recrutamentos', 'Recrutamentos', 'recruits']);
       if (RAFFLE_ON) links.push(['#/sorteio', 'Sorteio', 'raffle']);
@@ -1790,12 +1840,12 @@
 
     const box = $('#userbox');
     if (state.me) {
-      const accounts = isMember() ? myAccounts() : [];
+      const accounts = memberUI() ? myAccounts() : [];
       box.innerHTML = `${accounts.length > 1 ? `<label class="acting" title="Escolha a conta do jogo pela qual você está respondendo">
           <span>Respondendo como</span>
           <select id="acting-select" class="inline">${accounts.map((a) => `<option value="${esc(a.id)}" ${a.id === actingId() ? 'selected' : ''}>${esc(displayName(a))}${a.id === state.user.id ? ' (você)' : ' 🧑‍✈️'}</option>`).join('')}</select>
         </label>` : ''}
-        ${isMember() ? '<div class="bell-wrap" id="bell-wrap"></div>' : ''}
+        ${memberUI() ? '<div class="bell-wrap" id="bell-wrap"></div>' : ''}
         ${isLeader() ? `<a class="gear${currentKey === 'config' ? ' active' : ''}" href="#/config" title="Configurações" aria-label="Configurações"><span aria-hidden="true">⚙️</span></a>` : ''}
         <button class="who" id="btn-profile" title="Meu perfil">${avatar(state.me)}<span class="label">${esc(displayName(state.me))}</span></button>
         <button class="btn ghost small" id="btn-logout">Sair</button>`;
@@ -1905,11 +1955,32 @@
     $('#btn-out').addEventListener('click', () => api.signOut().catch(fail));
   }
 
+  // Pediu para sair do clã: mesma tela de ex-membro enquanto a liderança decide
+  function viewLeaving() {
+    const l = myLeave();
+    main.innerHTML = `<div class="hero">
+      <span class="sigil">🚪</span>
+      <h1>Você pediu para sair do clã</h1>
+      <p>Olá, <strong>${esc(displayName(state.me))}</strong>. Seu pedido foi enviado em ${new Date(l.requested_at).toLocaleDateString('pt-BR')} e está com a liderança.
+        Você não tem mais acesso ao site do ${esc(CFG.clanName || 'clã')}.</p>
+      <div class="row" style="justify-content:center">
+        <button class="btn" id="btn-leave-undo">Desistir do pedido</button>
+        <button class="btn ghost" id="btn-out">Sair</button>
+      </div>
+    </div>`;
+    $('#btn-leave-undo').addEventListener('click', async (e) => {
+      if (!(await confirmDialog('Desistir do pedido e continuar no clã?', 'Desistir do pedido'))) return;
+      e.target.disabled = true;
+      try { await api.cancelLeave(l.id); toast('Pedido cancelado. Bem-vindo de volta!'); await loadLeaves(); await route(); } catch (err) { fail(err); e.target.disabled = false; }
+    });
+    $('#btn-out').addEventListener('click', () => api.signOut().catch(fail));
+  }
+
   // Descrição de uma mudança de cargo no histórico do clã
   function roleChangeLabel(h) {
     const f = h.from_role; const t = h.to_role;
     if (!f) return t === 'pending' ? 'Entrou no site (aguardando aprovação)' : `Registro inicial: ${ROLE_LABEL[t] || t}`;
-    if (t === 'former') return f === 'pending' ? 'Pedido de entrada recusado' : 'Removido do clã';
+    if (t === 'former') return f === 'pending' ? 'Pedido de entrada recusado' : /^Pediu para sair do clã/.test(h.reason || '') ? 'Saiu do clã (pedido aprovado)' : 'Removido do clã';
     if (f === 'former' && t === 'pending') return 'Pediu para voltar ao clã';
     if (f === 'former') return `Readmitido como ${ROLE_LABEL[t] || t}`;
     if (f === 'pending' && t === 'member') return 'Aprovado no clã';
@@ -4753,6 +4824,7 @@
       </div>
       ${pilotsCard(me, self)}
       ${membershipCard(mlog.filter((h) => h.user_id === me.id), members)}
+      ${leaveCard(me)}
       ${ticketsCard(me, self)}
       ${showNotes ? notesCard(me, allNotes.filter((n) => n.member_id === me.id), members) : ''}`;
 
@@ -4773,6 +4845,7 @@
     bindEvo(me, myChanges, self);
     bindPilotsCard(me, () => viewMyPanel(userId));
     bindAbsences(me, absences || [], () => viewMyPanel(userId));
+    bindLeave(me, () => viewMyPanel(userId));
     $('#p-days').addEventListener('change', (e) => { P.days = Number(e.target.value); viewMyPanel(userId); });
 
     // Anotações internas
@@ -5056,6 +5129,109 @@
         : 'Cancelar esta ausência? Os eventos do período voltam a ficar sem resposta.', now ? 'Encerrar' : 'Cancelar ausência'))) return;
       try { await api.deleteAbsence(a.id); toast(now ? 'Ausência encerrada' : 'Ausência cancelada'); await reload(); } catch (err) { fail(err); }
     }));
+  }
+
+  // ---------- Sair do clã (pedido com aprovação da liderança) ----------
+  function leaveCard(account) {
+    const mine = canActAs(account.id);
+    const open = pendingLeaves().find((l) => l.user_id === account.id);
+    const last = (state.leaves || []).filter((l) => l.user_id === account.id && l.status === 'rejected')
+      .sort((a, b) => Date.parse(b.decided_at) - Date.parse(a.decided_at))[0];
+    const self = account.id === state.user.id;
+    if (open) {
+      const who = open.requested_by && open.requested_by !== open.user_id ? ` por ${esc(nameOf(open.requested_by))}` : '';
+      return `<div class="card leave-card pending">
+        <h2>🚪 Pedido para sair do clã</h2>
+        <p class="small" style="margin:0">Enviado${who} em ${new Date(open.requested_at).toLocaleDateString('pt-BR')} · <b>aguardando a liderança</b></p>
+        <p class="muted small">Motivo: “${esc(open.reason)}”</p>
+        <div class="row" style="gap:8px">
+          ${mine ? `<button class="btn small ghost" data-leave-cancel="${open.id}">Desistir do pedido</button>` : ''}
+          ${canDecideLeave(open) ? `<span class="spacer"></span><button class="btn small ghost danger" data-leave-deny="${open.id}">Recusar</button>
+            <button class="btn small primary" data-leave-ok="${open.id}">Aprovar saída</button>` : ''}
+        </div>
+      </div>`;
+    }
+    if (!mine || !['member', 'officer'].includes(account.role)) return '';
+    return `<div class="card leave-card">
+      <h2>🚪 Sair do clã</h2>
+      <p class="muted small" style="margin:0">Após sair do clã, ${self ? 'você não terá' : 'a conta não terá'} mais acesso ao site.</p>
+      ${last ? `<p class="small c-no" style="margin:6px 0 0">O último pedido foi recusado em ${new Date(last.decided_at).toLocaleDateString('pt-BR')}${last.note ? `: “${esc(last.note)}”` : ''}.</p>` : ''}
+      <div class="row end"><button class="btn small ghost danger" id="btn-leave">Pedir para sair do clã</button></div>
+    </div>`;
+  }
+
+  function bindLeave(account, reload) {
+    $('#btn-leave')?.addEventListener('click', () => {
+      const self = account.id === state.user.id;
+      openDialog(`
+        <form id="leave-form" class="stack">
+          <h2>🚪 Sair do clã${self ? '' : ` · ${esc(displayName(account))}`}</h2>
+          <p class="small" style="margin:0">Após sair do clã, ${self ? 'você não terá' : 'a conta não terá'} mais acesso ao site.${self ? ' O bloqueio vale assim que o pedido for enviado.' : ''}</p>
+          <div class="field">
+            <label for="leave-reason">Motivo <span class="muted small">(obrigatório; a liderança vê)</span></label>
+            <textarea id="leave-reason" maxlength="300" required placeholder="Ex.: vou parar de jogar, mudei de clã…"></textarea>
+          </div>
+          <p class="le-msg small bad" id="leave-msg" hidden></p>
+          <div class="row end">
+            <button type="button" class="btn ghost" data-close>Cancelar</button>
+            <button type="submit" class="btn danger">Enviar pedido</button>
+          </div>
+        </form>`, (d) => {
+        $('#leave-form', d).addEventListener('submit', async (e) => {
+          e.preventDefault();
+          const reason = $('#leave-reason', d).value.trim();
+          const msg = $('#leave-msg', d);
+          if (!reason) { msg.hidden = false; msg.textContent = 'Informe o motivo da saída.'; return; }
+          const b = $('button[type=submit]', d); b.disabled = true;
+          try {
+            await api.requestLeave(account.id, reason);
+            dlg.close(); toast('Pedido enviado. A liderança vai analisar.');
+            await loadLeaves();
+            if (self) { location.hash = '#/'; await route(); } else await reload();
+          } catch (err) { msg.hidden = false; msg.textContent = err?.message || String(err); b.disabled = false; }
+        });
+      });
+    });
+    bindLeaveDecisions(reload);
+    document.querySelectorAll('[data-leave-cancel]').forEach((b) => b.addEventListener('click', async () => {
+      if (!(await confirmDialog('Desistir do pedido para sair do clã?', 'Desistir'))) return;
+      try { await api.cancelLeave(Number(b.dataset.leaveCancel)); toast('Pedido cancelado'); await loadLeaves(); await reload(); } catch (err) { fail(err); }
+    }));
+  }
+
+  // Aprovar / recusar (perfil e página Membros)
+  function bindLeaveDecisions(reload) {
+    const open = (id, approve) => {
+      const l = pendingLeaves().find((x) => x.id === id);
+      if (!l) return;
+      const name = esc(displayName(memberById(l.user_id)));
+      openDialog(`
+        <form id="leave-dec" class="stack">
+          <h2>${approve ? 'Aprovar saída do clã' : 'Recusar pedido de saída'}</h2>
+          <p class="small" style="margin:0">${approve ? `<b>${name}</b> perde o acesso ao site e vai para <b>Ex-membros</b>. O histórico é mantido e dá para readmitir depois.` : `<b>${name}</b> continua no clã.`}</p>
+          <p class="muted small" style="margin:0">Motivo informado: “${esc(l.reason)}”</p>
+          <div class="field">
+            <label for="leave-note">Observação <span class="muted small">(opcional${approve ? '' : '; a pessoa vê'})</span></label>
+            <textarea id="leave-note" maxlength="300"></textarea>
+          </div>
+          <div class="row end">
+            <button type="button" class="btn ghost" data-close>Cancelar</button>
+            <button type="submit" class="btn ${approve ? 'danger' : 'primary'}">${approve ? 'Aprovar saída' : 'Recusar pedido'}</button>
+          </div>
+        </form>`, (d) => {
+        $('#leave-dec', d).addEventListener('submit', async (e) => {
+          e.preventDefault();
+          const b = $('button[type=submit]', d); b.disabled = true;
+          try {
+            await api.decideLeave(l.id, approve, $('#leave-note', d).value.trim());
+            dlg.close(); toast(approve ? `${displayName(memberById(l.user_id))} saiu do clã` : 'Pedido recusado');
+            state.members = await api.members(); await loadLeaves(); await reload();
+          } catch (err) { fail(err); b.disabled = false; }
+        });
+      });
+    };
+    document.querySelectorAll('[data-leave-ok]').forEach((b) => b.addEventListener('click', () => open(Number(b.dataset.leaveOk), true)));
+    document.querySelectorAll('[data-leave-deny]').forEach((b) => b.addEventListener('click', () => open(Number(b.dataset.leaveDeny), false)));
   }
 
   function pilotsCard(account, self) {
@@ -5664,6 +5840,8 @@
     const phones = can('view_phone') ? Object.fromEntries((await api.contacts()).map((c) => [c.user_id, c.phone])) : {};
     state.pilots = await api.pilots().catch(() => state.pilots || []);
     const pilotRequests = can('pilots') ? state.pilots.filter((p) => p.status === 'pending') : [];
+    await loadLeaves();
+    const leaveRows = pendingLeaves().filter((l) => ACTIVE_ROLES.includes(memberById(l.user_id)?.role) && canDecideLeave(l));
     const histBy = {};
     if (isOfficer()) (await api.profileHistory()).forEach((h) => { (histBy[h.user_id] ||= []).push(h); });
     const noteCount = {};
@@ -5692,7 +5870,7 @@
     const leftInfo = (m) => {
       const h = mlog.find((x) => x.user_id === m.id && x.to_role === 'former');
       if (!h) return '<span class="muted small">Ex-membro</span>';
-      return `<span class="muted small left-info">${h.from_role === 'pending' ? 'Recusado' : 'Removido'} em ${new Date(h.changed_at).toLocaleDateString('pt-BR')}`
+      return `<span class="muted small left-info">${h.from_role === 'pending' ? 'Recusado' : /^Pediu para sair do clã/.test(h.reason || '') ? 'Saiu (a pedido)' : 'Removido'} em ${new Date(h.changed_at).toLocaleDateString('pt-BR')}`
         + `${byIdAll[h.changed_by] ? ` por ${esc(displayName(byIdAll[h.changed_by]))}` : ''}${h.reason ? `<br>“${esc(h.reason)}”` : ''}</span>`;
     };
 
@@ -5730,6 +5908,16 @@
         <div id="clan-stats"></div>
       </details>` : ''}
       ${isOfficer() ? `<input type="search" id="m-search" class="search" placeholder="Buscar por nome atual ou antigo…" value="${esc(M.q)}">` : ''}
+      ${leaveRows.length ? `<h2>🚪 Pedidos para sair do clã (${leaveRows.length})</h2>
+        <div class="card" style="margin-bottom:20px">${leaveRows.map((l) => {
+          const m = memberById(l.user_id);
+          return `<div class="pilot-row">${avatar(m)}
+            <div class="spacer"><a class="member-link" href="#/membro/${encodeURIComponent(l.user_id)}"><b>${esc(displayName(m))}</b></a> quer sair do clã
+              <div class="muted small">pediu em ${new Date(l.requested_at).toLocaleDateString('pt-BR')}${l.requested_by && l.requested_by !== l.user_id ? ` (por ${esc(nameOf(l.requested_by))})` : ''} · “${esc(l.reason)}”</div></div>
+            <button class="btn small ghost danger" data-leave-deny="${l.id}">Recusar</button>
+            <button class="btn small primary" data-leave-ok="${l.id}">Aprovar saída</button>
+          </div>`;
+        }).join('')}</div>` : ''}
       ${pilotRequests.length ? `<h2>🧑‍✈️ Pedidos de piloto (${pilotRequests.length})</h2>
         <div class="card" style="margin-bottom:20px">${pilotRequests.map((p) => {
           const pilot = memberById(p.pilot_id); const acc = memberById(p.account_id);
@@ -5793,6 +5981,7 @@
       try { await api.decidePilotAccess(acc, pilot, approve); toast(approve ? 'Piloto aprovado' : 'Pedido recusado'); await viewMembers(); } catch (e) { fail(e); }
     });
     main.querySelectorAll('[data-pr-approve]').forEach(decide(true));
+    bindLeaveDecisions(viewMembers);
     main.querySelectorAll('[data-pr-deny]').forEach(decide(false));
     main.querySelectorAll('[data-remove]').forEach((b) => b.addEventListener('click', () => {
       openRemoveDialog(state.members.find((x) => x.id === b.dataset.remove), viewMembers);
@@ -6044,6 +6233,16 @@
   // =====================================================================
   state.bellUp = []; state.bellPast = [];
   const BELL_ATT_DAYS = 14; // presença sem registro: só eventos dos últimos 14 dias
+  // Pedidos para sair do clã (se o SQL novo ainda não foi rodado, fica vazio)
+  async function loadLeaves() {
+    try { state.leaves = await api.leaves(); } catch { state.leaves = []; }
+  }
+  const pendingLeaves = () => (state.leaves || []).filter((l) => l.status === 'pending');
+  // Pedi para sair do clã (minha própria conta): o site fica bloqueado até a decisão
+  const myLeave = () => (state.user ? pendingLeaves().find((l) => l.user_id === state.user.id) : null);
+  const memberUI = () => isMember() && !myLeave();
+  // Posso decidir este pedido? (líder sempre; oficial só de membro comum e com a permissão)
+  const canDecideLeave = (l) => !canActAs(l.user_id) && (isLeader() || (can('leave_approve') && memberById(l.user_id)?.role === 'member'));
   async function loadBell() {
     if (!state.user || !isMember()) { state.bellUp = []; state.bellPast = []; return; }
     const [up, past] = await Promise.all([
@@ -6125,6 +6324,9 @@
       (state.recruits || []).filter((r) => canApproveRecruit(r) && !isMyRecruit(r)).forEach((r) => {
         lead.push({ icon: '📣', text: `Aprovar recrutamento <b>${esc(r.title)}</b>`, sub: `Criado por ${esc(nameOf(r.created_by))}`, href: `#/recrutamento/${r.id}` });
       });
+      pendingLeaves().filter((l) => ACTIVE_ROLES.includes(memberById(l.user_id)?.role) && canDecideLeave(l)).forEach((l) => {
+        lead.push({ icon: '🚪', text: `<b>${esc(nameOf(l.user_id))}</b> pediu para sair do clã`, sub: `“${esc(l.reason)}”`, href: '#/membros' });
+      });
       if (supportOn()) {
         const all = state.tickets || [];
         const nNew = all.filter(SUP_PICK.triage).length;
@@ -6195,11 +6397,12 @@
   async function route() {
     const { ev, tm, mp, rc, tk, key } = parseRoute();
     if (state.user && isOfficer()) await loadPerms();
-    if (state.user && isMember()) await Promise.all([loadRecruits(), loadTickets(), loadRaffles(), loadBell()]);
+    if (state.user && isMember()) await Promise.all([loadRecruits(), loadTickets(), loadRaffles(), loadBell(), loadLeaves()]);
     bellOpen = false;
     renderHeader(key);
     if (!state.user) return viewLogin();
     if (!isMember()) return state.me?.role === 'former' ? viewFormer() : viewPending();
+    if (myLeave()) return viewLeaving();
     notifyTicketReplies();
     try {
       if (key === 'past') await viewEvents(true);
