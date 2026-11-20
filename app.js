@@ -60,6 +60,10 @@
   const TICKET_CAT = Object.fromEntries(TICKET_CATS.map((c) => [c.key, c]));
   const TICKET_STATUS = { open: 'Aberto', progress: 'Em atendimento', resolved: 'Resolvido' };
   const TICKET_MAX_IMAGES = 3;
+  // Limites contra spam (os mesmos do banco: supabase/limites.sql)
+  const LIMITS = { ticketsPerDay: 3, msgsPerHour: 30, recruitsActive: 3 };
+  // Dia no horário de Brasília (AAAA-MM-DD), para contar os tickets "de hoje"
+  const brDay = (d) => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date(d));
 
   // Sorteio: todo domingo às 22h (Brasília) entre os inscritos com presença nas Guerras das Sombras da semana
   const RAFFLE_ON = true;
@@ -1208,6 +1212,9 @@
       async uploadTicketImage(file) { return URL.createObjectURL(file); },
       async createTicket({ title, category, anonymous, body, images }) {
         if (!isMember()) throw new Error('Só membros do clã podem abrir tickets');
+        if (db.tickets.filter((x) => x.author_id === state.user.id && brDay(x.created_at) === brDay(Date.now())).length >= LIMITS.ticketsPerDay) {
+          throw new Error(`Limite de ${LIMITS.ticketsPerDay} tickets por dia atingido. Continue a conversa em um ticket aberto ou tente de novo amanhã.`);
+        }
         const now = new Date().toISOString();
         const t = { id: db.nextId++, title, category, anonymous: !!anonymous, author_id: state.user.id, status: 'open', assigned_to: null, created_at: now };
         db.tickets.push(t);
@@ -1220,6 +1227,9 @@
         const mine = t.author_id === state.user.id;
         if (!mine && !isStaffOn(t)) throw new Error('Sem permissão para responder este ticket');
         if (internal && mine) throw new Error('Notas internas são só para quem atende');
+        if (!isOfficer() && db.tmsgs.filter((m) => m.author_id === state.user.id && Date.parse(m.created_at) > Date.now() - 3600e3).length >= LIMITS.msgsPerHour) {
+          throw new Error(`Limite de ${LIMITS.msgsPerHour} mensagens por hora atingido. Aguarde um pouco para escrever de novo.`);
+        }
         db.tmsgs.push({ id: db.nextId++, ticket_id: id, author_id: state.user.id, body, internal: !!internal, images: images || [], created_at: new Date().toISOString() });
         // Membro escrevendo num ticket resolvido reabre; resposta de quem atende põe "Em andamento"
         if (mine && t.status === 'resolved') tlogStatus(t, 'open');
@@ -1248,6 +1258,9 @@
       async recruitment(id) { return listRecruits().find((r) => r.id === id) || null; },
       async createRecruit(row) {
         if (!isMember()) throw new Error('Só membros do clã podem criar recrutamentos');
+        if (db.recruits.filter((x) => x.created_by === state.user.id && ['pending', 'open'].includes(x.status)).length >= LIMITS.recruitsActive) {
+          throw new Error(`Limite de ${LIMITS.recruitsActive} recrutamentos ativos por pessoa (aguardando aprovação ou abertos). Encerre um para criar outro.`);
+        }
         const now = new Date().toISOString();
         // O líder publica direto; os demais passam pela aprovação de um oficial ou do líder
         const direct = isLeader();
@@ -1283,6 +1296,9 @@
         const r = db.recruits.find((x) => x.id === id);
         if (!r) throw new Error('O recrutamento não existe mais');
         if (r.created_by !== state.user.id && !isOfficer()) throw new Error('Só quem criou pode encerrar');
+        if (reopen && db.recruits.filter((x) => x.created_by === r.created_by && x.id !== r.id && ['pending', 'open'].includes(x.status)).length >= LIMITS.recruitsActive) {
+          throw new Error(`Limite de ${LIMITS.recruitsActive} recrutamentos ativos por pessoa (aguardando aprovação ou abertos). Encerre um para criar outro.`);
+        }
         if (reopen) Object.assign(r, { status: 'open', closed_by: null, closed_at: null });
         else Object.assign(r, { status: 'closed', closed_by: state.user.id, closed_at: new Date().toISOString() });
       },
@@ -3742,9 +3758,13 @@
     const waiting = list.filter((r) => r.status === 'pending' || (r.status === 'rejected' && isMyRecruit(r))).sort(byNew);
     const open = list.filter((r) => r.status === 'open').sort(byNew);
     const closed = list.filter((r) => r.status === 'closed').sort((a, b) => Date.parse(b.closed_at || b.created_at) - Date.parse(a.closed_at || a.created_at)).slice(0, 10);
+    const active = myActiveRecruits();
+    const full = active >= LIMITS.recruitsActive;
     main.innerHTML = `
-      <div class="page-head"><h1>Recrutamentos</h1><button class="btn primary" id="btn-new-rc">+ Novo recrutamento</button></div>
+      <div class="page-head"><h1>Recrutamentos</h1><button class="btn primary" id="btn-new-rc"${full ? ` disabled title="Limite de ${LIMITS.recruitsActive} recrutamentos ativos atingido"` : ''}>+ Novo recrutamento</button></div>
       <p class="muted small">Procurando gente para um Grupo Guerreiro, um time PvP ou outra atividade? Crie um recrutamento: ele aparece para todos depois que um oficial ou o líder aprovar. Os candidatos aparecem com classe e atributos do perfil, e quem criou escolhe quem entra.</p>
+      <p class="small rc-note limit-note">📏 <b>Limite:</b> cada pessoa pode ter até <b>${LIMITS.recruitsActive} recrutamentos ativos</b> (aguardando aprovação ou abertos).
+        Você tem <b>${active} de ${LIMITS.recruitsActive}</b>${full ? ': encerre um para criar outro' : ''}.</p>
       <div class="seg rc-filter" role="group" aria-label="Filtrar por categoria">
         <button class="${recruitFilter ? '' : 'on'}" data-rc-cat="">Todos</button>
         ${RECRUIT_CATS.map((c) => `<button class="${recruitFilter === c.key ? 'on' : ''}" data-rc-cat="${c.key}">${c.icon} ${esc(c.label)}</button>`).join('')}
@@ -3879,7 +3899,12 @@
     });
   }
 
+  const myActiveRecruits = () => (state.recruits || []).filter((x) => isMyRecruit(x) && ['pending', 'open'].includes(x.status)).length;
   function openRecruitForm(r) {
+    if (!r && myActiveRecruits() >= LIMITS.recruitsActive) {
+      toast(`Limite de ${LIMITS.recruitsActive} recrutamentos ativos por pessoa. Encerre um para criar outro.`, true);
+      return;
+    }
     const editing = !!r;
     const v = r || { category: 'warband', slots: 7, wanted: {} };
     openDialog(`
@@ -4112,6 +4137,16 @@
   const imagesHtml = (imgs) => (imgs?.length ? `<div class="tk-imgs">${imgs.map((u) => `<a href="${esc(u)}" target="_blank" rel="noopener" title="Abrir imagem"><img src="${esc(u)}" alt="Imagem anexada" loading="lazy"></a>`).join('')}</div>` : '');
 
   // ---------- Aba "Tickets" (os meus) ----------
+  // ---------- Limites (aviso visível nas páginas) ----------
+  const ticketsToday = () => (state.tickets || []).filter((t) => t.mine && brDay(t.created_at) === brDay(Date.now())).length;
+  const ticketLimitFull = () => ticketsToday() >= LIMITS.ticketsPerDay;
+  function ticketLimitNote(staff) {
+    const n = ticketsToday();
+    return `<p class="small rc-note limit-note">📏 <b>Limites:</b> cada pessoa pode abrir até <b>${LIMITS.ticketsPerDay} tickets por dia</b> e enviar até <b>${LIMITS.msgsPerHour} mensagens por hora</b>${staff ? ' (a staff não tem limite de mensagens)' : ''}.
+      Hoje você abriu <b>${n} de ${LIMITS.ticketsPerDay}</b>${n >= LIMITS.ticketsPerDay ? ': continue a conversa em um ticket aberto ou volte amanhã' : ''}.</p>`;
+  }
+  const newTicketBtn = (label) => `<button class="btn primary" id="btn-new-tk"${ticketLimitFull() ? ` disabled title="Limite de ${LIMITS.ticketsPerDay} tickets por dia atingido"` : ''}>${label}</button>`;
+
   async function viewTickets() {
     if (supportOn()) { location.hash = '#/atendimento'; return; }
     renderHeader('tickets');
@@ -4119,8 +4154,9 @@
     const open = mine.filter((t) => t.status !== 'resolved');
     const done = mine.filter((t) => t.status === 'resolved');
     main.innerHTML = `
-      <div class="page-head"><h1>Central de Atendimento</h1><button class="btn primary" id="btn-new-tk">+ Novo ticket</button></div>
+      <div class="page-head"><h1>Central de Atendimento</h1>${newTicketBtn('+ Novo ticket')}</div>
       <p class="muted small">Fale com a liderança do clã: sugestões, melhorias, dúvidas, problemas no site, reclamações ou denúncias. O líder e os oficiais respondem aqui mesmo, e você pode abrir o ticket de forma anônima.</p>
+      ${ticketLimitNote(false)}
       <div class="section-head"><h2>Em aberto</h2></div>
       ${open.length ? open.map((t) => ticketRowHtml(t, false)).join('') : '<div class="card empty">Você não tem tickets em aberto.</div>'}
       ${done.length ? `<div class="section-head"><h2>Resolvidos</h2></div>${done.map((t) => ticketRowHtml(t, false)).join('')}` : ''}`;
@@ -4173,7 +4209,8 @@
       .map((k) => [k, list.filter((t) => ticketStage(t) === k)]).filter(([, arr]) => arr.length)
       .map(([k, arr]) => `<div class="section-head"><h2>${STAGE_LABEL[k]} <span class="muted small">(${arr.length})</span></h2></div>${rows(arr)}`).join('');
     main.innerHTML = `
-      <div class="page-head"><h1>Central de Atendimento</h1><button class="btn primary" id="btn-new-tk">+ Abrir ticket</button></div>
+      <div class="page-head"><h1>Central de Atendimento</h1>${newTicketBtn('+ Abrir ticket')}</div>
+      ${ticketLimitNote(true)}
       <p class="muted small"><b>${nTriage}</b> na triagem · <b>${nReturnMe}</b> pendente${nReturnMe === 1 ? '' : 's'} de retorno com você · <b>${nReturn}</b> pendente${nReturn === 1 ? '' : 's'} de retorno no total.${reportsHidden ? ' Os tickets de Reclamação / Denúncia ficam só com o líder.' : ''}</p>
       <div class="row tk-filters">
         <div class="seg rc-filter" role="group" aria-label="Filtrar tickets">
@@ -4311,6 +4348,7 @@
   }
 
   function openTicketForm() {
+    if (ticketLimitFull()) { toast(`Limite de ${LIMITS.ticketsPerDay} tickets por dia atingido. Continue a conversa em um ticket aberto ou volte amanhã.`, true); return; }
     openDialog(`
       <form id="tk-form" class="stack">
         <h2>Novo ticket</h2>

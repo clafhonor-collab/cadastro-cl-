@@ -195,6 +195,7 @@ A lista já vem marcada com quem confirmou "Vou"; basta desmarcar quem faltou e 
 Depois de aprovado, aparece no topo o seletor **"Respondendo como"**: o piloto escolhe a conta e responde aos eventos (Vou e Não vou, classe e atributos, Discord, pedido de saída) por ela.
 - Cada conta tem a própria frequência, os próprios times e o próprio histórico.
 - Uma conta pode ter vários pilotos, e o dono também continua respondendo.
+- O piloto **não pode trocar o nick nem a foto** da conta do dono. Isso vale também direto pela API. Nas contas sem login, que o próprio piloto cadastrou, ele continua podendo.
 - Os oficiais veem quem respondeu (ex.: "respondido por Fulano") e o selo 🧑‍✈️ nas listas e nos times.
 - No painel de times aparece um alerta quando a mesma pessoa controla 2 ou mais contas confirmadas no mesmo evento.
 - O dono pode remover pilotos a qualquer momento; oficiais e líder também, e ainda podem adicionar pilotos direto no perfil da conta.
@@ -240,6 +241,8 @@ Só contam eventos com presença registrada e posteriores à entrada do membro. 
 **📣 Recrutamentos** (menu do topo, para todos): para montar um Grupo Guerreiro, um time PvP ou outra atividade.
 1. Clique em **+ Novo recrutamento** e preencha o título, a categoria (**Evento PvP**, **Grupo Guerreiro** ou **Outro**), o número de vagas, a descrição e, se quiser, a data da atividade, o prazo de inscrição e as classes procuradas (ex.: 2 Cruzados e 1 Monge).
 2. O recrutamento fica em **Aguardando aprovação** e só aparece para os outros depois que um oficial ou o líder aprovar. Oficiais não aprovam o próprio recrutamento; o do líder é publicado direto.
+
+   **Limite:** cada pessoa pode ter até **3 recrutamentos ativos** (aguardando aprovação ou abertos). A página mostra o aviso e quantos você já tem. Ao chegar a 3, o botão fica desativado até você encerrar um. Reabrir um recrutamento encerrado também conta.
    Se for recusado, quem criou vê o motivo, pode corrigir e enviar de novo, ou apagar.
 3. Os membros clicam em **🙋 Quero participar**. Para se candidatar, é preciso ter classe e atributos preenchidos no perfil, porque é isso que quem criou vê.
 4. Quem criou **aceita** ou **recusa** cada candidato. Quem tem uma das classes procuradas aparece com ★. O contador mostra os aceitos por classe (ex.: 1/2 CRU).
@@ -263,6 +266,8 @@ O filtro no topo separa por categoria. O menu mostra um contador com os recrutam
 
 **🎫 Central de Atendimento** (botão 💬 no canto da tela): o canal entre os membros e a liderança.
 - **Membros:** clicam em **+ Novo ticket** e escolhem o assunto, a categoria (Sugestão, Melhorias, Reclamação / Denúncia, Dúvida, Problema no site ou Outros) e a mensagem. Dá para anexar até 3 imagens por mensagem.
+- **Limites:** cada pessoa pode abrir até **3 tickets por dia** (no horário de Brasília) e enviar até **30 mensagens por hora**. A staff não tem limite de mensagens, para não travar o atendimento.
+  O aviso fica visível no topo da Central de Atendimento, com quantos tickets você já abriu hoje. Ao chegar a 3, o botão de novo ticket fica desativado até o dia seguinte.
 - **🕶️ Anônimo:** marcando **Enviar anonimamente**, o nome fica oculto para oficiais e líder. Em casos graves, o líder pode clicar em **Revelar autor**: só ele vê o nome, e nada fica registrado no ticket.
 - A conversa continua no próprio ticket. O membro pode marcar o ticket como resolvido. Se escrever num ticket resolvido, ele é reaberto.
 - **🔔 Aviso de resposta:** quando a staff responde, quem abriu o ticket recebe:
@@ -325,8 +330,13 @@ O que protege os dados são as **regras do banco (RLS)** e as funções, que val
   - uma política de segurança (`Content-Security-Policy`, no `index.html`) só permite scripts, imagens e conexões do próprio site, do Supabase, do Google e das fontes.
 
   Ao trocar o projeto do Supabase ou a versão do `supabase-js`, atualize o endereço na política e o hash `integrity` no `index.html`.
+- **Limites contra spam** (valem também pela API):
+  - 3 tickets por dia por pessoa;
+  - 30 mensagens por hora por pessoa (a staff não tem esse limite);
+  - 3 recrutamentos ativos por pessoa.
+- **Pilotos:** não trocam o nick nem a foto da conta do dono.
 
-Para aplicar os ajustes mais recentes, rode o [`supabase/seguranca_dados.sql`](supabase/seguranca_dados.sql) e o [`supabase/seguranca_correcoes.sql`](supabase/seguranca_correcoes.sql) (veja **Dicas**).
+Para aplicar os ajustes mais recentes, rode o [`supabase/seguranca_dados.sql`](supabase/seguranca_dados.sql), o [`supabase/seguranca_correcoes.sql`](supabase/seguranca_correcoes.sql) e o [`supabase/limites.sql`](supabase/limites.sql) (veja **Dicas**).
 Como o site só usa o login do Google, desligue também o login por e-mail: no Supabase, **Authentication → Sign In / Providers → Email**, desative e salve.
 
 ## Dicas
@@ -343,6 +353,7 @@ Como o site só usa o login do Google, desligue também o login por e-mail: no S
 - **Ativar a edição de nick pela staff:** do mesmo jeito, rode o [`supabase/editar_nick.sql`](supabase/editar_nick.sql) no **SQL Editor**. Ele só cria a função `set_member_name`, pode ser executado de novo e está no fim do `schema.sql`.
 - **Ajuste de segurança (perfis e respostas):** rode o [`supabase/seguranca_dados.sql`](supabase/seguranca_dados.sql) no **SQL Editor**. Ele só troca duas regras de leitura e cria a função `list_profiles`; nenhum dado é alterado. Pode ser executado de novo e está no fim do `schema.sql` (veja **Segurança dos dados**).
 - **Correções de segurança (respostas e fotos):** rode o [`supabase/seguranca_correcoes.sql`](supabase/seguranca_correcoes.sql) no **SQL Editor**. Ele trava as respostas dos eventos contra alterações indevidas pela API e só aceita fotos de perfil do espaço de fotos do site. Fotos com endereço de fora são removidas, e a pessoa volta para a foto do Google ou a inicial. Pode ser executado de novo e está no fim do `schema.sql`.
+- **Limites e regra dos pilotos:** rode o [`supabase/limites.sql`](supabase/limites.sql) no **SQL Editor**. Ele ativa os limites de 3 tickets por dia, 30 mensagens por hora e 3 recrutamentos ativos por pessoa, e impede o piloto de trocar o nick e a foto da conta do dono. Só cria gatilhos, nenhum dado é alterado. Pode ser executado de novo e está no fim do `schema.sql`. Para mudar os números, altere o `limites.sql` e a constante `LIMITS` no `app.js`.
 - **Ativar o Sorteio:** no Supabase, abra o **SQL Editor**, cole todo o conteúdo de [`supabase/sorteio.sql`](supabase/sorteio.sql) e clique em **Run**. Ele só acrescenta o que falta e pode ser executado de novo sem problema. O mesmo trecho também está no fim do `schema.sql`.
   O script também agenda o sorteio às 22h com o **pg_cron** do Supabase. Se aparecer o aviso "pg_cron indisponível", ative a extensão em **Database → Extensions → pg_cron** e rode o arquivo de novo. Enquanto ela não estiver ativa, o sorteio acontece na primeira visita ao site depois das 22h.
 - **Só Recrutamentos e Tickets:** o [`supabase/recrutamentos_tickets.sql`](supabase/recrutamentos_tickets.sql) instala apenas essas duas partes, sem mexer no resto. Ele depende das Configurações do líder, que já vêm no `schema.sql`. Quem roda o `schema.sql` completo não precisa dele.

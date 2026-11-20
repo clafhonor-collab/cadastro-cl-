@@ -768,6 +768,7 @@ h1 { background: linear-gradient(180deg, #fff1da, #e3b878); -webkit-background-c
 .rc-want-list { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .rc-want { display: inline-flex; gap: 4px; align-items: center; }
 .rc-detail .rc-desc { white-space: pre-line; margin: 12px 0 0; }
+.rc-note.limit-note { margin: 0 0 12px; }
 .rc-note { margin: 10px 0 0; padding: 8px 10px; border-radius: 8px; background: rgba(220, 170, 82, .08); border: 1px solid rgba(220, 170, 82, .25); }
 .rc-note.bad { background: rgba(224, 82, 74, .08); border-color: rgba(224, 82, 74, .3); }
 .rc-actions { margin-top: 14px; }
