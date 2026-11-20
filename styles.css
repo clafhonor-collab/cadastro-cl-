@@ -1105,3 +1105,30 @@ body.has-fab main { padding-bottom: 90px; }
 .medal.m-gain { padding: 0 3px; border-color: rgba(120,220,80,.45); }
 .medal.m-gain img { height: 15px; width: auto; display: block; }
 .me-name .medal.m-gain img { height: 18px; }
+
+/* ---------- Membro piloto e Pilotagem ---------- */
+.kind-pick { border: 0; padding: 0; margin: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.kind-opt { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-2); cursor: pointer; }
+.kind-opt input, .check-line input { width: auto; min-width: 0; flex: none; margin: 3px 0 0; padding: 0; accent-color: var(--accent); }
+.kind-opt span { display: flex; flex-direction: column; gap: 2px; }
+.kind-opt small { color: var(--muted); font-size: .8rem; }
+.kind-opt:has(input:checked) { border-color: var(--accent-hi); box-shadow: 0 0 0 1px var(--accent); }
+.check-line { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
+.pilot-kind { font-size: .78rem; color: #c9b8ff; border: 1px solid rgba(160, 140, 230, .45); background: rgba(160, 140, 230, .1); border-radius: 999px; padding: 1px 8px; font-weight: 600; white-space: nowrap; }
+.member-build .pilot-kind + span { margin-left: 6px; }
+.m-tabs { margin: 4px 0 12px; }
+.pending-kinds { text-align: left; max-width: 560px; margin: 0 auto 14px; padding-left: 20px; display: grid; gap: 6px; }
+.ev-creator { color: var(--muted); margin-top: 4px; }
+.ev-creator b { color: var(--text); }
+.pg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+.pg-offer { display: flex; flex-direction: column; gap: 8px; }
+.pg-offer.paused { opacity: .7; }
+.pg-offer-head { display: flex; gap: 10px; align-items: center; }
+.pg-icon { flex: none; width: 36px; height: 36px; display: grid; place-items: center; font-size: 1.3rem; border-radius: 50%; background: rgba(160, 140, 230, .12); border: 1px solid rgba(160, 140, 230, .4); }
+.pg-about { margin: 0; white-space: pre-line; overflow-wrap: anywhere; }
+.pg-offer .row { margin-top: auto; }
+@media (max-width: 560px) {
+  .kind-pick { grid-template-columns: 1fr; }
+}
+.pg-req { flex-wrap: wrap; }
+.pg-req > .spacer { min-width: 220px; }

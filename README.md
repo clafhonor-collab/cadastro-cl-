@@ -169,6 +169,21 @@ Nesse caso, o painel também mostra o telefone (se informado) e o botão "← Me
 No próprio painel, o botão **📷 Trocar foto** troca a foto de perfil na hora, sem abrir o formulário. Ela também pode ser trocada em **✎ Editar perfil**.
 Trocar ou remover a foto nesse formulário não apaga o que já foi digitado (nome, telefone, classe e atributos), inclusive no cadastro de quem acabou de entrar.
 **💪 Rank de força (Top 10 do clã):** mostra só o nick, a classe e a pontuação, **sem fotos**. No lugar da foto, cada jogador aparece como uma armadura: **dourada** para o 1º lugar, **prateada** para o 2º e **bronze** para o 3º (um pouco maiores), e uma armadura padrão do 4º ao 10º.
+**🧑‍✈️ Membro piloto:** no cadastro (e depois, em **✎ Editar perfil**), a pessoa escolhe entre **🎮 Jogador** (tem a própria conta no jogo) e **🧑‍✈️ Membro piloto** (não tem conta própria, só pilota contas de outros membros).
+- O membro piloto não preenche classe e atributos: informa só o **nome** e **qual conta pilota**. A aprovação é igual à dos outros membros (aparece em "Aguardando aprovação", com a conta que ele informou).
+- Ele não responde eventos pela própria conta, só pelas contas que pilota (em **"Respondendo como"**), e fica **fora do rank de força, da média do clã e da frequência**: contam só as contas que ele pilota.
+- Depois de aprovado, ele pede acesso à conta em **Meu perfil → Pilotos** (o dono da conta ou a staff aprova). A staff também pode usar **+ Vincular conta** no perfil dele.
+- No **Meu perfil** dele aparecem o Top 10 do clã e as demais opções, mas não a frequência, as comparações com a média do clã e a evolução do personagem.
+- A staff vê os membros piloto numa aba própria em **Membros → 🧑‍✈️ Membros piloto**, com as contas que cada um pilota e a lista de membros jogadores que também pilotam.
+
+**Também sou piloto:** um membro jogador pode marcar **"Também sou piloto"** em ✎ Editar perfil. Ele continua jogando com a própria conta e pode pilotar outras (o site já mostra que ele usa mais de uma conta), e passa a poder se cadastrar na **Pilotagem**.
+
+**✈️ Pilotagem (Utils):** os pilotos (membros piloto e quem marcou "Também sou piloto") cadastram um anúncio com seus horários e como podem ajudar, e podem pausá-lo ou sair quando quiserem.
+Qualquer membro pode clicar em **Solicitar pilotagem** num anúncio (até 3 pedidos em aberto por pessoa). O piloto recebe o aviso no **sininho** e aceita ou recusa. Ao aceitar, ele passa a pilotar a conta de quem pediu, como num pedido de piloto aprovado. O dono tira o piloto quando quiser em Meu perfil → Pilotos.
+A staff vê todos os pedidos e pode remover anúncios.
+
+**Quem criou o evento:** a staff vê na página do evento e no **🕘 Histórico de alterações** quem criou o evento e quando. Se foi criado por solicitação de um oficial aprovada pelo líder, aparece também quem pediu.
+
 Membros comuns não conseguem abrir o perfil de outra pessoa. O painel mostra:
 - os dados do membro, com um botão para editar o perfil;
 - a frequência no período escolhido, as presenças, a sequência atual de presenças e quantas vezes confirmou e faltou;
@@ -364,6 +379,7 @@ Como o site só usa o login do Google, desligue também o login por e-mail: no S
   - Se não existirem, a regra é ativada.
 
   Pode ser executado de novo e está no fim do `schema.sql`.
+- **Membro piloto e Pilotagem:** rode o [`supabase/pilotagem.sql`](supabase/pilotagem.sql) no **SQL Editor**. Ele acrescenta o tipo de conta (membro piloto e "também sou piloto"), a Pilotagem e os pedidos de pilotagem, e tira os membros piloto do rank de força e da média do clã. Nenhum dado é alterado. Pode ser executado de novo e está no fim do `schema.sql`. Enquanto ele não for executado, a Pilotagem mostra um aviso e salvar o tipo de conta dá erro.
 - **Ativar o Sorteio:** no Supabase, abra o **SQL Editor**, cole todo o conteúdo de [`supabase/sorteio.sql`](supabase/sorteio.sql) e clique em **Run**. Ele só acrescenta o que falta e pode ser executado de novo sem problema. O mesmo trecho também está no fim do `schema.sql`.
   O script também agenda o sorteio às 22h com o **pg_cron** do Supabase. Se aparecer o aviso "pg_cron indisponível", ative a extensão em **Database → Extensions → pg_cron** e rode o arquivo de novo. Enquanto ela não estiver ativa, o sorteio acontece na primeira visita ao site depois das 22h.
 - **Só Recrutamentos e Tickets:** o [`supabase/recrutamentos_tickets.sql`](supabase/recrutamentos_tickets.sql) instala apenas essas duas partes, sem mexer no resto. Ele depende das Configurações do líder, que já vêm no `schema.sql`. Quem roda o `schema.sql` completo não precisa dele.
