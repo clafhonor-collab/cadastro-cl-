@@ -139,6 +139,19 @@
   //  Acesso aos dados: Supabase (real) ou memória (demonstração)
   // =====================================================================
 
+  // Datas "AAAA-MM-DD" no horário do aparelho (o clã joga no horário de Brasília)
+  const localDay = (d = new Date()) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const fmtDay2 = (s) => (s ? s.split('-').reverse().slice(0, 2).join('/') : '');
+  const fmtDay3 = (s) => (s ? s.split('-').reverse().join('/') : '');
+
+  // Resultado da guerra: só os campos esperados, já limpos
+  function cleanResult(o) {
+    const n = (v) => (v === '' || v == null || !Number.isFinite(Number(v)) ? null : Math.max(0, Math.min(1e9, Math.trunc(Number(v)))));
+    const t = (v, max) => { const x = String(v ?? '').trim().slice(0, max); return x || null; };
+    return { outcome: o?.outcome === 'loss' ? 'loss' : 'win', opponent: t(o?.opponent, 60), score_us: n(o?.score_us), score_them: n(o?.score_them), notes: t(o?.notes, 1000) };
+  }
+  const scoreText = (r) => (r.score_us == null && r.score_them == null ? '' : `${r.score_us ?? '–'} × ${r.score_them ?? '–'}`);
+
   function supabaseApi() {
     const sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseAnonKey, {
       auth: { flowType: 'pkce', detectSessionInUrl: true, persistSession: true },
@@ -194,11 +207,47 @@
       async findAccounts(q) { return ok(await sb.rpc('find_accounts', { p_q: q })) || []; },
       // Média dos atributos do clã (só os números, sem os atributos de cada membro)
       async clanAverages() { return ok(await sb.rpc('clan_averages')); },
+      // Rank de força, média do clã e da faixa de Ressonância: só o resultado, sem os atributos de cada membro
+      async powerOverview(id) { return ok(await sb.rpc('power_overview', { p_user: id })); },
       async myPhone() { return ok(await sb.from('member_contacts').select('phone').eq('user_id', state.user.id).maybeSingle())?.phone ?? ''; },
       async contacts() { return ok(await sb.from('member_contacts').select('user_id, phone')); },
       async syncProfile() { ok(await sb.rpc('sync_google_profile')); },
       async eventTypes() { return ok(await sb.from('event_types').select('*').eq('active', true).order('sort_order').order('name')); },
       async profileHistory() { return ok(await sb.from('profile_history').select('*').order('changed_at', { ascending: false }).limit(5000)); },
+      // Ausências: a pessoa, quem pilota a conta e a liderança veem (com o motivo)
+      async absences() { return ok(await sb.from('absences').select('*').order('starts_on', { ascending: false }).limit(500)); },
+      async saveAbsence(userId, start, end, reason) { return ok(await sb.rpc('save_absence', { p_user: userId, p_start: start, p_end: end, p_reason: reason })); },
+      async deleteAbsence(id) { ok(await sb.rpc('delete_absence', { p_id: id })); },
+      // Resultado da guerra: todos os membros veem; as observações só a liderança
+      async eventResult(id) {
+        const r = await sb.from('event_results').select('*').eq('event_id', id).maybeSingle();
+        if (r.error || !r.data) return null; // sem resultado (ou SQL novo ainda não rodado)
+        if (isOfficer()) {
+          const n = await sb.from('event_result_notes').select('notes').eq('event_id', id).maybeSingle();
+          r.data.notes = n.data?.notes || '';
+        }
+        return r.data;
+      },
+      // Resultados de vários eventos de uma vez (lista de eventos)
+      async eventResults(ids) {
+        if (!ids.length) return [];
+        const r = await sb.from('event_results').select('*').in('event_id', ids);
+        if (r.error) return []; // SQL novo ainda não rodado
+        if (isOfficer() && r.data.length) {
+          const n = await sb.from('event_result_notes').select('event_id, notes').in('event_id', r.data.map((x) => x.event_id));
+          const by = Object.fromEntries((n.data || []).map((x) => [x.event_id, x.notes]));
+          r.data.forEach((x) => { x.notes = by[x.event_id] || ''; });
+        }
+        return r.data;
+      },
+      async opponents() {
+        const r = await sb.from('event_results').select('opponent').not('opponent', 'is', null).order('updated_at', { ascending: false }).limit(300);
+        return r.error ? [] : [...new Set(r.data.map((x) => x.opponent))];
+      },
+      async saveResult(eventId, o) {
+        ok(await sb.rpc('save_event_result', { p_event: eventId, p_outcome: o.outcome, p_opponent: o.opponent || null, p_us: o.score_us ?? null, p_them: o.score_them ?? null, p_notes: o.notes || null }));
+      },
+      async deleteResult(eventId) { ok(await sb.rpc('delete_event_result', { p_event: eventId })); },
       async saveProfile(fields, phone) {
         ok(await sb.from('profiles').update(fields).eq('id', state.user.id));
         if (phone !== undefined) ok(await sb.from('member_contacts').upsert({ user_id: state.user.id, phone: phone || null }));
@@ -424,6 +473,9 @@
       slots: [],
       attendance: [],
       history: [],
+      absences: [],
+      results: [],
+      resultNotes: [],
       nextId: 100,
     };
     const profile = (id) => db.profiles.find((p) => p.id === id);
@@ -438,7 +490,18 @@
       { id: 3, user_id: 'u5', changed_at: day(-12, 21), changes: { char_class: [u5.char_class === 'dh' ? 'mago' : 'dh', u5.char_class], google_name: ['trovao_antigo', u5.google_name] } },
     );
     // Evolução de Ressonância nos últimos meses (alimenta os gráficos de Estatísticas)
-    db.profiles.filter((p) => p.resonance && p.role !== 'pending' && p.id !== 'u2').forEach((p) => {
+    // Sua conta na demonstração: evolução mais completa (alimenta o gráfico "Evolução do personagem")
+    {
+      const me0 = profile('u0');
+      const chain = (key, steps) => {
+        let v = me0[key];
+        steps.forEach(([d, gain]) => { db.history.push({ id: db.history.length + 1, user_id: 'u0', changed_at: day(d, 21), changes: { [key]: [v - gain, v] } }); v -= gain; });
+      };
+      chain('resonance', [[-3, 120], [-14, 210], [-33, 90], [-51, 260], [-78, 180], [-110, 150]]);
+      chain('armor', [[-14, 180], [-51, 320], [-95, 240]]);
+      chain('potency', [[-33, 150]]);
+    }
+    db.profiles.filter((p) => p.resonance && p.role !== 'pending' && p.id !== 'u2' && p.id !== 'u0').forEach((p) => {
       let v = p.resonance;
       for (let k = 1; k <= 3; k++) {
         if (rnd() < 0.3) continue;
@@ -515,6 +578,12 @@
         db.attendance.push({ event_id: id, user_id: p.id, present });
       });
     }
+
+    // Resultados de duas Guerras passadas (as observações só a liderança vê)
+    db.results.push(
+      { event_id: 14, outcome: 'win', opponent: 'Legião Sombria', score_us: 5, score_them: 3, updated_by: 'u1', updated_at: day(-8, 23) },
+      { event_id: 18, outcome: 'loss', opponent: 'Os Imortais', score_us: 2, score_them: 6, updated_by: 'u0', updated_at: day(-20, 23) });
+    db.resultNotes.push({ event_id: 18, notes: 'Faltaram healers no segundo round. Reforçar a escalação dos Cruzados.' });
 
     // Um evento passado com times no formato "Outros", com um time renomeado e você escalado
     Object.assign(db.events.find((e) => e.id === 12), { title: 'Torre Amaldiçoada', team_format: 'rito', team_count: 3, team_names: ['Revenge', null, null] });
@@ -728,6 +797,22 @@
       elog(1, 'room', 'Exaltação 1', { added: [], removed: ['u30'] }, ago(6), 'u0');
       elog(1, 'lock', null, {}, ago(5), 'u0');
     }
+    // Ausência: eventos futuros do período viram "Não vou" (igual à função apply_absence do banco)
+    const absenceCovers = (a, ev) => { const d = localDay(new Date(ev.starts_at)); return d >= a.starts_on && d <= a.ends_on; };
+    function applyAbsenceDemo(a, events = db.events) {
+      let n = 0;
+      events.filter((e) => Date.parse(e.starts_at) > Date.now() && absenceCovers(a, e)).forEach((e) => {
+        const r = db.rsvps.find((x) => x.event_id === e.id && x.user_id === a.user_id);
+        if (!r) { db.rsvps.push({ event_id: e.id, user_id: a.user_id, going: false, absence_id: a.id }); n++; }
+        else if (r.going) { Object.assign(r, { going: false, discord: null, absence_id: a.id, withdraw_reason: null, withdraw_requested_at: null }); dropSlot(e.id, a.user_id); n++; }
+      });
+      return n;
+    }
+    // Exemplo: Trovão está viajando
+    {
+      const a = { id: db.nextId++, user_id: 'u5', starts_on: localDay(new Date(Date.now() - 2 * 86400000)), ends_on: localDay(new Date(Date.now() + 9 * 86400000)), reason: 'Viagem a trabalho, sem internet boa', created_by: 'u5', created_at: new Date().toISOString() };
+      db.absences.push(a); applyAbsenceDemo(a);
+    }
     let user = null;
     let listener = () => {};
     return {
@@ -788,6 +873,14 @@
         ATTRS.forEach((a) => { out[a.key] = rows.length ? Math.round(rows.reduce((s, p) => s + p[a.key], 0) / rows.length) : null; });
         return out;
       },
+      // Mesmas regras da função power_overview do banco
+      async powerOverview(id) {
+        const p = profile(id);
+        if (!p || !(isOfficer() || canActAsDemo(id))) throw new Error('Sem permissão');
+        const list = db.profiles.filter((x) => ['member', 'officer', 'leader'].includes(x.role) && hasBuild(x));
+        const d = computePower(list, p);
+        return { ...d, top: d.top.map((r) => ({ id: r.m.id, game_name: displayName(r.m), char_class: r.m.char_class, score: r.score })) };
+      },
       async saveProfile(fields, phone) {
         // Mesmo comportamento do gatilho do banco: registra o que mudou
         const p = profile(state.user.id);
@@ -815,7 +908,63 @@
           .sort((a, b) => Date.parse(b.starts_at) - Date.parse(a.starts_at)).map(attach);
       },
       async createEvents(rows) {
-        return rows.map((r) => { const e = { id: db.nextId++, team_format: null, team_count: 10, ...r }; db.events.push(e); elog(e.id, 'created'); return { id: e.id }; });
+        return rows.map((r) => {
+          const e = { id: db.nextId++, team_format: null, team_count: 10, ...r }; db.events.push(e); elog(e.id, 'created');
+          db.absences.forEach((a) => applyAbsenceDemo(a, [e]));
+          return { id: e.id };
+        });
+      },
+      async absences() { return db.absences.filter((a) => isOfficer() || canActAsDemo(a.user_id)).map((a) => ({ ...a })); },
+      async saveAbsence(userId, start, end, reason) {
+        if (!(canActAsDemo(userId) || isOfficer())) throw new Error('Você não pode programar ausência para esta conta');
+        if (!start || !end || end < start) throw new Error('Confira as datas da ausência');
+        if (start < localDay()) throw new Error('A ausência não pode começar antes de hoje');
+        if ((Date.parse(end) - Date.parse(start)) / 86400000 > 180) throw new Error('A ausência pode ter no máximo 180 dias');
+        if (!String(reason || '').trim()) throw new Error('Informe o motivo da ausência');
+        if (db.absences.some((a) => a.user_id === userId && a.starts_on <= end && a.ends_on >= start)) throw new Error('Já existe uma ausência neste período');
+        const a = { id: db.nextId++, user_id: userId, starts_on: start, ends_on: end, reason: String(reason).trim().slice(0, 300), created_by: state.user.id, created_at: new Date().toISOString() };
+        db.absences.push(a);
+        return { id: a.id, changed: applyAbsenceDemo(a) };
+      },
+      async deleteAbsence(id) {
+        const a = db.absences.find((x) => x.id === id);
+        if (!a) return;
+        if (!(canActAsDemo(a.user_id) || isOfficer())) throw new Error('Sem permissão para cancelar esta ausência');
+        const today = localDay();
+        const ongoing = a.starts_on <= today;
+        // Encerrar: libera os eventos depois de hoje. Cancelar (ainda não começou): libera todos.
+        const freed = new Set(db.events.filter((e) => Date.parse(e.starts_at) > Date.now() && (!ongoing || localDay(new Date(e.starts_at)) > today)).map((e) => e.id));
+        db.rsvps = db.rsvps.filter((r) => !(r.absence_id === id && !r.going && freed.has(r.event_id)));
+        if (ongoing) a.ends_on = today;
+        else db.absences = db.absences.filter((x) => x.id !== id);
+      },
+      async eventResult(id) {
+        const r = db.results.find((x) => x.event_id === id);
+        if (!r) return null;
+        return isOfficer() ? { ...r, notes: db.resultNotes.find((n) => n.event_id === id)?.notes || '' } : { ...r };
+      },
+      async eventResults(ids) {
+        const out = [];
+        for (const id of ids) { const r = await this.eventResult(id); if (r) out.push(r); }
+        return out;
+      },
+      async opponents() {
+        return [...new Set(db.results.slice().sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at)).map((r) => r.opponent).filter(Boolean))];
+      },
+      async saveResult(eventId, o) {
+        if (!isOfficer()) throw new Error('Só oficiais e o líder registram resultados');
+        const ev = db.events.find((e) => e.id === eventId);
+        if (!ev || Date.parse(ev.starts_at) > Date.now()) throw new Error('O resultado só pode ser registrado depois que o evento começar');
+        const row = cleanResult(o);
+        db.results = db.results.filter((r) => r.event_id !== eventId);
+        db.results.push({ event_id: eventId, outcome: row.outcome, opponent: row.opponent, score_us: row.score_us, score_them: row.score_them, updated_by: state.user.id, updated_at: new Date().toISOString() });
+        db.resultNotes = db.resultNotes.filter((n) => n.event_id !== eventId);
+        if (row.notes) db.resultNotes.push({ event_id: eventId, notes: row.notes });
+      },
+      async deleteResult(eventId) {
+        if (!isOfficer()) throw new Error('Só oficiais e o líder alteram resultados');
+        db.results = db.results.filter((r) => r.event_id !== eventId);
+        db.resultNotes = db.resultNotes.filter((n) => n.event_id !== eventId);
       },
       async notes() { return isOfficer() ? db.notes.filter((n) => !canActAsDemo(n.member_id)).map((n) => ({ ...n })) : []; },
       async addNote(memberId, body) { db.notes.unshift({ id: db.nextId++, member_id: memberId, author_id: state.user.id, body, created_at: new Date().toISOString() }); },
@@ -898,6 +1047,7 @@
         let r = db.rsvps.find((x) => x.event_id === eventId && x.user_id === acct);
         if (!r) { r = { event_id: eventId, user_id: acct }; db.rsvps.push(r); }
         Object.assign(r, { going, answered_by: state.user.id }, build || {});
+        if (going) r.absence_id = null;
         if (!going) dropSlot(eventId, acct);
       },
       async clearRsvp(eventId, accountId) {
@@ -1224,6 +1374,7 @@
       { key: 'event_create', label: 'Criar e repetir eventos', approval: true },
       { key: 'event_edit', label: 'Editar eventos', approval: true },
       { key: 'event_delete', label: 'Apagar eventos', approval: true },
+      { key: 'results', label: 'Registrar resultados', desc: 'Vitória ou derrota, clã adversário, placar e observações', approval: true },
     ] },
     { group: 'Times e presença', items: [
       { key: 'teams_build', label: 'Montar e revisar times', desc: 'Formato, sugestão, renomear e salvar os times' },
@@ -1289,6 +1440,17 @@
       const ev = await raw.event(id);
       if (!ev) throw new Error('O evento não existe mais');
       return ['event_delete', `Apagar o evento “${ev.title}” de ${fmtShortDate(ev.starts_at)}`];
+    },
+    saveResult: async (raw, id, o) => {
+      const ev = await raw.event(id);
+      if (!ev) throw new Error('O evento não existe mais');
+      const r = cleanResult(o);
+      return ['results', `Registrar ${r.outcome === 'win' ? 'vitória' : 'derrota'} no evento “${ev.title}” de ${fmtShortDate(ev.starts_at)}${r.opponent ? ` contra ${r.opponent}` : ''}${scoreText(r) ? ` · placar ${scoreText(r)}` : ''}`];
+    },
+    deleteResult: async (raw, id) => {
+      const ev = await raw.event(id);
+      if (!ev) throw new Error('O evento não existe mais');
+      return ['results', `Tirar o resultado do evento “${ev.title}” de ${fmtShortDate(ev.starts_at)}`];
     },
     saveTeams: () => ['teams_build'],
     renameTeam: () => ['teams_build'],
@@ -1359,6 +1521,8 @@
     createRaffle: ([row]) => [only(row, ['draw_at', 'prize_kind', 'prize_qty', 'prize_text'])],
     updateRaffle: ([id, row]) => [Number(id), only(row, ['draw_at', 'prize_kind', 'prize_qty', 'prize_text'])],
     deleteRaffle: ([id]) => [Number(id)],
+    saveResult: ([id, o]) => [Number(id), cleanResult(o)],
+    deleteResult: ([id]) => [Number(id)],
   };
   let RAW = null; // operações sem a checagem de permissão (o líder usa ao aprovar)
   function withPermissions(raw) {
@@ -1831,6 +1995,13 @@
   }
 
   function rsvpButtons(ev) {
+    const html = rsvpButtonsRaw(ev);
+    const mine = myRsvp(ev);
+    // aviso dentro do mesmo bloco dos botões
+    return mine && !mine.going && mine.absence_id
+      ? html.replace(/<\/div>\s*$/, '<div class="abs-note" title="Você pode trocar para “Vou” se for participar">✈️ Ausência programada</div></div>') : html;
+  }
+  function rsvpButtonsRaw(ev) {
     const mine = myRsvp(ev);
     if (!canChangeRsvp(ev)) {
       const why = !rsvpOpen(ev) ? 'Respostas encerradas' : '🔒 Times travados';
@@ -1850,6 +2021,12 @@
     </div>`;
   }
 
+  // Selo do resultado na lista de eventos
+  function resultBadge(r) {
+    const win = r.outcome === 'win';
+    const sc = scoreText(r);
+    return `<div class="res-line ${win ? 'win' : 'loss'}">${win ? '🏆' : '💀'} <b>${win ? 'Vitória' : 'Derrota'}</b>${r.opponent ? ` contra <b>${esc(r.opponent)}</b>` : ''}${sc ? ` <span class="res-sc">${sc}</span>` : ''}</div>`;
+  }
   function eventCard(ev) {
     const c = counts(ev);
     const rel = relativeDay(ev.starts_at);
@@ -1867,10 +2044,11 @@
         ${isOfficer() && ev.rsvps.some((r) => r.going && r.withdraw_requested_at) ? `<span class="badge warn">⚠ ${ev.rsvps.filter((r) => r.going && r.withdraw_requested_at).length} pedido(s) de saída</span>` : ''}
         ${deadlineTag(ev) ? `<div>${deadlineTag(ev)}</div>` : ''}
         ${needsAttendance ? '<span class="badge warn">Registrar presença</span>' : ''}
+        ${ev.result ? resultBadge(ev.result) : ''}
         ${ev.description ? `<div class="desc">${esc(ev.description)}</div>` : ''}
         ${isOfficer() ? `<div class="counts"><span class="c-yes">✔ ${c.yes} vão</span><span class="c-no">✖ ${c.no} não vão</span><span class="muted">${c.pending} sem resposta</span></div>
         <div class="bar"><span class="y" style="width:${pct(c.yes)}%"></span><span class="n" style="width:${pct(c.no)}%"></span></div>` : ''}
-        <div class="ev-foot"><a class="btn small ghost" href="#/evento/${ev.id}">🔎 Detalhar evento</a></div>
+        <div class="ev-foot"><a class="btn small ghost" href="#/evento/${ev.id}">🔎 Detalhar evento</a>${calBtn(ev)}${can('results') && hasStarted(ev) ? `<button class="btn small ${ev.result ? 'ghost' : 'primary'}" type="button" data-result="${ev.id}">${ev.result ? '✏️ Editar resultado' : '🏆 Registrar resultado'}</button>` : ''}</div>
       </div>
       ${isOpen(ev) ? rsvpButtons(ev) : ''}
     </div>`;
@@ -1963,7 +2141,61 @@
     });
   }
 
+  // ---------- Adicionar à agenda ----------
+  // Aparece nos eventos futuros em que a conta escolhida respondeu "Vou"
+  const CAL_MINUTES = 15;
+  const calBtn = (ev) => (isOpen(ev) && !hasStarted(ev) && myRsvp(ev)?.going
+    ? ` <button class="btn small ghost" type="button" data-cal="${ev.id}" title="Colocar este evento na sua agenda">📅 Adicionar à Agenda</button>` : '');
+  function calInfo(ev) {
+    const start = new Date(ev.starts_at);
+    const end = new Date(start.getTime() + CAL_MINUTES * 60000);
+    const url = `${location.origin}${location.pathname}#/evento/${ev.id}`;
+    const team = myTeam(ev);
+    const details = [ev.description || '', team ? `Seu time: ${team}` : '', `Detalhes e times: ${url}`].filter(Boolean).join('\n\n');
+    return { start, end, url, details, title: `${ev.title} · ${CFG.clanName || 'Clã'}` };
+  }
+  const calStamp = (d) => d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  function googleCalUrl(ev) {
+    const c = calInfo(ev);
+    const q = new URLSearchParams({ action: 'TEMPLATE', text: c.title, dates: `${calStamp(c.start)}/${calStamp(c.end)}`, details: c.details });
+    return `https://calendar.google.com/calendar/render?${q}`;
+  }
+  function icsText(ev) {
+    const c = calInfo(ev);
+    // texto no formato .ics: escapa \ ; , e quebras de linha
+    const e = (s) => String(s).replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
+    return ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//FOR HONOR//Eventos//PT', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH',
+      'BEGIN:VEVENT', `UID:forhonor-evento-${ev.id}@${location.host || 'forhonor'}`, `DTSTAMP:${calStamp(new Date())}`,
+      `DTSTART:${calStamp(c.start)}`, `DTEND:${calStamp(c.end)}`, `SUMMARY:${e(c.title)}`, `DESCRIPTION:${e(c.details)}`, `URL:${c.url}`,
+      'BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${e(c.title)}`, 'TRIGGER:-PT30M', 'END:VALARM',
+      'END:VEVENT', 'END:VCALENDAR', ''].join('\r\n');
+  }
+  function openCalendar(ev) {
+    openDialog(`
+      <h2>📅 Adicionar à agenda</h2>
+      <p class="muted small" style="margin:0 0 12px"><b>${esc(ev.title)}</b> · ${esc(fmtDay(ev.starts_at))} às ${fmtTime(ev.starts_at)}</p>
+      <div class="stack cal-opts">
+        <a class="btn" href="${esc(googleCalUrl(ev))}" target="_blank" rel="noopener">Google Agenda</a>
+        <button class="btn" type="button" id="cal-ics">Celular / Outlook <span class="muted small">(arquivo .ics, com aviso 30 min antes)</span></button>
+      </div>
+      <div class="row end" style="margin-top:12px"><button class="btn ghost" data-close>Fechar</button></div>`, (d) => {
+      $('#cal-ics', d).addEventListener('click', () => {
+        const blob = new Blob([icsText(ev)], { type: 'text/calendar;charset=utf-8' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `forhonor-evento-${ev.id}.ics`;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+        toast('Abra o arquivo baixado para salvar na agenda');
+      });
+    });
+  }
+
   function bindRsvp(root, events, rerender) {
+    root.querySelectorAll('[data-cal]').forEach((b) => b.addEventListener('click', () => {
+      const ev = events.find((x) => x.id === Number(b.dataset.cal));
+      if (ev) openCalendar(ev);
+    }));
     root.querySelectorAll('[data-withdraw]').forEach((b) => b.addEventListener('click', () => {
       const ev = events.find((x) => x.id === Number(b.dataset.withdraw));
       if (ev) openWithdrawDialog(ev, rerender);
@@ -2017,6 +2249,11 @@
       };
       if (Number.isFinite(wait) && wait < 2 * 86400e3) eventsTimer = setTimeout(refresh, wait + 1500);
     }
+    // Resultado das guerras: só para eventos que já começaram
+    const started = events.filter(hasStarted).map((e) => e.id);
+    const results = started.length ? await api.eventResults(started).catch(() => []) : [];
+    const resBy = Object.fromEntries(results.map((r) => [r.event_id, r]));
+    events.forEach((e) => { e.result = resBy[e.id] || null; });
     const head = `<div class="page-head"><h1>${past ? 'Eventos passados' : 'Próximos eventos'}</h1>
       ${can('event_create') && !past ? '<button class="btn primary" id="btn-new">+ Novo evento</button>' : ''}</div>`;
     const body = events.length
@@ -2024,6 +2261,10 @@
       : `<div class="card empty">${past ? 'Nenhum evento passado ainda.' : 'Nenhum evento agendado.'}${can('event_create') && !past ? '<br><br>Crie o primeiro em “+ Novo evento”.' : ''}</div>`;
     main.innerHTML = head + body;
     $('#btn-new')?.addEventListener('click', () => openEventForm());
+    main.querySelectorAll('[data-result]').forEach((b) => b.addEventListener('click', () => {
+      const ev = events.find((e) => e.id === Number(b.dataset.result));
+      if (ev) openResultDialog(ev, ev.result, () => viewEvents(past));
+    }));
     bindRsvp(main, events, () => viewEvents(past));
   }
 
@@ -2187,9 +2428,91 @@
 
   // ---------- Detalhe do evento ----------
 
+  // Resultado da guerra na página do evento (todos veem; observações só a liderança)
+  function resultCard(ev, r) {
+    const canEdit = can('results') && hasStarted(ev);
+    if (!r) {
+      return canEdit ? `<div class="card result-card empty-res row">
+          <span>⚔ Como foi? Registre o resultado deste evento.</span>
+          <span class="spacer"></span><button class="btn small primary" id="btn-result">🏆 Registrar resultado</button></div>` : '';
+    }
+    const win = r.outcome === 'win';
+    const hasScore = r.score_us != null || r.score_them != null;
+    return `<div class="card result-card ${win ? 'win' : 'loss'}">
+        <div class="row">
+          <span class="res-icon" aria-hidden="true">${win ? '🏆' : '💀'}</span>
+          <div class="spacer">
+            <div class="res-title"><b>${win ? 'Vitória' : 'Derrota'}</b>${r.opponent ? ` <span class="muted">contra</span> <b>${esc(r.opponent)}</b>` : ''}</div>
+            ${hasScore ? `<div class="res-score"><span>FOR HONOR</span> <b>${r.score_us ?? '–'}</b> <span class="muted">×</span> <b>${r.score_them ?? '–'}</b> <span>${esc(r.opponent || 'Adversário')}</span></div>` : ''}
+          </div>
+          ${canEdit ? '<button class="btn small" id="btn-result">Editar resultado</button>' : ''}
+        </div>
+        ${isOfficer() && r.notes ? `<div class="res-notes"><span class="muted small">📝 Observações · só a liderança vê</span><div style="white-space:pre-line">${esc(r.notes)}</div></div>` : ''}
+      </div>`;
+  }
+
+  async function openResultDialog(ev, r, reload) {
+    const names = await api.opponents().catch(() => []);
+    const outcome = r?.outcome || '';
+    openDialog(`
+      <form id="res-form" class="stack">
+        <h2>🏆 Resultado · ${esc(ev.title)}</h2>
+        <p class="muted small" style="margin:0">${esc(fmtDay(ev.starts_at))} · ${fmtTime(ev.starts_at)}</p>
+        <div class="seg res-outcome" role="radiogroup" aria-label="Resultado">
+          <label class="${outcome === 'win' ? 'on' : ''}"><input type="radio" name="res-out" value="win" ${outcome === 'win' ? 'checked' : ''}> 🏆 Vitória</label>
+          <label class="${outcome === 'loss' ? 'on' : ''}"><input type="radio" name="res-out" value="loss" ${outcome === 'loss' ? 'checked' : ''}> 💀 Derrota</label>
+        </div>
+        <div class="field">
+          <label for="res-opp">Clã adversário <span class="muted small">(opcional)</span></label>
+          <input id="res-opp" maxlength="60" list="res-opp-list" value="${esc(r?.opponent || '')}" placeholder="Nome do clã" autocomplete="off">
+          <datalist id="res-opp-list">${names.map((n) => `<option value="${esc(n)}">`).join('')}</datalist>
+        </div>
+        <div class="field">
+          <label>Placar <span class="muted small">(opcional)</span></label>
+          <div class="row res-score-in">
+            <input type="number" id="res-us" min="0" step="1" inputmode="numeric" placeholder="Nós" aria-label="Pontos do FOR HONOR" value="${r?.score_us ?? ''}">
+            <span class="muted">×</span>
+            <input type="number" id="res-them" min="0" step="1" inputmode="numeric" placeholder="Eles" aria-label="Pontos do adversário" value="${r?.score_them ?? ''}">
+          </div>
+        </div>
+        <div class="field">
+          <label for="res-notes">Observações <span class="muted small">(opcional; só a liderança vê)</span></label>
+          <textarea id="res-notes" maxlength="1000" placeholder="O que funcionou, o que melhorar…">${esc(r?.notes || '')}</textarea>
+        </div>
+        <p class="le-msg small bad" id="res-msg" hidden></p>
+        <div class="row end">
+          ${r ? '<button type="button" class="btn ghost danger" id="res-del">Tirar resultado</button><span class="spacer"></span>' : ''}
+          <button type="button" class="btn ghost" data-close>Cancelar</button>
+          <button type="submit" class="btn primary">Salvar</button>
+        </div>
+      </form>`, (d) => {
+      const msg = (t) => { const m = $('#res-msg', d); m.hidden = !t; m.textContent = t || ''; };
+      d.querySelectorAll('input[name=res-out]').forEach((i) => i.addEventListener('change', () => {
+        d.querySelectorAll('.res-outcome label').forEach((l) => l.classList.toggle('on', l.querySelector('input').checked));
+      }));
+      $('#res-form', d).addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const out = d.querySelector('input[name=res-out]:checked')?.value;
+        if (!out) { msg('Escolha Vitória ou Derrota.'); return; }
+        const us = $('#res-us', d).value; const them = $('#res-them', d).value;
+        if ([us, them].some((v) => v !== '' && !(Number(v) >= 0 && Number.isInteger(Number(v))))) { msg('O placar precisa ser um número inteiro (0 ou mais).'); return; }
+        const b = $('button[type=submit]', d); b.disabled = true; msg('');
+        try {
+          await api.saveResult(ev.id, { outcome: out, opponent: $('#res-opp', d).value, score_us: us, score_them: them, notes: $('#res-notes', d).value });
+          dlg.close(); toast('Resultado salvo'); await reload();
+        } catch (err) { b.disabled = false; if (err instanceof PendingApproval) fail(err); else msg(err?.message || String(err)); }
+      });
+      $('#res-del', d)?.addEventListener('click', async () => {
+        dlg.close();
+        if (!(await confirmDialog('Tirar o resultado deste evento? As observações também saem.', 'Tirar resultado'))) return;
+        try { await api.deleteResult(ev.id); toast('Resultado removido'); await reload(); } catch (err) { fail(err); }
+      });
+    });
+  }
+
   async function viewEvent(id) {
     loading();
-    const ev = await api.event(id);
+    const [ev, result] = await Promise.all([api.event(id), api.eventResult(id).catch(() => null)]);
     if (!ev) { main.innerHTML = `<div class="card empty">Evento não encontrado (talvez tenha sido apagado).<br><br>${backBtn('#/', 'Voltar')}</div>`; return; }
     const byId = Object.fromEntries(state.members.map((m) => [m.id, m]));
     const sortX = (a, b) => byName(a.p, b.p);
@@ -2203,7 +2526,8 @@
       ? `<ul class="people">${arr.map((x) => {
         // Quando um piloto respondeu pela conta, mostra quem foi
         const by = x.r?.answered_by && x.r.answered_by !== x.p.id ? memberById(x.r.answered_by) : null;
-        return personLine(x.p, withClass ? buildFor(x.r, x.p) : null, withClass && x.r?.discord, by ? `respondido por ${displayName(by)}` : '');
+        const note = x.r?.absence_id && !x.r.going ? '✈️ ausência programada' : by ? `respondido por ${displayName(by)}` : '';
+        return personLine(x.p, withClass ? buildFor(x.r, x.p) : null, withClass && x.r?.discord, note);
       }).join('')}</ul>`
       : '<p class="muted small">Ninguém</p>');
 
@@ -2248,6 +2572,7 @@
       </div>` : '';
 
     const finished = !isOpen(ev);
+    const resultBox = resultCard(ev, result);
     main.innerHTML = `
       ${backRow(finished ? '#/passados' : '#/', finished ? 'Voltar aos eventos passados' : 'Voltar')}
       <div class="card stack">
@@ -2261,7 +2586,7 @@
         </div>
         ${ev.description ? `<div class="desc" style="white-space:pre-line">${esc(ev.description)}</div>` : ''}
         <div class="row">
-          <button class="btn small ghost" id="btn-copy">🔗 Copiar link</button>
+          <button class="btn small ghost" id="btn-copy">🔗 Copiar link</button>${calBtn(ev)}
           ${isOfficer() ? `<button class="btn small ghost" id="btn-copy-list">📋 Copiar lista</button>
             <button class="btn small ghost" id="btn-history" title="Quem alterou o evento e cada sala">🕘 Histórico de alterações</button>
             <span class="spacer"></span>
@@ -2271,6 +2596,7 @@
             ${can('event_delete') ? '<button class="btn small danger" id="btn-del">Apagar</button>' : ''}` : ''}
         </div>
       </div>
+      ${resultBox}
       ${wdBox}
       ${myTeam(ev) ? `<div class="card my-team row">
           <span class="my-team-icon" aria-hidden="true">🛡</span>
@@ -2317,6 +2643,7 @@
       main.querySelectorAll('[data-agg]').forEach((x) => x.classList.toggle('on', x.dataset.agg === aggMode()));
     }));
     $('#btn-attend')?.addEventListener('click', () => openAttendanceDialog(ev, () => viewEvent(id)));
+    $('#btn-result')?.addEventListener('click', () => openResultDialog(ev, result, () => viewEvent(id)));
     if (isOfficer()) {
       $('#btn-copy-list').addEventListener('click', () => {
         const names = (arr) => arr.map((x) => displayName(x.p)).join(', ') || '—';
@@ -2418,6 +2745,7 @@
         if (!ev.attendance.length || Date.parse(ev.starts_at) < joined) return;
         const was = ev.attendance.some((a) => a.user_id === m.id && a.present);
         const r = ev.rsvps.find((x) => x.user_id === m.id);
+        if (r?.absence_id && !was) return; // ausência programada: fica fora da frequência
         row.total++;
         if (was) { row.present++; if (!row.last) row.last = ev.starts_at; }
         if (r?.going) row.confirmed++;
@@ -4280,10 +4608,11 @@
     loading();
     const since = P.days ? new Date(Date.now() - P.days * 86400000).toISOString() : null;
     const showNotes = !self && can('notes') && !canActAs(targetId);
-    const [members, past, upcoming, changes, allNotes, mlog, pilots] = await Promise.all([
+    const [members, past, upcoming, changes, allNotes, mlog, pilots, absences] = await Promise.all([
       api.members(), api.history(since), api.events(false), api.profileHistory(), showNotes ? api.notes() : Promise.resolve([]),
       api.membershipLog(targetId).catch(() => []), // se o banco ainda não tiver o histórico, mostra vazio
       api.pilots().catch(() => state.pilots || []),
+      api.absences().catch(() => null), // null = o SQL das ausências ainda não foi rodado
     ]);
     state.pilots = pilots;
     state.members = members;
@@ -4327,27 +4656,39 @@
         <span class="${cls} small">${label}</span></a>`;
     }).join('');
 
-    // Meus atributos comparados com a média do clã
-    // Membro comum não recebe os atributos de todos: a média vem pronta do banco
-    const clan = activeMembers().filter(hasBuild);
-    const avgs = !isOfficer() && hasBuild(me) ? await api.clanAverages().catch(() => null) : null;
-    const cmp = hasBuild(me) ? ATTRS.map((a) => {
-      const vals = clan.map((m) => m[a.key]);
-      const mean = avgs && Number.isFinite(Number(avgs[a.key])) ? Math.round(Number(avgs[a.key]))
-        : vals.length ? Math.round(vals.reduce((s, v) => s + v, 0) / vals.length) : null;
+    // Meus atributos comparados com a média do clã e com a mesma faixa de Ressonância.
+    // Membro comum não recebe os atributos de todos: médias, faixa e rank vêm prontos do banco (power_overview).
+    let pw = null;
+    try { pw = await powerOverview(me); } catch (e) { pw = null; }
+    if (!pw && !isOfficer() && hasBuild(me)) {
+      // Só enquanto o supabase/rank_forca.sql não for executado: usa a média do clã antiga
+      const avgs = await api.clanAverages().catch(() => null);
+      if (avgs) pw = { clan: { count: avgs.count || 0, avg: avgs }, band: null, unavailable: true };
+    }
+    const cmpRows = (avg, groupLabel) => ATTRS.map((a) => {
+      const mean = avg && Number.isFinite(Number(avg[a.key])) ? Math.round(Number(avg[a.key])) : null;
       const mineVal = me[a.key];
       const scale = Math.max(mineVal, mean || 0) * 1.1 || 1;
       const diff = mean ? (mineVal - mean) / mean : 0;
       return `<div class="cmp-row">
         <span class="cmp-label">${a.label}</span>
-        <div class="cmp-track" title="${self ? 'Você' : esc(who)}: ${fmtNum(mineVal)} · Média do clã: ${fmtNum(mean)}">
+        <div class="cmp-track" title="${self ? 'Você' : esc(who)}: ${fmtNum(mineVal)} · ${groupLabel}: ${fmtNum(mean)}">
           <span class="me" style="width:${(100 * mineVal) / scale}%"></span>
           <span class="clan" style="width:${(100 * (mean || 0)) / scale}%"></span>
         </div>
-        <span class="cmp-val"><b>${fmtNum(mineVal)}</b><small>clã ${fmtNum(mean)}</small></span>
+        <span class="cmp-val"><b>${fmtNum(mineVal)}</b><small>${groupLabel === 'Média do clã' ? 'clã' : 'faixa'} ${fmtNum(mean)}</small></span>
         <span class="cmp-diff ${diff >= 0 ? 'c-yes' : 'c-no'}">${diff >= 0 ? '+' : ''}${Math.round(diff * 100)}%</span>
       </div>`;
-    }).join('') : `<p class="muted">${self ? 'Informe sua classe e seus atributos em “Editar perfil” para comparar com o clã.' : 'Este membro ainda não informou classe e atributos.'}</p>`;
+    }).join('');
+    const noBuild = `<p class="muted">${self ? 'Informe sua classe e seus atributos em “Editar perfil” para comparar com o clã.' : 'Este membro ainda não informou classe e atributos.'}</p>`;
+    const clanCount = pw?.clan?.count || 0;
+    const cmp = !hasBuild(me) ? noBuild : pw ? cmpRows(pw.clan.avg, 'Média do clã') : '<p class="muted">Não foi possível carregar a média do clã.</p>';
+    // Mesma faixa de Ressonância (±500)
+    const band = pw?.band;
+    const bandHtml = !hasBuild(me) ? noBuild
+      : !band ? '<p class="muted">Comparação indisponível no momento.</p>'
+        : !band.count ? `<p class="muted">Nenhum outro membro com Ressonância entre ${fmtNum(band.lo)} e ${fmtNum(band.hi)}.</p>`
+          : cmpRows(band.avg, 'Média da faixa');
 
     main.innerHTML = `
       ${self ? '' : backRow('#/membros', 'Membros')}
@@ -4378,15 +4719,23 @@
         <div class="card stat"><div class="stat-num ${f.noShow ? 'c-no' : 'c-yes'}">${f.noShow}</div><div class="muted small">vezes que confirmou e faltou</div></div>
       </div>
 
+      ${powerRankCard(me, self, pw)}
+      ${evoCard()}
+
       <div class="panels">
+        <div class="card">
+          <h2>${self ? 'Você' : esc(who)} × média do clã</h2>
+          <div class="cmp-legend small"><span><i class="lg me"></i>${self ? 'Você' : esc(who)}</span><span><i class="lg clan"></i>Média de ${clanCount} membros</span></div>
+          ${cmp}
+        </div>
+        <div class="card">
+          <h2>${self ? 'Você' : esc(who)} × mesma faixa</h2>
+          <div class="cmp-legend small"><span><i class="lg me"></i>${self ? 'Você' : esc(who)}</span><span><i class="lg clan"></i>${hasBuild(me) && band ? `Média de ${band.count} ${band.count === 1 ? 'membro' : 'membros'} com Ressonância ${fmtNum(band.lo)}–${fmtNum(band.hi)}` : 'Mesma faixa de Ressonância (±500)'}</span></div>
+          ${bandHtml}
+        </div>
         <div class="card">
           <h2>Próximos eventos ${pending ? `<span class="badge warn">${pending} sem resposta</span>` : ''}</h2>
           ${upRows || '<p class="muted">Nenhum evento agendado.</p>'}
-        </div>
-        <div class="card">
-          <h2>${self ? 'Você' : esc(who)} × média do clã</h2>
-          <div class="cmp-legend small"><span><i class="lg me"></i>${self ? 'Você' : esc(who)}</span><span><i class="lg clan"></i>Média de ${clan.length} membros</span></div>
-          ${cmp}
         </div>
         <div class="card">
           <h2>Últimos eventos</h2>
@@ -4396,6 +4745,7 @@
           <h2>Histórico de alterações</h2>
           <div class="hist">${histItemsHtml(myChanges) || '<p class="muted">Nenhuma alteração registrada ainda.</p>'}</div>
         </div>
+        ${absences && ACTIVE_ROLES.includes(me.role) && (canActAs(me.id) || isOfficer()) ? absencesCard(me, absences) : ''}
       </div>
       ${pilotsCard(me, self)}
       ${membershipCard(mlog.filter((h) => h.user_id === me.id), members)}
@@ -4414,7 +4764,11 @@
       });
     });
     $('#btn-rename')?.addEventListener('click', () => openRenameDialog(me, () => viewMyPanel(userId)));
+    $('#btn-pr-fill')?.addEventListener('click', () => openProfile());
+    $('#btn-pr-info')?.addEventListener('click', () => openPowerInfo(me, pw));
+    bindEvo(me, myChanges, self);
     bindPilotsCard(me, () => viewMyPanel(userId));
+    bindAbsences(me, absences || [], () => viewMyPanel(userId));
     $('#p-days').addEventListener('change', (e) => { P.days = Number(e.target.value); viewMyPanel(userId); });
 
     // Anotações internas
@@ -4430,6 +4784,167 @@
       if (!(await confirmDialog('Apagar esta anotação? Não dá para desfazer.', 'Apagar'))) return;
       try { await api.deleteNote(Number(b.dataset.delNote)); toast('Anotação apagada'); await viewMyPanel(userId); } catch (err) { fail(err); }
     }));
+  }
+
+  // ---------- Rank de força (perfil) ----------
+  // Cada atributo vira uma nota de 0 a 100 comparada ao melhor do clã; a pontuação (0 a 1000) é a média ponderada.
+  // A mesma conta existe no banco (supabase/rank_forca.sql, função power_overview).
+  const POWER_WEIGHTS = { resonance: 0.5, armor: 0.175, armor_pen: 0.175, potency: 0.075, resistance: 0.075 };
+  const POWER_BAND = 500;
+  function computePower(list, person) {
+    const max = Object.fromEntries(ATTRS.map((a) => [a.key, Math.max(0, ...list.map((m) => m[a.key] || 0))]));
+    const rows = list.map((m) => ({
+      m,
+      score: Math.round(10 * ATTRS.reduce((s, a) => s + (POWER_WEIGHTS[a.key] || 0) * (max[a.key] ? (100 * (m[a.key] || 0)) / max[a.key] : 0), 0)),
+    })).sort((a, b) => (b.score - a.score) || byName(a.m, b.m));
+    const avgOf = (g) => Object.fromEntries(ATTRS.map((a) => [a.key, g.length ? Math.round(g.reduce((s, m) => s + (m[a.key] || 0), 0) / g.length) : null]));
+    const idx = rows.findIndex((r) => r.m.id === person.id);
+    const sameClass = idx < 0 ? [] : rows.filter((r) => r.m.char_class === rows[idx].m.char_class);
+    const res = person.resonance || 0;
+    const lo = Math.max(0, res - POWER_BAND);
+    const hi = res + POWER_BAND;
+    const band = list.filter((m) => m.id !== person.id && m.resonance >= lo && m.resonance <= hi);
+    const best = Object.fromEntries(ATTRS.map((a) => {
+      const b = list.reduce((x, m) => ((m[a.key] || 0) > (x?.[a.key] || 0) ? m : x), null);
+      return [a.key, b ? { value: b[a.key], name: displayName(b) } : null];
+    }));
+    return {
+      clan: { count: list.length, avg: avgOf(list) },
+      band: { lo, hi, count: band.length, avg: avgOf(band) },
+      best,
+      total: rows.length,
+      top: rows.slice(0, 10),
+      me: idx < 0 ? null : { pos: idx + 1, score: rows[idx].score, cls_pos: sameClass.findIndex((r) => r.m.id === person.id) + 1, cls_total: sameClass.length },
+    };
+  }
+  // Oficiais e líder têm a lista completa e fazem a conta no navegador.
+  // O membro comum recebe do banco só o resultado (médias, Top 10, posição e o melhor de cada atributo).
+  async function powerOverview(person) {
+    if (isOfficer()) return computePower(activeMembers().filter(hasBuild), person);
+    const d = await api.powerOverview(person.id);
+    if (!d) return null;
+    const asRow = (r) => ({ m: r.id === person.id ? person : { id: r.id, game_name: r.game_name, google_name: '', char_class: r.char_class }, score: r.score });
+    return { ...d, top: (d.top || []).map(asRow) };
+  }
+  const ordinal = (n) => `${n}º`;
+  // ---------- Evolução do personagem ----------
+  // Pontos de um atributo ao longo do tempo, a partir do histórico de alterações do perfil
+  function evoSeries(person, changes, key) {
+    const list = changes.filter((h) => h.changes && h.changes[key])
+      .map((h) => ({ t: Date.parse(h.changed_at), from: h.changes[key][0], to: h.changes[key][1] }))
+      .filter((h) => Number.isFinite(h.t)).sort((a, b) => a.t - b.t);
+    const pts = [];
+    const fmtD = (t) => new Date(t).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' });
+    // Valor antes da primeira alteração registrada (marcado um dia antes dela)
+    if (list.length && list[0].from != null) {
+      const t = list[0].t - 86400000;
+      pts.push({ t, v: Number(list[0].from), label: fmtD(t), tip: `${fmtD(t)}: ${fmtNum(Number(list[0].from))} (valor inicial)` });
+    }
+    list.forEach((h) => { if (h.to != null) pts.push({ t: h.t, v: Number(h.to), label: fmtD(h.t), tip: `${fmtD(h.t)}: ${fmtNum(Number(h.to))}` }); });
+    // Até hoje, com o valor atual
+    const now = Date.now(); const cur = person[key];
+    if (pts.length && cur != null && now - pts[pts.length - 1].t > 3600e3) pts.push({ t: now, v: Number(cur), label: 'hoje', tip: `Hoje: ${fmtNum(Number(cur))}`, dot: false });
+    return { pts, last: list.length ? list[list.length - 1].t : null };
+  }
+
+  function evoCard() {
+    return `<div class="card evo-card">
+      <h2>📈 Evolução do personagem</h2>
+      <div class="evo-tabs" role="tablist">${ATTRS.slice().sort((a, b) => (a.key === 'resonance' ? -1 : b.key === 'resonance' ? 1 : 0))
+        .map((a) => `<button type="button" class="evo-tab" role="tab" data-evo="${a.key}">${esc(a.label)}</button>`).join('')}</div>
+      <div id="evo-body"></div>
+    </div>`;
+  }
+
+  function bindEvo(person, changes, self) {
+    const body = $('#evo-body');
+    if (!body) return;
+    const show = (key) => {
+      document.querySelectorAll('.evo-tab').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.evo === key)));
+      const attr = ATTRS.find((a) => a.key === key);
+      const { pts, last } = evoSeries(person, changes, key);
+      if (pts.length < 2) {
+        body.innerHTML = `<p class="muted small evo-empty">Ainda não há alterações de ${esc(attr.label)} registradas. O gráfico aparece quando ${self ? 'você atualizar' : 'o perfil for atualizado'} com um valor novo.</p>`;
+        return;
+      }
+      const first = pts[0].v; const cur = pts[pts.length - 1].v; const diff = cur - first;
+      const pct = first ? (diff / first) * 100 : null;
+      const sign = diff > 0 ? '+' : diff < 0 ? '−' : '';
+      const cls = diff > 0 ? 'c-yes' : diff < 0 ? 'c-no' : 'muted';
+      const since = new Date(pts[0].t).toLocaleDateString('pt-BR');
+      body.innerHTML = `<div class="evo-sum">
+          <span class="evo-gain ${cls}">${sign}${fmtNum(Math.abs(diff))}</span>
+          <span class="small">de ${esc(attr.label)} desde ${since}${pct != null && diff ? ` <b class="${cls}">(${sign}${Math.abs(pct).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%)</b>` : ''}<br>
+          <span class="muted">Agora: <b>${fmtNum(cur)}</b>${last ? ` · última atualização em ${new Date(last).toLocaleDateString('pt-BR')}` : ''}</span></span>
+        </div>
+        ${lineChart(pts, { time: true, aria: `${attr.label} ao longo do tempo` })}`;
+    };
+    document.querySelectorAll('.evo-tab').forEach((b) => b.addEventListener('click', () => show(b.dataset.evo)));
+    show('resonance');
+  }
+
+  function powerRankCard(person, self, pw) {
+    if (!pw || pw.unavailable) {
+      return `<div class="card pr-card" style="margin-top:12px"><h2>💪 Rank de força</h2><p class="muted">O rank de força ainda não está disponível.</p></div>`;
+    }
+    const mine = pw.me;
+    const cls = CLASS[person.char_class];
+    const rowHtml = (r, i) => `<li class="${r.m.id === person.id ? 'me' : ''}">
+          <span class="pr-n">${i + 1}</span>${avatar(r.m)}
+          <span class="pr-name">${esc(displayName(r.m))}</span>${classTag(r.m.char_class)}
+          <span class="pr-score">${r.score}</span></li>`;
+    const head = !mine
+      ? `<div class="pr-missing">${self
+        ? `Complete sua classe e os 5 atributos no perfil para entrar no rank.${state.me.id === person.id ? ' <button class="btn small primary" id="btn-pr-fill" type="button">Completar perfil</button>' : ''}`
+        : 'Este membro ainda não completou a classe e os 5 atributos, então não entra no rank.'}</div>`
+      : `<div class="pr-pos">
+          <div class="card stat"><div class="stat-num c-gold">${ordinal(mine.pos)}<span class="muted" style="font-size:1rem"> de ${pw.total}</span></div><div class="muted small">no clã</div></div>
+          <div class="card stat"><div class="stat-num">${ordinal(mine.cls_pos)}<span class="muted" style="font-size:1rem"> de ${mine.cls_total}</span></div><div class="muted small">entre ${cls ? `os ${esc(cls.label)}` : 'a mesma classe'}</div></div>
+          <div class="card stat"><div class="stat-num">${mine.score}</div><div class="muted small">pontos de força (de 1000)</div></div>
+        </div>`;
+    const top = pw.top || [];
+    return `<div class="card pr-card" style="margin-top:12px">
+      <h2>💪 Rank de força <button class="pr-info" id="btn-pr-info" type="button" title="Como a pontuação é calculada" aria-label="Como a pontuação é calculada">!</button></h2>
+      ${head}
+      <h3 class="pr-sub">Top 10 do clã</h3>
+      ${top.length ? `<ol class="pr-top">${top.map(rowHtml).join('')}${mine && mine.pos > 10 ? `<li class="pr-gap" aria-hidden="true">⋯</li>${rowHtml({ m: person, score: mine.score }, mine.pos - 1)}` : ''}</ol>` : '<p class="muted">Ninguém completou o perfil ainda.</p>'}
+    </div>`;
+  }
+  // Janela do "!": explica a conta, com os melhores do clã e a conta deste membro
+  function openPowerInfo(person, pw) {
+    if (!pw || pw.unavailable) return;
+    const ranked = !!pw.me;
+    const fmtW = (w) => `${String(Math.round(w * 1000) / 10).replace('.', ',')}%`;
+    const fmt1 = (n) => (Math.round(n * 10) / 10).toLocaleString('pt-BR');
+    let total = 0;
+    const rows = [...ATTRS].sort((a, b) => (POWER_WEIGHTS[b.key] || 0) - (POWER_WEIGHTS[a.key] || 0)).map((a) => {
+      const w = POWER_WEIGHTS[a.key] || 0;
+      const best = pw.best?.[a.key];
+      const max = best?.value || 0;
+      const nota = max ? (100 * (person[a.key] || 0)) / max : 0;
+      const pts = 10 * w * nota;
+      total += pts;
+      return `<tr><td>${esc(a.label)}</td><td>${fmtW(w)}</td>
+        <td>${fmtNum(max)}${best ? `<br><span class="muted small">${esc(best.name)}</span>` : ''}</td>
+        ${ranked ? `<td>${fmtNum(person[a.key])}</td><td>${fmt1(nota)}</td><td><b>${fmt1(pts)}</b></td>` : ''}</tr>`;
+    }).join('');
+    const self = person.id === state.me.id;
+    openDialog(`<div class="stack pr-help">
+      <h2>Como é calculada a pontuação</h2>
+      <ol class="small">
+        <li>Cada atributo é comparado com o <b>maior valor do clã</b> naquele atributo e vira uma nota de 0 a 100. Ter o maior valor = nota 100; metade do maior = nota 50.</li>
+        <li>Cada nota é multiplicada pelo peso do atributo e as notas são somadas. O total vai de 0 a 1000.</li>
+        <li>Para ter 1000 pontos, é preciso ser o melhor do clã nos 5 atributos ao mesmo tempo.</li>
+        <li>Como a comparação é com o clã, a pontuação pode mudar quando outro membro evolui.</li>
+        <li>Só entra no rank quem preencheu a classe e os 5 atributos no perfil.</li>
+      </ol>
+      <div class="pr-table-wrap"><table class="pr-table small">
+        <thead><tr><th>Atributo</th><th>Peso</th><th>Melhor do clã</th>${ranked ? `<th>${self ? 'Você' : esc(displayName(person))}</th><th>Nota</th><th>Pontos</th>` : ''}</tr></thead>
+        <tbody>${rows}</tbody>
+        ${ranked ? `<tfoot><tr><td colspan="5">Total</td><td><b>${Math.round(total)}</b></td></tr></tfoot>` : ''}
+      </table></div>
+      <div class="row end"><button class="btn primary" data-close>Entendi</button></div>
+    </div>`);
   }
 
   // ---------- Tickets no perfil ----------
@@ -4455,6 +4970,82 @@
   }
 
   // ---------- Contas pilotadas no perfil ----------
+
+  // ---------- Ausência programada ----------
+  function absencesCard(account, list) {
+    const today = localDay();
+    const mineOnly = list.filter((a) => a.user_id === account.id);
+    const open = mineOnly.filter((a) => a.ends_on >= today).sort((a, b) => a.starts_on.localeCompare(b.starts_on));
+    const past = mineOnly.filter((a) => a.ends_on < today).sort((a, b) => b.starts_on.localeCompare(a.starts_on)).slice(0, 5);
+    const own = account.id === state.user.id;
+    const row = (a, live) => {
+      const now = a.starts_on <= today && a.ends_on >= today;
+      const by = a.created_by && a.created_by !== account.id ? ` · registrada por ${esc(nameOf(a.created_by))}` : '';
+      return `<div class="abs-row${now ? ' now' : ''}">
+        <div class="spacer"><b>✈️ ${esc(fmtDay3(a.starts_on))} a ${esc(fmtDay3(a.ends_on))}</b> ${now ? `<span class="badge warn">${a.ends_on === today ? 'termina hoje' : 'em andamento'}</span>` : live ? '<span class="badge">programada</span>' : ''}
+          <div class="muted small">“${esc(a.reason || '')}”${by}</div></div>
+        ${live && !(now && a.ends_on === today) ? `<button class="btn small ghost danger" data-abs-del="${a.id}">${now ? 'Encerrar' : 'Cancelar'}</button>` : ''}
+      </div>`;
+    };
+    return `<div class="card abs-card">
+      <div class="row"><h2 class="spacer" style="margin:0">✈️ Ausências</h2><button class="btn small" id="btn-abs-new" type="button">Programar ausência</button></div>
+      <p class="muted small">Os eventos do período ficam “Não vou” e não contam como falta. Motivo visível só para ${own ? 'você' : 'a conta'} e a liderança.</p>
+      ${open.length ? open.map((a) => row(a, true)).join('') : '<p class="muted small" style="margin:0">Nenhuma ausência programada.</p>'}
+      ${past.length ? `<details class="abs-past"><summary class="small">Ausências anteriores</summary>${past.map((a) => row(a, false)).join('')}</details>` : ''}
+    </div>`;
+  }
+
+  function bindAbsences(account, list, reload) {
+    $('#btn-abs-new')?.addEventListener('click', () => {
+      const today = localDay();
+      const week = localDay(new Date(Date.now() + 6 * 86400000));
+      openDialog(`
+        <form id="abs-form" class="stack">
+          <h2>✈️ Programar ausência${account.id === state.user.id ? '' : ` · ${esc(displayName(account))}`}</h2>
+          <p class="muted small" style="margin:0">Todos os eventos do período ficam “Não vou” e não contam como falta. Se já tiver confirmado “Vou” em algum, ele também muda (enquanto o prazo estiver aberto).</p>
+          <div class="row" style="gap:12px">
+            <div class="field spacer"><label for="abs-start">De</label><input type="date" id="abs-start" required min="${today}" value="${today}"></div>
+            <div class="field spacer"><label for="abs-end">Até</label><input type="date" id="abs-end" required min="${today}" value="${week}"></div>
+          </div>
+          <div class="field">
+            <label for="abs-reason">Motivo <span class="muted small">(obrigatório; só você e a liderança veem)</span></label>
+            <textarea id="abs-reason" maxlength="300" required placeholder="Ex.: viagem, trabalho, sem internet…"></textarea>
+          </div>
+          <p class="small c-no" id="abs-msg" hidden></p>
+          <div class="row end">
+            <button type="button" class="btn ghost" data-close>Cancelar</button>
+            <button type="submit" class="btn primary">Programar</button>
+          </div>
+        </form>`, (d) => {
+        const msg = (t) => { const m = $('#abs-msg', d); m.hidden = !t; m.textContent = t || ''; };
+        $('#abs-start', d).addEventListener('change', (e) => { const end = $('#abs-end', d); end.min = e.target.value; if (end.value < e.target.value) end.value = e.target.value; });
+        $('#abs-form', d).addEventListener('submit', async (e) => {
+          e.preventDefault();
+          const start = $('#abs-start', d).value; const end = $('#abs-end', d).value; const reason = $('#abs-reason', d).value.trim();
+          if (!start || !end) { msg('Informe as duas datas.'); return; }
+          if (end < start) { msg('A data final precisa ser depois da inicial.'); return; }
+          if (!reason) { msg('Informe o motivo da ausência.'); $('#abs-reason', d).focus(); return; }
+          const b = $('button[type=submit]', d); b.disabled = true; msg('');
+          try {
+            const r = await api.saveAbsence(account.id, start, end, reason);
+            dlg.close();
+            const n = r?.changed || 0;
+            toast(`Ausência programada${n ? ` · ${n} ${n === 1 ? 'evento marcado' : 'eventos marcados'} como “Não vou”` : ''}`);
+            await reload();
+          } catch (err) { msg(err?.message || String(err)); b.disabled = false; }
+        });
+      });
+    });
+    document.querySelectorAll('[data-abs-del]').forEach((btn) => btn.addEventListener('click', async () => {
+      const a = list.find((x) => x.id === Number(btn.dataset.absDel));
+      if (!a) return;
+      const now = a.starts_on <= localDay();
+      if (!(await confirmDialog(now
+        ? 'Encerrar esta ausência hoje? A data final passa a ser hoje e os eventos dos próximos dias voltam a ficar sem resposta.'
+        : 'Cancelar esta ausência? Os eventos do período voltam a ficar sem resposta.', now ? 'Encerrar' : 'Cancelar ausência'))) return;
+      try { await api.deleteAbsence(a.id); toast(now ? 'Ausência encerrada' : 'Ausência cancelada'); await reload(); } catch (err) { fail(err); }
+    }));
+  }
 
   function pilotsCard(account, self) {
     const me = state.user.id;
@@ -4714,27 +5305,37 @@
     }).join('')}</div>`;
   }
 
-  function lineChart(points) {
+  // opts.time: posição no eixo X pela data (p.t); opts.aria: descrição; p.tip: texto ao passar o mouse
+  function lineChart(points, opts = {}) {
     const W = 640, H = 210, L = 58, R = 16, T = 16, B = 30;
     const vs = points.map((p) => p.v);
     let lo = Math.min(...vs); let hi = Math.max(...vs);
     if (hi - lo < 20) { lo -= 20; hi += 20; }
     const pad = (hi - lo) * 0.18; const y0 = lo - pad; const y1 = hi + pad;
-    const x = (i) => L + (i * (W - L - R)) / Math.max(1, points.length - 1);
+    const t0 = opts.time ? points[0].t : 0; const tSpan = opts.time ? Math.max(1, points[points.length - 1].t - t0) : 1;
+    const x = opts.time ? (i) => L + ((points[i].t - t0) * (W - L - R)) / tSpan
+      : (i) => L + (i * (W - L - R)) / Math.max(1, points.length - 1);
     const y = (v) => T + (1 - (v - y0) / (y1 - y0)) * (H - T - B);
     const line = points.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p.v).toFixed(1)}`).join('');
     const area = `${line}L${x(points.length - 1).toFixed(1)},${H - B}L${x(0).toFixed(1)},${H - B}Z`;
     const every = Math.ceil(points.length / 6);
     const last = points.length - 1;
-    return `<svg class="line-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Ressonância média ao longo do tempo">
+    // Com datas, só escreve rótulos que não se encostam (o último sempre aparece)
+    const showLabel = new Set();
+    if (opts.time) {
+      let prev = Infinity;
+      for (let i = last; i >= 0; i--) if (prev - x(i) >= 80) { showLabel.add(i); prev = x(i); }
+    }
+    const labelAt = (i) => (opts.time ? showLabel.has(i) : (i === last || (i % every === 0 && last - i >= every)));
+    return `<svg class="line-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(opts.aria || 'Ressonância média ao longo do tempo')}">
       <defs><linearGradient id="g-area" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ff7a2f" stop-opacity=".35"/><stop offset="1" stop-color="#ff7a2f" stop-opacity="0"/></linearGradient></defs>
       ${[lo, (lo + hi) / 2, hi].map((v) => `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"/>
         <text class="axis" x="${L - 8}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end">${intFmt(v)}</text>`).join('')}
       <path d="${area}" fill="url(#g-area)"/>
       <path class="line" d="${line}"/>
-      ${points.map((p, i) => `<circle class="pt" cx="${x(i).toFixed(1)}" cy="${y(p.v).toFixed(1)}" r="4"><title>${esc(p.label)}: ${intFmt(p.v)} (${p.n} membros)</title></circle>`).join('')}
-      ${points.map((p, i) => (i === last || (i % every === 0 && last - i >= every)
-        ? `<text class="axis" x="${x(i).toFixed(1)}" y="${H - 8}" text-anchor="middle">${esc(p.label)}</text>` : '')).join('')}
+      ${points.map((p, i) => (p.dot === false ? '' : `<circle class="pt" cx="${x(i).toFixed(1)}" cy="${y(p.v).toFixed(1)}" r="4"><title>${esc(p.tip || `${p.label}: ${intFmt(p.v)} (${p.n} membros)`)}</title></circle>`)).join('')}
+      ${points.map((p, i) => (labelAt(i)
+        ? `<text class="axis" x="${x(i).toFixed(1)}" y="${H - 8}" text-anchor="${opts.time && i === last ? 'end' : opts.time && i === 0 ? 'start' : 'middle'}">${esc(p.label)}</text>` : '')).join('')}
     </svg>`;
   }
 
@@ -5056,6 +5657,17 @@
     if (isOfficer()) (await api.profileHistory()).forEach((h) => { (histBy[h.user_id] ||= []).push(h); });
     const noteCount = {};
     if (can('notes')) (await api.notes()).forEach((n) => { noteCount[n.member_id] = (noteCount[n.member_id] || 0) + 1; });
+    // Ausência atual ou a próxima de cada membro (o motivo aparece ao passar o mouse)
+    const today = localDay();
+    const absBy = {};
+    (await api.absences().catch(() => [])).filter((a) => a.ends_on >= today)
+      .sort((a, b) => a.starts_on.localeCompare(b.starts_on)).forEach((a) => { absBy[a.user_id] ||= a; });
+    const absTag = (m) => {
+      const a = absBy[m.id];
+      if (!a) return '';
+      const txt = a.starts_on <= today ? `ausente até ${fmtDay2(a.ends_on)}` : `ausente de ${fmtDay2(a.starts_on)} a ${fmtDay2(a.ends_on)}`;
+      return `<span class="abs-tag" title="${esc(`Motivo: ${a.reason || ''}`)}">✈️ ${txt}</span>`;
+    };
     const noteBadge = (m) => (noteCount[m.id] ? `<span class="note-badge" title="${noteCount[m.id]} anotação(ões) interna(s)">📝 ${noteCount[m.id]}</span>` : '');
     const oldNames = (id) => (histBy[id] || []).flatMap((h) => ['game_name', 'google_name'].map((f) => h.changes?.[f]?.[0])).filter(Boolean);
     const sorted = [...state.members].sort((a, b) => (ROLE_ORDER[a.role] - ROLE_ORDER[b.role]) || byName(a, b));
@@ -5094,7 +5706,7 @@
     const histBtn = (m) => (histBy[m.id]?.length
       ? `<button class="btn small ghost" data-history="${esc(m.id)}" title="Ver histórico de alterações">🕘 ${histBy[m.id].length}</button>` : '');
     const row = (m, ctrl) => `<div class="member clickable" data-search="${esc(searchText(m))}" data-profile="${esc(m.id)}" title="Abrir o perfil de ${esc(displayName(m))}">${avatar(m, 'lg')}
-      <div class="name"><a class="member-link" href="#/membro/${encodeURIComponent(m.id)}">${esc(displayName(m))}</a> ${noteBadge(m)} ${pilotLabel(m)} ${formerly(m)}
+      <div class="name"><a class="member-link" href="#/membro/${encodeURIComponent(m.id)}">${esc(displayName(m))}</a> ${absTag(m)} ${noteBadge(m)} ${pilotLabel(m)} ${formerly(m)}
         <small>${m.managed ? 'conta sem login' : (m.game_name ? esc(m.google_name) : '')} ${phoneLink(m)}</small>
         ${m.char_class ? `<div class="member-build">${classTag(m.char_class)} <span>${esc(CLASS[m.char_class].label)}</span><span class="chip-stats">${statsLine(m)}</span></div>` : '<div class="member-build muted small">Classe e atributos não informados</div>'}
       </div>${canRename(m) ? `<button class="btn small ghost" data-rename="${esc(m.id)}" title="Editar o nick de ${esc(displayName(m))}">✎ Nick</button>` : ''}${histBtn(m)}${ctrl}</div>`;

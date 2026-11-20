@@ -2358,3 +2358,302 @@ drop policy if exists "rsvps_select" on public.rsvps;
 create policy "rsvps_select" on public.rsvps
   for select to authenticated
   using (public.can_act_as(user_id) or public.is_officer());
+
+-- =====================================================================
+--  Ausência programada (Novembro/2026)
+--  O membro (ou quem pilota a conta, ou a liderança) informa um período
+--  em que não vai jogar. Todos os eventos do período ficam "Não vou"
+--  automaticamente, inclusive os criados depois. A pessoa pode trocar
+--  para "Vou" num evento específico. Eventos da ausência não contam
+--  como falta na frequência nem nas medalhas.
+--  O motivo é obrigatório e só a própria pessoa e a liderança veem.
+--  Só ADICIONA tabela, coluna, funções e gatilhos. Nenhum dado existente
+--  é alterado ou apagado.
+-- =====================================================================
+
+create table if not exists public.absences (
+  id         bigint generated always as identity primary key,
+  user_id    uuid not null references public.profiles(id) on delete cascade,
+  starts_on  date not null,
+  ends_on    date not null,
+  reason     text not null check (char_length(btrim(reason)) between 1 and 300),
+  created_by uuid default auth.uid() references public.profiles(id) on delete set null,
+  created_at timestamptz not null default now(),
+  check (ends_on >= starts_on and ends_on - starts_on <= 180)
+);
+create index if not exists absences_user_idx on public.absences (user_id, starts_on);
+
+-- Resposta "Não vou" criada pela ausência (guarda o número da ausência)
+alter table public.rsvps add column if not exists absence_id bigint;
+
+alter table public.absences enable row level security;
+-- Ver: a própria pessoa, quem pilota a conta e a liderança. Escrever: só pelas funções abaixo.
+drop policy if exists "absences_select" on public.absences;
+create policy "absences_select" on public.absences
+  for select to authenticated using (public.can_act_as(user_id) or public.is_officer());
+
+-- Data do evento no horário de Brasília
+create or replace function public.event_day(p_ts timestamptz) returns date
+language sql immutable as $$ select (p_ts at time zone 'America/Sao_Paulo')::date $$;
+
+-- Aplica uma ausência nos eventos futuros do período.
+-- Sem resposta → "Não vou". "Vou" → "Não vou" se ainda dá para mudar (prazo aberto e sem time travado);
+-- oficiais e líder mudam sempre. Devolve quantos eventos foram alterados.
+create or replace function public.apply_absence(p_id bigint) returns integer
+language plpgsql security definer set search_path = public as $$
+declare a public.absences; n integer := 0; k integer;
+begin
+  select * into a from public.absences where id = p_id;
+  if not found then return 0; end if;
+  insert into public.rsvps (event_id, user_id, going, absence_id, updated_at)
+  select e.id, a.user_id, false, a.id, now()
+    from public.events e
+   where e.starts_at > now() and public.event_day(e.starts_at) between a.starts_on and a.ends_on
+     and not exists (select 1 from public.rsvps r where r.event_id = e.id and r.user_id = a.user_id);
+  get diagnostics k = row_count; n := n + k;
+  update public.rsvps r set going = false, discord = null, absence_id = a.id, updated_at = now(),
+         withdraw_reason = null, withdraw_requested_at = null
+    from public.events e
+   where r.event_id = e.id and r.user_id = a.user_id and r.going
+     and e.starts_at > now() and public.event_day(e.starts_at) between a.starts_on and a.ends_on
+     and (public.is_officer() or public.can_change_rsvp_for(e.id, a.user_id));
+  get diagnostics k = row_count; n := n + k;
+  return n;
+end $$;
+
+-- Cadastra uma ausência. Devolve { id, changed }.
+create or replace function public.save_absence(p_user uuid, p_start date, p_end date, p_reason text) returns json
+language plpgsql security definer set search_path = public as $$
+declare v_id bigint; today date := public.event_day(now());
+begin
+  if not (public.can_act_as(p_user) or public.is_officer()) then
+    raise exception 'Você não pode programar ausência para esta conta' using errcode = '42501';
+  end if;
+  if not public.is_active_account(p_user) then raise exception 'Esta conta não está ativa no clã'; end if;
+  if p_start is null or p_end is null or p_end < p_start then raise exception 'Confira as datas da ausência'; end if;
+  if p_start < today then raise exception 'A ausência não pode começar antes de hoje'; end if;
+  if p_end - p_start > 180 then raise exception 'A ausência pode ter no máximo 180 dias'; end if;
+  if char_length(btrim(coalesce(p_reason, ''))) = 0 then raise exception 'Informe o motivo da ausência'; end if;
+  if exists (select 1 from public.absences where user_id = p_user and starts_on <= p_end and ends_on >= p_start) then
+    raise exception 'Já existe uma ausência neste período';
+  end if;
+  insert into public.absences (user_id, starts_on, ends_on, reason)
+  values (p_user, p_start, p_end, left(btrim(p_reason), 300)) returning id into v_id;
+  return json_build_object('id', v_id, 'changed', public.apply_absence(v_id));
+end $$;
+
+-- Encerra (em andamento) ou cancela (futura) uma ausência.
+-- (Os eventos que já passaram continuam fora da frequência.)
+create or replace function public.delete_absence(p_id bigint) returns void
+language plpgsql security definer set search_path = public as $$
+declare a public.absences;
+begin
+  select * into a from public.absences where id = p_id;
+  if not found then return; end if;
+  if not (public.can_act_as(a.user_id) or public.is_officer()) then
+    raise exception 'Sem permissão para cancelar esta ausência' using errcode = '42501';
+  end if;
+  -- Em andamento (Encerrar): a data final passa a ser hoje e só os eventos depois de hoje são liberados.
+  -- Ainda não começou (Cancelar): libera todos os eventos e a ausência sai da lista.
+  delete from public.rsvps r using public.events e
+   where r.event_id = e.id and r.absence_id = a.id and not r.going and e.starts_at > now()
+     and (a.starts_on > public.event_day(now()) or public.event_day(e.starts_at) > public.event_day(now()));
+  if a.starts_on <= public.event_day(now()) then
+    update public.absences set ends_on = least(ends_on, public.event_day(now())) where id = a.id;
+  else
+    delete from public.absences where id = a.id;
+  end if;
+end $$;
+
+-- Evento criado ou com data alterada: aplica as ausências que cobrem a nova data
+create or replace function public.events_absences() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if tg_op = 'UPDATE' then
+    if new.starts_at is not distinct from old.starts_at then return new; end if;
+    delete from public.rsvps where event_id = new.id and absence_id is not null and not going;
+  end if;
+  if new.starts_at > now() then
+    insert into public.rsvps (event_id, user_id, going, absence_id, updated_at)
+    select new.id, a.user_id, false, a.id, now()
+      from public.absences a
+     where public.event_day(new.starts_at) between a.starts_on and a.ends_on
+       and public.is_active_account(a.user_id)
+    on conflict (event_id, user_id) do nothing;
+  end if;
+  return new;
+end $$;
+drop trigger if exists events_absences on public.events;
+create trigger events_absences after insert or update of starts_at on public.events
+  for each row execute function public.events_absences();
+
+-- Quem troca para "Vou" deixa de estar marcado como ausente naquele evento
+create or replace function public.rsvps_clear_absence() returns trigger
+language plpgsql as $$
+begin
+  if new.going and new.absence_id is not null then new.absence_id := null; end if;
+  return new;
+end $$;
+drop trigger if exists rsvps_clear_absence on public.rsvps;
+create trigger rsvps_clear_absence before update on public.rsvps
+  for each row execute function public.rsvps_clear_absence();
+
+revoke execute on function public.apply_absence(bigint) from public, anon, authenticated;
+revoke execute on function public.save_absence(uuid, date, date, text) from public, anon;
+revoke execute on function public.delete_absence(bigint) from public, anon;
+grant  execute on function public.save_absence(uuid, date, date, text) to authenticated;
+grant  execute on function public.delete_absence(bigint) to authenticated;
+
+
+-- =====================================================================
+--  Resultado das Guerras (Novembro/2026)
+--  Oficiais e líder registram o resultado de um evento que já começou:
+--  Vitória ou Derrota, clã adversário, placar (Nós × Eles, opcional)
+--  e observações. Todos os membros veem o resultado na página do evento;
+--  as observações ficam numa tabela separada que só a liderança lê.
+--  Permissão nova em Configurações: "results" (Registrar resultados).
+--  Só ADICIONA tabelas e funções. Nenhum dado existente é alterado ou apagado.
+-- =====================================================================
+
+create table if not exists public.event_results (
+  event_id   bigint primary key references public.events(id) on delete cascade,
+  outcome    text not null check (outcome in ('win', 'loss')),
+  opponent   text check (opponent is null or char_length(opponent) between 1 and 60),
+  score_us   integer check (score_us is null or score_us between 0 and 1000000000),
+  score_them integer check (score_them is null or score_them between 0 and 1000000000),
+  updated_by uuid default auth.uid() references public.profiles(id) on delete set null,
+  updated_at timestamptz not null default now()
+);
+
+-- Observações: só oficiais e líder
+create table if not exists public.event_result_notes (
+  event_id bigint primary key references public.event_results(event_id) on delete cascade,
+  notes    text not null check (char_length(notes) between 1 and 1000)
+);
+
+alter table public.event_results      enable row level security;
+alter table public.event_result_notes enable row level security;
+
+-- Ler: resultado para todos os membros; observações só para a liderança.
+-- Escrever: só pelas funções abaixo.
+drop policy if exists "results_select" on public.event_results;
+create policy "results_select" on public.event_results
+  for select to authenticated using (public.is_member());
+
+drop policy if exists "result_notes_select" on public.event_result_notes;
+create policy "result_notes_select" on public.event_result_notes
+  for select to authenticated using (public.is_officer());
+
+-- Registra ou altera o resultado de um evento
+create or replace function public.save_event_result(
+  p_event bigint, p_outcome text, p_opponent text, p_us integer, p_them integer, p_notes text
+) returns void
+language plpgsql security definer set search_path = public as $$
+declare v_notes text := nullif(btrim(coalesce(p_notes, '')), '');
+begin
+  if not public.is_officer() then
+    raise exception 'Só oficiais e o líder registram resultados' using errcode = '42501';
+  end if;
+  perform public.require_perm('results');
+  if not exists (select 1 from public.events where id = p_event and starts_at <= now()) then
+    raise exception 'O resultado só pode ser registrado depois que o evento começar';
+  end if;
+  if p_outcome not in ('win', 'loss') then raise exception 'Escolha Vitória ou Derrota'; end if;
+  insert into public.event_results (event_id, outcome, opponent, score_us, score_them, updated_by, updated_at)
+  values (p_event, p_outcome, nullif(left(btrim(coalesce(p_opponent, '')), 60), ''), p_us, p_them, auth.uid(), now())
+  on conflict (event_id) do update
+    set outcome = excluded.outcome, opponent = excluded.opponent, score_us = excluded.score_us,
+        score_them = excluded.score_them, updated_by = excluded.updated_by, updated_at = excluded.updated_at;
+  if v_notes is null then
+    delete from public.event_result_notes where event_id = p_event;
+  else
+    insert into public.event_result_notes (event_id, notes) values (p_event, left(v_notes, 1000))
+    on conflict (event_id) do update set notes = excluded.notes;
+  end if;
+end $$;
+
+-- Tira o resultado de um evento (as observações saem junto)
+create or replace function public.delete_event_result(p_event bigint) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if not public.is_officer() then
+    raise exception 'Só oficiais e o líder alteram resultados' using errcode = '42501';
+  end if;
+  perform public.require_perm('results');
+  delete from public.event_results where event_id = p_event;
+end $$;
+
+revoke execute on function public.save_event_result(bigint, text, text, integer, integer, text) from public, anon;
+revoke execute on function public.delete_event_result(bigint) from public, anon;
+grant  execute on function public.save_event_result(bigint, text, text, integer, integer, text) to authenticated;
+grant  execute on function public.delete_event_result(bigint) to authenticated;
+
+-- =====================================================================
+--  Rank de força e comparação com a mesma faixa de Ressonância
+--  O membro comum não recebe os atributos dos outros (seguranca_dados.sql).
+--  Esta função entrega só o resultado pronto que o site mostra no perfil:
+--  média do clã, média da mesma faixa de Ressonância (±500), posição no
+--  rank, Top 10 (nome, classe e pontos) e o melhor valor de cada atributo.
+--  Só ADICIONA uma função. Nenhum dado é alterado ou apagado.
+-- =====================================================================
+
+create or replace function public.power_overview(p_user uuid) returns json
+language plpgsql stable security definer set search_path = public as $$
+declare v json; v_res integer;
+begin
+  if not public.is_member() or not (public.is_officer() or public.can_act_as(p_user)) then
+    raise exception 'Sem permissão' using errcode = '42501';
+  end if;
+  select coalesce(resonance, 0) into v_res from public.profiles where id = p_user;
+  with base as (
+    select id, coalesce(nullif(trim(game_name), ''), nullif(trim(google_name), ''), 'Membro') as name, char_class,
+           armor, armor_pen, potency, resistance, resonance
+      from public.profiles
+     where role in ('member', 'officer', 'leader') and char_class is not null
+       and armor is not null and armor_pen is not null and potency is not null
+       and resistance is not null and resonance is not null
+  ), mx as (
+    select max(armor) as armor, max(armor_pen) as armor_pen, max(potency) as potency,
+           max(resistance) as resistance, max(resonance) as resonance from base
+  ), sc as (
+    select b.*, round(10 * (
+        0.5   * case when mx.resonance  > 0 then 100.0 * b.resonance  / mx.resonance  else 0 end
+      + 0.175 * case when mx.armor      > 0 then 100.0 * b.armor      / mx.armor      else 0 end
+      + 0.175 * case when mx.armor_pen  > 0 then 100.0 * b.armor_pen  / mx.armor_pen  else 0 end
+      + 0.075 * case when mx.potency    > 0 then 100.0 * b.potency    / mx.potency    else 0 end
+      + 0.075 * case when mx.resistance > 0 then 100.0 * b.resistance / mx.resistance else 0 end))::int as score
+      from base b cross join mx
+  ), rk as (
+    select sc.*,
+           row_number() over (order by score desc, lower(name)) as pos,
+           row_number() over (partition by char_class order by score desc, lower(name)) as cls_pos,
+           count(*) over (partition by char_class) as cls_total
+      from sc
+  ), band as (
+    select * from base
+     where id <> p_user and resonance between greatest(0, v_res - 500) and v_res + 500
+  )
+  select json_build_object(
+    'clan', json_build_object('count', (select count(*) from base), 'avg', (select json_build_object(
+        'armor', round(avg(armor)), 'armor_pen', round(avg(armor_pen)), 'potency', round(avg(potency)),
+        'resistance', round(avg(resistance)), 'resonance', round(avg(resonance))) from base)),
+    'band', json_build_object('lo', greatest(0, v_res - 500), 'hi', v_res + 500, 'count', (select count(*) from band),
+        'avg', (select json_build_object(
+          'armor', round(avg(armor)), 'armor_pen', round(avg(armor_pen)), 'potency', round(avg(potency)),
+          'resistance', round(avg(resistance)), 'resonance', round(avg(resonance))) from band)),
+    'best', json_build_object(
+        'armor',      (select json_build_object('value', armor,      'name', name) from base order by armor desc,      lower(name) limit 1),
+        'armor_pen',  (select json_build_object('value', armor_pen,  'name', name) from base order by armor_pen desc,  lower(name) limit 1),
+        'potency',    (select json_build_object('value', potency,    'name', name) from base order by potency desc,    lower(name) limit 1),
+        'resistance', (select json_build_object('value', resistance, 'name', name) from base order by resistance desc, lower(name) limit 1),
+        'resonance',  (select json_build_object('value', resonance,  'name', name) from base order by resonance desc,  lower(name) limit 1)),
+    'total', (select count(*) from rk),
+    'top', (select coalesce(json_agg(json_build_object('id', id, 'game_name', name, 'char_class', char_class, 'score', score) order by pos), '[]'::json)
+              from rk where pos <= 10),
+    'me', (select json_build_object('pos', pos, 'score', score, 'cls_pos', cls_pos, 'cls_total', cls_total) from rk where id = p_user)
+  ) into v;
+  return v;
+end $$;
+
+revoke execute on function public.power_overview(uuid) from public, anon;
+grant  execute on function public.power_overview(uuid) to authenticated;
