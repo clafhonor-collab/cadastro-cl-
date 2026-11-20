@@ -168,6 +168,7 @@ Oficiais e líder também abrem o **perfil de qualquer membro**: basta clicar no
 Nesse caso, o painel também mostra o telefone (se informado) e o botão "← Membros" para voltar, mas não tem "Editar perfil", porque cada um edita só o próprio (a staff pode trocar só o nick, em **✎ Editar nick**).
 No próprio painel, o botão **📷 Trocar foto** troca a foto de perfil na hora, sem abrir o formulário. Ela também pode ser trocada em **✎ Editar perfil**.
 Trocar ou remover a foto nesse formulário não apaga o que já foi digitado (nome, telefone, classe e atributos), inclusive no cadastro de quem acabou de entrar.
+**💪 Rank de força (Top 10 do clã):** mostra só o nick, a classe e a pontuação, **sem fotos**. No lugar da foto, cada jogador aparece como uma armadura: **dourada** para o 1º lugar, **prateada** para o 2º e **bronze** para o 3º (um pouco maiores), e uma armadura padrão do 4º ao 10º.
 Membros comuns não conseguem abrir o perfil de outra pessoa. O painel mostra:
 - os dados do membro, com um botão para editar o perfil;
 - a frequência no período escolhido, as presenças, a sequência atual de presenças e quantas vezes confirmou e faltou;

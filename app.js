@@ -5040,6 +5040,19 @@
     show('resonance');
   }
 
+  // Ranking sem fotos (proteção de dados): cada jogador é uma armadura.
+  // 1º ouro, 2º prata, 3º bronze (um pouco maiores); do 4º em diante, todas iguais.
+  const ARMOR_PATH = 'M12.5 7.2h7c1-1.2 2.5-2.2 4.5-2.2l5 3-2 6-3-1v11c0 3-3.5 5-8 6-4.5-1-8-3-8-6V13l-3 1-2-6 5-3c2 0 3.5 1 4.5 2.2z';
+  function rankArmor(pos) {
+    const tier = pos === 1 ? 'gold' : pos === 2 ? 'silver' : pos === 3 ? 'bronze' : 'base';
+    const label = { gold: '1º lugar (ouro)', silver: '2º lugar (prata)', bronze: '3º lugar (bronze)' }[tier] || `${pos}º lugar`;
+    return `<span class="pr-armor ${tier}" title="${label}" aria-hidden="true"><svg viewBox="0 0 32 32">
+      <path d="${ARMOR_PATH}" fill="currentColor"/>
+      <path d="M16 9.5v19.5M11.5 14.5h9M12 20h8" stroke="rgba(0,0,0,.32)" stroke-width="1.4" fill="none" stroke-linecap="round"/>
+      <path d="M9.5 13.5v9.8c0 1.3.7 2.4 2 3.2" stroke="rgba(255,255,255,.35)" stroke-width="1.2" fill="none" stroke-linecap="round"/>
+    </svg></span>`;
+  }
+
   function powerRankCard(person, self, pw) {
     if (!pw || pw.unavailable) {
       return `<div class="card pr-card" style="margin-top:12px"><h2>💪 Rank de força</h2><p class="muted">O rank de força ainda não está disponível.</p></div>`;
@@ -5047,7 +5060,7 @@
     const mine = pw.me;
     const cls = CLASS[person.char_class];
     const rowHtml = (r, i) => `<li class="${r.m.id === person.id ? 'me' : ''}">
-          <span class="pr-n">${i + 1}</span>${avatar(r.m)}
+          <span class="pr-n">${i + 1}</span>${rankArmor(i + 1)}
           <span class="pr-name">${esc(displayName(r.m))}${medalsHtml(r.m.id)}</span>${classTag(r.m.char_class)}
           <span class="pr-score">${r.score}</span></li>`;
     const head = !mine
