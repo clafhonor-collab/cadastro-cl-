@@ -106,6 +106,8 @@ Mande o link https://forhonorcla.com.br no Discord do clã. Cada pessoa entra co
 | Ver o histórico de alterações do evento e quem alterou cada sala por último | | ✔ | ✔ |
 | Registrar presença real e ver a frequência | | ✔ | ✔ |
 | Aprovar, recusar ou remover membros comuns | | ✔ | ✔ |
+| Editar o nick de membros comuns (e de quem aguarda aprovação) | | ✔ | ✔ |
+| Editar o nick de oficiais | | | ✔ |
 | Remover oficiais e readmitir ex-membros | | | ✔ |
 | Promover a oficial ou líder | | | ✔ |
 | Criar recrutamentos e se candidatar | ✔ | ✔ | ✔ |
@@ -163,7 +165,9 @@ O site não manda notificação; use **📋 Copiar times** para avisar no Discor
 
 **Meu perfil** (menu do topo, para todos: membros, oficiais e líder): é o painel individual de cada um.
 Oficiais e líder também abrem o **perfil de qualquer membro**: basta clicar no membro na lista de **Membros** ou no nome dele na tabela de **Frequência**.
-Nesse caso, o painel também mostra o telefone (se informado) e o botão "← Membros" para voltar, mas não tem "Editar perfil", porque cada um edita só o próprio.
+Nesse caso, o painel também mostra o telefone (se informado) e o botão "← Membros" para voltar, mas não tem "Editar perfil", porque cada um edita só o próprio (a staff pode trocar só o nick, em **✎ Editar nick**).
+No próprio painel, o botão **📷 Trocar foto** troca a foto de perfil na hora, sem abrir o formulário. Ela também pode ser trocada em **✎ Editar perfil**.
+Trocar ou remover a foto nesse formulário não apaga o que já foi digitado (nome, telefone, classe e atributos), inclusive no cadastro de quem acabou de entrar.
 Membros comuns não conseguem abrir o perfil de outra pessoa. O painel mostra:
 - os dados do membro, com um botão para editar o perfil;
 - a frequência no período escolhido, as presenças, a sequência atual de presenças e quantas vezes confirmou e faltou;
@@ -210,6 +214,10 @@ O menu mostra um ponto vermelho quando há uma edição nova que você ainda nã
 - **Voltar ao clã:** se um ex-membro entrar de novo no site, ele vê "Você não faz mais parte do clã" e pode clicar em **Pedir para voltar**. O pedido aparece em "Aguardando aprovação". O líder também pode clicar em **Readmitir** na lista de ex-membros.
 - **Histórico no clã:** no perfil de cada membro aparecem todas as mudanças de cargo (entrou, aprovado, promovido, removido, voltou), com data, quem fez e o motivo.
 - **Histórico:** cada mudança de nome do personagem, nome da conta Google, classe ou atributos fica registrada com a data. O botão 🕘 ao lado do membro mostra o histórico, com a diferença de cada atributo (ex.: Potência 4.692 → 5.332, +640).
+- **✎ Nick:** o botão ao lado do membro (ou **✎ Editar nick** no perfil dele) troca o nome do personagem que aparece no site.
+  O oficial edita o nick de membros, de quem aguarda aprovação e de ex-membros; o líder edita o de qualquer pessoa. Cada um troca o próprio nick em **Editar perfil**.
+  A troca vai para o **🕘 Histórico** do membro com "por Nome", mostrando quem trocou. Nas **Configurações**, o líder escolhe se os oficiais podem fazer isso direto, com aprovação ou nunca.
+  Para funcionar, rode o [`supabase/editar_nick.sql`](supabase/editar_nick.sql) (veja **Dicas**).
 - **Nome e foto da conta Google** são atualizados automaticamente a cada login.
 - **Busca:** encontra um membro pelo nome atual ou por um nome antigo, que aparece como "antes: …".
 - **⬇ Exportar CSV:** baixa uma planilha separada por `;`, que abre direto no Excel. Ela traz personagem, conta Google, cargo, classe, os 5 atributos, telefone, a frequência dos últimos 90 dias e a data de entrada.
@@ -272,7 +280,7 @@ O filtro no topo separa por categoria. O menu mostra um contador com os recrutam
 
 **⚙️ Configurações do líder** (engrenagem no topo, só o líder): para cada função dos oficiais, o líder escolhe:
 - **Permitido:** o oficial faz direto (é o padrão).
-- **Precisa de aprovação:** a ação do oficial vira uma solicitação e só acontece depois que o líder aprovar. Disponível para criar, editar e apagar eventos; aprovar e remover membros; publicar e apagar edições do Malah News; aprovar, encerrar, editar e apagar recrutamentos de outros membros; e ativar, editar e cancelar sorteios.
+- **Precisa de aprovação:** a ação do oficial vira uma solicitação e só acontece depois que o líder aprovar. Disponível para criar, editar e apagar eventos; aprovar e remover membros; editar o nick dos membros; publicar e apagar edições do Malah News; aprovar, encerrar, editar e apagar recrutamentos de outros membros; e ativar, editar e cancelar sorteios.
 - **Bloqueado:** a opção some para os oficiais e o banco recusa a ação.
 
 Os oficiais acompanham os pedidos deles em **Solicitações** (menu do topo), que também lista as regras definidas pelo líder. O botão **Restaurar padrão** volta tudo para "Permitido".
@@ -296,6 +304,7 @@ Para adicionar, trocar ou remover um link, edite a lista `UTIL_LINKS` no [`app.j
   A tela de entrada passa a usar o botão oficial do Google, e a janela diz "Fazer login em forhonorcla.com.br". Se o script do Google não carregar, o site volta sozinho para o botão antigo. Para voltar ao login antigo, deixe `googleClientId` vazio.
   Na **Tela de consentimento OAuth** (Google Auth Platform → Branding), vale preencher o nome do app (**FOR HONOR**), o logotipo e `forhonorcla.com.br` em **Domínios autorizados**.
 - **Ativar o histórico de quem encerrou os tickets:** do mesmo jeito, cole todo o conteúdo de [`supabase/tickets_historico.sql`](supabase/tickets_historico.sql) no **SQL Editor** e clique em **Run**. Ele também só acrescenta o que falta, pode ser executado de novo e está no fim do `schema.sql`.
+- **Ativar a edição de nick pela staff:** do mesmo jeito, rode o [`supabase/editar_nick.sql`](supabase/editar_nick.sql) no **SQL Editor**. Ele só cria a função `set_member_name`, pode ser executado de novo e está no fim do `schema.sql`.
 - **Ativar o Sorteio:** no Supabase, abra o **SQL Editor**, cole todo o conteúdo de [`supabase/sorteio.sql`](supabase/sorteio.sql) e clique em **Run**. Ele só acrescenta o que falta e pode ser executado de novo sem problema. O mesmo trecho também está no fim do `schema.sql`.
   O script também agenda o sorteio às 22h com o **pg_cron** do Supabase. Se aparecer o aviso "pg_cron indisponível", ative a extensão em **Database → Extensions → pg_cron** e rode o arquivo de novo. Enquanto ela não estiver ativa, o sorteio acontece na primeira visita ao site depois das 22h.
 - **Só Recrutamentos e Tickets:** o [`supabase/recrutamentos_tickets.sql`](supabase/recrutamentos_tickets.sql) instala apenas essas duas partes, sem mexer no resto. Ele depende das Configurações do líder, que já vêm no `schema.sql`. Quem roda o `schema.sql` completo não precisa dele.

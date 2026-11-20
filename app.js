@@ -220,6 +220,7 @@
       async addPilot(accountId, pilotId) { ok(await sb.rpc('add_pilot', { p_account: accountId, p_pilot: pilotId })); },
       async setRole(userId, role) { ok(await sb.rpc('set_member_role', { target: userId, new_role: role })); },
       async removeMember(userId, reason, withManaged) { ok(await sb.rpc('remove_member', { target: userId, reason: reason || '', with_managed: !!withManaged })); },
+      async renameMember(userId, name) { ok(await sb.rpc('set_member_name', { p_user: userId, p_name: name })); },
       async requestRejoin() { ok(await sb.rpc('request_rejoin')); },
       // ----- Malah News (imagens no bucket privado "news") -----
       async news() {
@@ -838,6 +839,19 @@
         db.mlog.push({ id: db.mlog.length + 1, user_id: userId, from_role: p.role, to_role: role, changed_by: state.user.id, reason: null, changed_at: new Date().toISOString() });
         p.role = role;
       },
+      // Oficiais e líder trocam o nick (nome do personagem); vai para o histórico com quem trocou
+      async renameMember(userId, name) {
+        const p = profile(userId);
+        const me = profile(state.user.id).role;
+        const v = String(name || '').trim();
+        if (!p) throw new Error('Membro não encontrado');
+        if (!v) throw new Error('Escreva o nick');
+        if (v.length > 40) throw new Error('O nick pode ter no máximo 40 caracteres');
+        if (me !== 'leader' && me !== 'officer') throw new Error('Só oficiais e o líder podem editar o nick dos membros');
+        if (me === 'officer' && userId !== state.user.id && !['pending', 'member', 'former'].includes(p.role)) throw new Error('Só o líder pode editar o nick de oficiais e do líder');
+        if ((p.game_name || null) !== v) db.history.push({ id: db.history.length + 1, user_id: p.id, changed_by: state.user.id, changed_at: new Date().toISOString(), changes: { game_name: [p.game_name || null, v] } });
+        p.game_name = v;
+      },
       async removeMember(userId, reason, withManaged) {
         const p = profile(userId);
         const me = profile(state.user.id).role;
@@ -1148,6 +1162,7 @@
     { group: 'Membros', items: [
       { key: 'member_approve', label: 'Aprovar novos membros', approval: true },
       { key: 'member_remove', label: 'Remover ou recusar membros', approval: true },
+      { key: 'member_rename', label: 'Editar o nick dos membros', desc: 'Trocar o nome do personagem de membros e de quem aguarda aprovação', approval: true },
       { key: 'pilots', label: 'Gerenciar pilotos de contas', desc: 'Aprovar pedidos de piloto e adicionar pilotos' },
       { key: 'notes', label: 'Anotações internas', desc: 'Ver e escrever anotações sobre os membros' },
       { key: 'view_phone', label: 'Ver telefones' },
@@ -1210,6 +1225,7 @@
     resolveWithdrawal: () => ['withdraw_decide'],
     setRole: (raw, id, role) => (role === 'member' && memberById(id)?.role === 'pending' ? ['member_approve', `Aprovar ${nameOf(id)} como membro do clã`] : null),
     removeMember: (raw, id, reason) => ['member_remove', `${memberById(id)?.role === 'pending' ? 'Recusar a entrada de' : 'Remover do clã'} ${nameOf(id)}${reason ? ` · motivo: “${reason}”` : ''}`],
+    renameMember: (raw, id, name) => (id === state.user.id ? null : ['member_rename', `Trocar o nick de ${nameOf(id)} para “${String(name || '').trim()}”`]),
     addNote: () => ['notes'],
     addPilot: () => ['pilots'],
     decidePilotAccess: (raw, acc) => (acc === state.user.id ? null : ['pilots']),
@@ -1260,6 +1276,7 @@
     deleteEvent: ([id]) => [Number(id)],
     setRole: ([id]) => [String(id), 'member'],
     removeMember: ([id, reason, withManaged]) => [String(id), String(reason || '').slice(0, 300), !!withManaged],
+    renameMember: ([id, name]) => [String(id), String(name || '').trim().slice(0, 40)],
     createNewsFromPath: ([o]) => [{ image_path: String(o?.image_path || ''), title: String(o?.title || ''), caption: o?.caption ? String(o.caption) : null }],
     updateNews: ([id, f]) => [Number(id), { title: String(f?.title || ''), caption: f?.caption ? String(f.caption) : null }],
     deleteNews: ([p]) => [{ id: Number(p?.id), image_path: String(p?.image_path || ''), title: String(p?.title || '') }],
@@ -1551,7 +1568,7 @@
         toast(`Agora você está respondendo como ${displayName(actingProfile())}`);
         route();
       });
-      $('#btn-profile').addEventListener('click', openProfile);
+      $('#btn-profile').addEventListener('click', () => openProfile());
       renderBell();
       $('#btn-logout').addEventListener('click', () => api.signOut().catch(fail));
     } else box.innerHTML = '';
@@ -1629,7 +1646,7 @@
         <button class="btn" id="btn-recheck">Verificar de novo</button>
       </div>
     </div>`;
-    $('#btn-pf').addEventListener('click', openProfile);
+    $('#btn-pf').addEventListener('click', () => openProfile());
     $('#btn-recheck').addEventListener('click', () => boot());
   }
 
@@ -2898,8 +2915,47 @@
         const deltaTxt = delta ? ` <span class="${delta > 0 ? 'c-yes' : 'c-no'} small">(${delta > 0 ? '+' : ''}${fmtNum(delta)})</span>` : '';
         return `<li><span class="muted">${FIELD_LABEL[f]}:</span> <s>${esc(fmtField(f, o))}</s> → <b>${esc(fmtField(f, n))}</b>${deltaTxt}</li>`;
       }).join('');
-      return `<div class="hist-item"><div class="hist-date">${esc(new Date(h.changed_at).toLocaleDateString('pt-BR'))} · ${fmtTime(h.changed_at)}</div><ul>${lines}</ul></div>`;
+      // Alteração feita por outra pessoa (ex.: oficial trocou o nick): mostra quem
+      const by = h.changed_by && h.changed_by !== h.user_id ? ` · por ${esc(nameOf(h.changed_by))}` : '';
+      return `<div class="hist-item"><div class="hist-date">${esc(new Date(h.changed_at).toLocaleDateString('pt-BR'))} · ${fmtTime(h.changed_at)}${by}</div><ul>${lines}</ul></div>`;
     }).join('');
+  }
+
+  // ---------- Editar o nick de um membro (oficiais e líder) ----------
+  // Oficial: membros, quem aguarda aprovação e ex-membros. Líder: qualquer um. O próprio nick: em "Editar perfil".
+  const canRename = (m) => !!m && m.id !== state.user.id
+    && (isLeader() || (can('member_rename') && ['pending', 'member', 'former'].includes(m.role)));
+  function openRenameDialog(m, after) {
+    openDialog(`<form id="rn" class="stack">
+      <h2>Editar nick</h2>
+      <p class="muted small" style="margin:0">Nome que aparece no site para <b>${esc(displayName(m))}</b>${m.google_name ? ` (conta Google: ${esc(m.google_name)})` : ''}.
+        A troca fica no histórico do membro, com o seu nome.</p>
+      <div class="field">
+        <label for="rn-name">Nick / nome do personagem</label>
+        <input id="rn-name" maxlength="40" required value="${esc(m.game_name || '')}" placeholder="${esc(m.google_name || 'Nome no jogo')}">
+      </div>
+      <div class="row end">
+        <button type="button" class="btn ghost" data-close>Cancelar</button>
+        <button type="submit" class="btn primary">Salvar</button>
+      </div>
+    </form>`, (d) => {
+      const input = $('#rn-name', d);
+      input.focus(); input.select();
+      $('#rn', d).addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const name = input.value.trim();
+        if (!name) { toast('Escreva o nick', true); return; }
+        if (name === (m.game_name || '')) { dlg.close(); return; }
+        const btn = $('button[type=submit]', d);
+        btn.disabled = true;
+        try {
+          await api.renameMember(m.id, name);
+          dlg.close();
+          toast(`Nick alterado para “${name}”`);
+          await after?.();
+        } catch (err) { fail(err); btn.disabled = false; }
+      });
+    });
   }
 
   function openHistory(m, entries) {
@@ -4202,7 +4258,8 @@
             <div class="muted small">${me.game_name ? `${esc(me.google_name)} · ` : ''}${ROLE_LABEL[me.role]}${me.created_at ? ` · no clã desde ${new Date(me.created_at).toLocaleDateString('pt-BR')}` : ''}${phone ? ` · <a href="tel:${esc(phone.replace(/[^\d+]/g, ''))}">📞 ${esc(phone)}</a>` : ''}</div>
             ${me.char_class ? `<div class="member-build">${classTag(me.char_class)} <span>${esc(CLASS[me.char_class].label)}</span><span class="chip-stats">${statsLine(me)}</span></div>` : ''}
           </div>
-          ${self ? '<button class="btn small" id="btn-edit-pf">✎ Editar perfil</button>' : ''}
+          ${self ? `<div class="row me-actions"><button class="btn small" id="btn-photo-pf">📷 ${me.custom_avatar_url ? 'Trocar foto' : 'Enviar foto'}</button><button class="btn small" id="btn-edit-pf">✎ Editar perfil</button></div>`
+            : canRename(me) ? '<button class="btn small" id="btn-rename">✎ Editar nick</button>' : ''}
         </div>
       </div>
 
@@ -4237,7 +4294,18 @@
       ${ticketsCard(me, self)}
       ${showNotes ? notesCard(me, allNotes.filter((n) => n.member_id === me.id), members) : ''}`;
 
-    $('#btn-edit-pf')?.addEventListener('click', openProfile);
+    $('#btn-edit-pf')?.addEventListener('click', () => openProfile());
+    // Trocar a foto direto do painel, sem abrir o formulário
+    $('#btn-photo-pf')?.addEventListener('click', (e) => {
+      const btn = e.currentTarget;
+      pickImageFile(async (file) => {
+        const label = btn.textContent;
+        btn.disabled = true; btn.textContent = 'Enviando…';
+        try { if (await uploadAvatarFile(file)) await viewMyPanel(userId); } catch (err) { fail(err); }
+        finally { if (document.body.contains(btn)) { btn.disabled = false; btn.textContent = label; } }
+      });
+    });
+    $('#btn-rename')?.addEventListener('click', () => openRenameDialog(me, () => viewMyPanel(userId)));
     bindPilotsCard(me, () => viewMyPanel(userId));
     $('#p-days').addEventListener('change', (e) => { P.days = Number(e.target.value); viewMyPanel(userId); });
 
@@ -4896,7 +4964,7 @@
       <div class="name"><a class="member-link" href="#/membro/${encodeURIComponent(m.id)}">${esc(displayName(m))}</a> ${noteBadge(m)} ${pilotLabel(m)} ${formerly(m)}
         <small>${m.managed ? 'conta sem login' : (m.game_name ? esc(m.google_name) : '')} ${phoneLink(m)}</small>
         ${m.char_class ? `<div class="member-build">${classTag(m.char_class)} <span>${esc(CLASS[m.char_class].label)}</span><span class="chip-stats">${statsLine(m)}</span></div>` : '<div class="member-build muted small">Classe e atributos não informados</div>'}
-      </div>${histBtn(m)}${ctrl}</div>`;
+      </div>${canRename(m) ? `<button class="btn small ghost" data-rename="${esc(m.id)}" title="Editar o nick de ${esc(displayName(m))}">✎ Nick</button>` : ''}${histBtn(m)}${ctrl}</div>`;
 
     main.innerHTML = `
       <div class="page-head"><h1>Membros</h1><span class="muted">${active.length} ativos</span>
@@ -4954,6 +5022,10 @@
     applySearch();
     main.querySelectorAll('[data-history]').forEach((b) => b.addEventListener('click', () => {
       openHistory(state.members.find((x) => x.id === b.dataset.history), histBy[b.dataset.history] || []);
+    }));
+    main.querySelectorAll('[data-rename]').forEach((b) => b.addEventListener('click', () => {
+      const m = [...pending, ...active, ...former].find((x) => x.id === b.dataset.rename);
+      if (m) openRenameDialog(m, () => viewMembers());
     }));
     $('#btn-csv')?.addEventListener('click', async (e) => {
       e.target.disabled = true;
@@ -5102,6 +5174,49 @@
     return blob;
   }
 
+  // Foto de perfil: salva na hora e atualiza o topo e a lista de membros
+  async function saveAvatar(blob, hidden, msg) {
+    const url = await api.setAvatar(blob, hidden);
+    const patch = { custom_avatar_url: url, avatar_hidden: !blob && hidden };
+    Object.assign(state.me, patch);
+    const m = memberById(state.me.id);
+    if (m) Object.assign(m, patch);
+    toast(msg);
+    renderHeader(currentRouteKey());
+  }
+  // Abre o seletor de arquivos do aparelho (celular: galeria ou câmera)
+  function pickImageFile(onFile) {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.addEventListener('change', () => { const f = input.files?.[0]; if (f) onFile(f); }, { once: true });
+    input.click();
+  }
+  // Recorta e envia a foto escolhida. Devolve true se a foto foi trocada.
+  async function uploadAvatarFile(file) {
+    // Alguns celulares não informam o tipo do arquivo: nesse caso, tenta ler mesmo assim
+    if (file.type && !file.type.startsWith('image/')) { toast('Escolha um arquivo de imagem (JPG, PNG ou WebP)', true); return false; }
+    if (file.size > 15 * 1024 * 1024) { toast('Imagem muito grande (máximo 15 MB)', true); return false; }
+    let blob;
+    try { blob = await squareAvatar(file); } catch {
+      toast('Não foi possível ler esta imagem. Use uma foto JPG ou PNG (no iPhone, se for HEIC, tire um print da foto e envie o print).', true);
+      return false;
+    }
+    await saveAvatar(blob, false, 'Foto de perfil atualizada');
+    return true;
+  }
+  const photoBlockHtml = (me) => `
+    <span id="pf-avatar">${avatar(me, 'xl')}</span>
+    <div class="stack" style="gap:6px">
+      <div><strong>${esc(me.google_name)}</strong><div class="muted small">${ROLE_LABEL[me.role]}</div></div>
+      <div class="row pf-photo-btns" style="gap:6px">
+        <button type="button" class="btn small" id="pf-pick">📷 ${me.custom_avatar_url ? 'Trocar foto' : 'Enviar foto'}</button>
+        ${!me.avatar_hidden && (me.custom_avatar_url || me.avatar_url) ? '<button type="button" class="btn small ghost danger" id="pf-remove">Remover foto</button>' : ''}
+        ${(me.custom_avatar_url || me.avatar_hidden) && me.avatar_url ? '<button type="button" class="btn small ghost" id="pf-google">Usar foto da conta Google</button>' : ''}
+      </div>
+      <div class="muted small">Use uma foto do seu computador ou celular. Ela é recortada em quadrado e salva na hora; o resto do formulário continua como está.</div>
+    </div>`;
+
   async function openProfile() {
     const me = state.me;
     let phone = '';
@@ -5109,19 +5224,7 @@
     openDialog(`
       <form id="pf" class="stack">
         <h2>Meu perfil</h2>
-        <div class="row pf-photo">
-          <span id="pf-avatar">${avatar(me, 'xl')}</span>
-          <div class="stack" style="gap:6px">
-            <div><strong>${esc(me.google_name)}</strong><div class="muted small">${ROLE_LABEL[me.role]}</div></div>
-            <div class="row" style="gap:6px">
-              <label class="btn small" for="pf-file">📷 ${me.custom_avatar_url ? 'Trocar foto' : 'Enviar foto'}</label>
-              <input id="pf-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
-              ${!me.avatar_hidden && (me.custom_avatar_url || me.avatar_url) ? '<button type="button" class="btn small ghost danger" id="pf-remove">Remover foto</button>' : ''}
-              ${(me.custom_avatar_url || me.avatar_hidden) && me.avatar_url ? '<button type="button" class="btn small ghost" id="pf-google">Usar foto da conta Google</button>' : ''}
-            </div>
-            <div class="muted small">Use uma foto do seu computador ou celular. Ela é recortada em quadrado.</div>
-          </div>
-        </div>
+        <div class="row pf-photo">${photoBlockHtml(me)}</div>
         <div class="grid2">
           <div class="field">
             <label for="f-game">Nome do personagem</label>
@@ -5139,37 +5242,29 @@
           <button type="submit" class="btn primary">Salvar</button>
         </div>
       </form>`, (d) => {
-      // Foto: salva na hora (independente do botão Salvar do formulário)
-      const applyAvatar = async (blob, hidden, msg) => {
-        d.querySelectorAll('.pf-photo .btn').forEach((b) => { b.disabled = true; b.classList.add('disabled'); });
-        try {
-          const url = await api.setAvatar(blob, hidden);
-          Object.assign(state.me, { custom_avatar_url: url, avatar_hidden: !blob && hidden });
-          const m = memberById(state.me.id);
-          if (m) Object.assign(m, { custom_avatar_url: url, avatar_hidden: !blob && hidden });
-          toast(msg);
-          renderHeader(currentRouteKey());
-          openProfile();
-        } catch (err) {
-          fail(err);
-          d.querySelectorAll('.pf-photo .btn').forEach((b) => { b.disabled = false; b.classList.remove('disabled'); });
-        }
+      // Foto: salva na hora e só o bloco da foto é redesenhado. O que já foi digitado
+      // no formulário (nome, telefone, classe e atributos) não é apagado.
+      const photo = $('.pf-photo', d);
+      const busy = (on) => photo.querySelectorAll('.btn').forEach((b) => { b.disabled = on; b.classList.toggle('disabled', on); });
+      const redraw = () => { photo.innerHTML = photoBlockHtml(state.me); bindPhoto(); };
+      const run = async (fn) => {
+        busy(true);
+        try { await fn(); redraw(); } catch (err) { fail(err); busy(false); }
       };
-      $('#pf-file', d).addEventListener('change', async (e) => {
-        const file = e.target.files?.[0];
-        e.target.value = '';
-        if (!file) return;
-        if (!file.type.startsWith('image/')) { toast('Escolha um arquivo de imagem (JPG, PNG ou WebP)', true); return; }
-        if (file.size > 15 * 1024 * 1024) { toast('Imagem muito grande (máximo 15 MB)', true); return; }
-        let blob;
-        try { blob = await squareAvatar(file); } catch { toast('Não foi possível ler esta imagem. Tente uma foto JPG ou PNG.', true); return; }
-        await applyAvatar(blob, false, 'Foto de perfil atualizada');
-      });
-      $('#pf-remove', d)?.addEventListener('click', async () => {
-        if (!(await confirmDialog('Remover sua foto de perfil? No lugar dela vai aparecer a inicial do seu nome.', 'Remover foto'))) { openProfile(); return; }
-        await applyAvatar(null, true, 'Foto removida');
-      });
-      $('#pf-google', d)?.addEventListener('click', () => applyAvatar(null, false, 'Voltou a foto da conta Google'));
+      function bindPhoto() {
+        $('#pf-pick', photo).addEventListener('click', () => pickImageFile((file) => run(() => uploadAvatarFile(file))));
+        $('#pf-google', photo)?.addEventListener('click', () => run(() => saveAvatar(null, false, 'Voltou a foto da conta Google')));
+        // Confirmação dentro do próprio bloco (sem trocar a janela do formulário)
+        $('#pf-remove', photo)?.addEventListener('click', () => {
+          const btns = $('.pf-photo-btns', photo);
+          btns.innerHTML = `<span class="small">Remover sua foto? No lugar dela aparece a inicial do seu nome.</span>
+            <button type="button" class="btn small ghost" id="pf-rm-no">Cancelar</button>
+            <button type="button" class="btn small danger" id="pf-rm-yes">Remover foto</button>`;
+          $('#pf-rm-no', photo).addEventListener('click', redraw);
+          $('#pf-rm-yes', photo).addEventListener('click', () => run(() => saveAvatar(null, true, 'Foto removida')));
+        });
+      }
+      bindPhoto();
       $('#pf', d).addEventListener('submit', async (e) => {
         e.preventDefault();
         const submit = $('button[type=submit]', d);

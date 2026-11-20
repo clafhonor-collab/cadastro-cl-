@@ -535,6 +535,8 @@ h1 { background: linear-gradient(180deg, #fff1da, #e3b878); -webkit-background-c
 /* Painel "Meu perfil" do membro */
 .avatar.xl { width: 64px; height: 64px; font-size: 1.5rem; }
 .me-card .row { flex-wrap: nowrap; align-items: flex-start; }
+.me-card .row.me-actions { flex-wrap: wrap; gap: 6px; justify-content: flex-end; flex: 0 1 auto; }
+@media (max-width: 560px) { .me-card .row.me-actions { flex-direction: column; align-items: stretch; } }
 .me-name { font-family: "Cinzel", serif; font-size: 1.4rem; font-weight: 700; color: var(--gold); }
 .panels { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
 .panels h2 { display: flex; align-items: center; gap: 8px; font-size: 1.05rem; }
