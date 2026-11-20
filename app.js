@@ -6299,7 +6299,7 @@
       ${l.about ? `<div class="muted small pg-log-about">“${esc(l.about)}”</div>` : ''}</div>`;
   }
 
-  async function viewPilotage() {
+  async function viewPilotage(focusId = null) {
     loading();
     const [, history] = await Promise.all([loadPilotage(), isOfficer() ? api.pilotOfferHistory().catch(() => []) : []]);
     const board = state.pilotage;
@@ -6364,7 +6364,7 @@
       : o.status === 'rejected'
         ? `<span class="c-no small">✖ Recusado${reviewedBy(o)}${o.review_note ? `: “${esc(o.review_note)}”` : ''}. Edite o texto e salve para enviar de novo.</span>`
         : `<span class="${o.active ? 'c-yes' : 'muted'} small">${o.active ? '● Aprovado e disponível: aparece para os membros' : '● Pausado: não aparece para os membros'}</span>`);
-    const offerCard = (o) => `<div class="card pg-offer${o.active ? '' : ' paused'}">
+    const offerCard = (o) => `<div class="card pg-offer${o.active ? '' : ' paused'}" data-pilot="${esc(o.pilot_id)}">
         <div class="pg-offer-head"><span class="pg-icon" aria-hidden="true">✈️</span>
           <div class="spacer"><b>${esc(o.name)}</b>${o.pilot_only ? ' <span class="pilot-tag">membro piloto</span>' : ''}${o.active ? '' : ' <span class="badge">Pausado</span>'}
             <div class="muted small">${o.accounts ? `pilota ${plural(o.accounts, 'conta', 'contas')} no clã` : 'ainda não pilota contas no site'} · desde ${fmtD(o.updated_at)}</div></div></div>
@@ -6400,7 +6400,11 @@
             <div class="row" style="gap:8px">${myStatus(myOffer)}<span class="spacer"></span>
               <button class="btn small" id="pg-edit">Editar</button>
               ${(myOffer.status || 'approved') === 'approved' ? `<button class="btn small" id="pg-toggle">${myOffer.active ? 'Pausar' : 'Ficar disponível'}</button>` : ''}
-              <button class="btn small ghost danger" id="pg-leave">Sair da Pilotagem</button></div>`
+              <button class="btn small ghost danger" id="pg-leave">Sair da Pilotagem</button></div>
+            ${myOffer.status === 'approved' ? `<div class="row pg-share" style="gap:8px;margin-top:10px">
+              <span class="muted small">Divulgue seu anúncio:</span>
+              <button class="btn small" id="pg-qr">▣ Gerar QR Code</button>
+              <button class="btn small" id="pg-link">🔗 Copiar link</button></div>` : ''}`
             : `<p class="muted small" style="margin:0 0 8px">Você é piloto. Cadastre seus serviços para que os membros possam pedir a pilotagem da conta deles.</p>
               <button class="btn small primary" id="pg-edit">+ Cadastrar meus serviços</button>`}
       </div>
@@ -6424,6 +6428,16 @@
       renderHeader('pilotage');
     };
     $('#pg-become')?.addEventListener('click', () => openProfile());
+    $('#pg-link')?.addEventListener('click', () => copy(offerUrl(myId), 'Link do anúncio copiado'));
+    $('#pg-qr')?.addEventListener('click', () => openOfferShare(myOffer));
+    // Aberto por um link de anúncio: rola até ele e destaca
+    if (focusId) {
+      const card = main.querySelector(`.pg-offer[data-pilot="${CSS.escape(focusId)}"]`);
+      if (card) {
+        card.classList.add('focus');
+        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      } else toast('Este anúncio não está disponível no momento (pode ter sido pausado ou removido).', true);
+    }
     $('#pg-edit')?.addEventListener('click', () => openPilotOfferForm(myOffer, (kind) => after({
       new: 'Anúncio enviado! Ele aparece na Pilotagem depois que a staff aprovar.',
       edit: 'Edição enviada para a revisão da staff. Até lá, os membros continuam vendo o texto aprovado.',
@@ -6469,6 +6483,121 @@
       const r = inbox.find((x) => x.id === Number(b.dataset.pgDecline));
       if (r) openPilotageDecline(r, () => after('Pedido recusado'));
     }));
+  }
+
+  // ---------- Divulgar o anúncio: link e QR Code ----------
+  const offerUrl = (id) => `${location.origin}${location.pathname}#/pilotagem/${encodeURIComponent(id)}`;
+  // Gerador de QR Code (qrcode-generator, MIT), guardado no próprio site e carregado só quando usado
+  let qrLib = null;
+  function loadQrLib() {
+    if (window.qrcode) return Promise.resolve(window.qrcode);
+    qrLib ||= new Promise((resolve, reject) => {
+      const sc = document.createElement('script');
+      sc.src = 'vendor/qrcode-generator-1.4.4.js';
+      sc.onload = () => (window.qrcode ? resolve(window.qrcode) : reject(new Error('Gerador de QR Code indisponível')));
+      sc.onerror = () => { qrLib = null; reject(new Error('Não foi possível carregar o gerador de QR Code')); };
+      document.head.appendChild(sc);
+    });
+    return qrLib;
+  }
+  // Quebra o texto em linhas que cabem na largura (com reticências se passar do limite)
+  function wrapLines(ctx, text, maxW, maxLines) {
+    const out = [];
+    String(text || '').split(/\n+/).forEach((para) => {
+      let line = '';
+      para.split(/\s+/).filter(Boolean).forEach((w) => {
+        const t = line ? `${line} ${w}` : w;
+        if (ctx.measureText(t).width <= maxW || !line) line = t; else { out.push(line); line = w; }
+      });
+      if (line) out.push(line);
+    });
+    if (out.length > maxLines) {
+      out.length = maxLines;
+      let last = out[maxLines - 1];
+      while (last && ctx.measureText(`${last}…`).width > maxW) last = last.slice(0, -1);
+      out[maxLines - 1] = `${last.trimEnd()}…`;
+    }
+    return out;
+  }
+  // Imagem do anúncio (1080×1350, boa para WhatsApp, Discord e stories): nome, texto e QR Code do link
+  async function offerImage(o, url) {
+    const qr = (await loadQrLib())(0, 'M');
+    qr.addData(url);
+    qr.make();
+    try { await Promise.all(['700 64px Cinzel', '400 36px Inter', '600 36px Inter'].map((f) => document.fonts.load(f))); } catch { /* usa a fonte padrão */ }
+    const W = 1080; const H = 1350;
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    const g = c.getContext('2d');
+    // Fundo
+    const bg = g.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, '#2a140c'); bg.addColorStop(0.55, '#140a07'); bg.addColorStop(1, '#0b0605');
+    g.fillStyle = bg; g.fillRect(0, 0, W, H);
+    const glow = g.createRadialGradient(W / 2, 0, 40, W / 2, 0, 700);
+    glow.addColorStop(0, 'rgba(232,70,31,.35)'); glow.addColorStop(1, 'rgba(232,70,31,0)');
+    g.fillStyle = glow; g.fillRect(0, 0, W, H);
+    g.strokeStyle = 'rgba(220,170,82,.55)'; g.lineWidth = 4;
+    g.strokeRect(28, 28, W - 56, H - 56);
+    g.textAlign = 'center'; g.textBaseline = 'alphabetic';
+    // Cabeçalho
+    g.fillStyle = '#dcaa52'; g.font = '700 46px Cinzel, serif';
+    g.fillText((CFG.clanName || 'Clã').toUpperCase(), W / 2, 112);
+    g.fillStyle = '#ff7a2f'; g.font = '600 34px Inter, sans-serif';
+    g.fillText('✈️  PILOTAGEM', W / 2, 166);
+    // Nome do piloto
+    g.fillStyle = '#ffffff'; g.font = '700 74px Cinzel, serif';
+    let name = o.name;
+    while (g.measureText(name).width > W - 160 && name.length > 3) name = name.slice(0, -1);
+    g.fillText(name === o.name ? name : `${name}…`, W / 2, 274);
+    g.fillStyle = '#c9b8ff'; g.font = '600 30px Inter, sans-serif';
+    g.fillText(o.pilot_only ? 'Membro piloto' : 'Piloto do clã', W / 2, 322);
+    // Texto do anúncio
+    g.fillStyle = '#f1e6dc'; g.font = '400 38px Inter, sans-serif';
+    const lines = wrapLines(g, `“${o.about}”`, W - 180, 6);
+    lines.forEach((l, i) => g.fillText(l, W / 2, 404 + i * 54));
+    // QR Code em um quadro branco
+    const box = 420; const bx = (W - box) / 2; const by = H - box - 210;
+    g.fillStyle = '#ffffff';
+    g.beginPath(); g.roundRect ? g.roundRect(bx, by, box, box, 24) : g.rect(bx, by, box, box); g.fill();
+    const n = qr.getModuleCount(); const quiet = 28; const cell = Math.floor((box - quiet * 2) / n);
+    const off = (box - cell * n) / 2;
+    g.fillStyle = '#0b0605';
+    for (let r = 0; r < n; r++) for (let k = 0; k < n; k++) if (qr.isDark(r, k)) g.fillRect(bx + off + k * cell, by + off + r * cell, cell, cell);
+    // Rodapé
+    g.fillStyle = '#dcaa52'; g.font = '600 34px Inter, sans-serif';
+    g.fillText('Escaneie para pedir pilotagem', W / 2, by + box + 70);
+    g.fillStyle = '#b79f8f'; g.font = '400 26px Inter, sans-serif';
+    g.fillText(url.replace(/^https?:\/\//, ''), W / 2, by + box + 118);
+    return new Promise((resolve, reject) => c.toBlob((b) => (b ? resolve(b) : reject(new Error('Não foi possível gerar a imagem'))), 'image/png'));
+  }
+  async function openOfferShare(o) {
+    const url = offerUrl(o.pilot_id);
+    let blob;
+    try { blob = await offerImage(o, url); } catch (e) { fail(e); return; }
+    const src = URL.createObjectURL(blob);
+    const fileName = `pilotagem-${norm(o.name).replace(/[^a-z0-9]+/g, '-') || 'anuncio'}.png`;
+    const file = typeof File === 'function' ? new File([blob], fileName, { type: 'image/png' }) : null;
+    const canShareFile = !!(file && navigator.canShare && navigator.canShare({ files: [file] }));
+    openDialog(`<div class="stack pg-share-dlg">
+        <h2>Divulgar seu anúncio</h2>
+        <img class="pg-share-img" src="${src}" alt="Imagem do anúncio de ${esc(o.name)} com QR Code">
+        <p class="muted small" style="margin:0">Quem escanear o QR Code ou abrir o link vai direto para o seu anúncio na Pilotagem (precisa entrar no site com a conta do clã).</p>
+        <div class="field"><label for="pg-url">Link do anúncio</label><input id="pg-url" readonly value="${esc(url)}"></div>
+        <div class="row end" style="flex-wrap:wrap">
+          <button type="button" class="btn ghost" data-close>Fechar</button>
+          <button type="button" class="btn" id="pgs-copy">🔗 Copiar link</button>
+          ${canShareFile ? '<button type="button" class="btn" id="pgs-share">📤 Compartilhar</button>' : ''}
+          <a class="btn primary" id="pgs-dl" href="${src}" download="${esc(fileName)}">⬇ Baixar imagem</a>
+        </div>
+      </div>`, (d) => {
+      $('#pg-url', d).addEventListener('focus', (e) => e.target.select());
+      $('#pgs-copy', d).addEventListener('click', () => copy(url, 'Link do anúncio copiado'));
+      $('#pgs-share', d)?.addEventListener('click', async () => {
+        try { await navigator.share({ files: [file], title: `Pilotagem · ${o.name}`, text: `${o.about}\n${url}` }); }
+        catch (e) { if (e?.name !== 'AbortError') toast('Não foi possível compartilhar. Use “Baixar imagem”.', true); }
+      });
+      dlg.addEventListener('close', () => setTimeout(() => URL.revokeObjectURL(src), 1000), { once: true });
+    });
   }
 
   function openPilotOfferForm(offer, after) {
@@ -7235,19 +7364,20 @@
     const mp = h.match(/^\/membro\/([\w%-]+)$/); // perfil de um membro (oficiais e líder)
     const rc = RECRUIT_ON ? h.match(/^\/recrutamento\/(\d+)$/) : null;
     const tk = TICKETS_ON ? h.match(/^\/ticket\/(\d+)$/) : null;
-    const key = h === '/passados' ? 'past' : h === '/frequencia' ? 'freq' : h === '/news' ? 'news' : h === '/utils' ? 'utils' : h === '/pilotagem' ? 'pilotage'
+    const pg = h.match(/^\/pilotagem\/([\w%-]+)$/); // link de um anúncio de pilotagem
+    const key = h === '/passados' ? 'past' : h === '/frequencia' ? 'freq' : h === '/news' ? 'news' : h === '/utils' ? 'utils' : h === '/pilotagem' || pg ? 'pilotage'
       : h === '/config' ? 'config' : h === '/solicitacoes' ? 'requests'
       : RECRUIT_ON && h === '/recrutamentos' ? 'recruits' : rc ? 'recruits'
       : RAFFLE_ON && h === '/sorteio' ? 'raffle'
       : TICKETS_ON && h === '/tickets' ? 'tickets' : TICKETS_ON && h === '/atendimento' ? 'support' : tk ? 'ticket'
       : h === '/perfil' ? 'profile' : h === '/membros' ? (isOfficer() ? 'members' : 'profile') : mp ? 'members'
       : tm ? 'teams' : ev ? 'event' : 'upcoming';
-    return { ev, tm, mp, rc, tk, key };
+    return { ev, tm, mp, rc, tk, pg, key };
   }
   const currentRouteKey = () => parseRoute().key;
 
   async function route() {
-    const { ev, tm, mp, rc, tk, key } = parseRoute();
+    const { ev, tm, mp, rc, tk, pg, key } = parseRoute();
     if (state.user && isOfficer()) await loadPerms();
     if (state.user && isMember()) await Promise.all([loadRecruits(), loadTickets(), loadRaffles(), loadBell(), loadLeaves(), loadBadges()]);
     bellOpen = false;
@@ -7260,7 +7390,7 @@
       if (key === 'past') await viewEvents(true);
       else if (key === 'news') await viewNews();
       else if (key === 'utils') viewUtils();
-      else if (key === 'pilotage') await viewPilotage();
+      else if (key === 'pilotage') await viewPilotage(pg ? decodeURIComponent(pg[1]) : null);
       else if (key === 'raffle') await viewRaffle();
       else if (key === 'config') await viewConfig();
       else if (key === 'requests') await viewRequests();

@@ -1166,3 +1166,8 @@ body.has-fab main { padding-bottom: 90px; }
   .evo-peak-box { position: absolute; top: 16px; right: 18px; }
   .evo-tabs { max-width: calc(100% - 270px); }
 }
+/* Pilotagem: divulgar o anúncio (link e QR Code) */
+.pg-share { flex-wrap: wrap; align-items: center; }
+.pg-offer.focus { border-color: var(--gold); box-shadow: 0 0 0 2px rgba(220, 170, 82, .55), 0 10px 30px rgba(220, 170, 82, .18); }
+.pg-share-img { display: block; width: 100%; max-width: 360px; margin: 0 auto; border-radius: 10px; border: 1px solid var(--border); }
+.pg-share-dlg input[readonly] { font-size: .85rem; }
