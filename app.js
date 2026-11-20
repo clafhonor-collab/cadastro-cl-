@@ -4872,10 +4872,15 @@
       const sign = diff > 0 ? '+' : diff < 0 ? '−' : '';
       const cls = diff > 0 ? 'c-yes' : diff < 0 ? 'c-no' : 'muted';
       const since = new Date(pts[0].t).toLocaleDateString('pt-BR');
+      // Maior valor já registrado (só aparece quando o atual está abaixo dele)
+      const top = pts.reduce((b, p, i) => (p.v > b.p.v ? { p, i } : b), { p: pts[0], i: 0 });
+      const topWhen = top.i === 0 && pts[0].tip.includes('valor inicial')
+        ? `antes de ${new Date(pts[1].t).toLocaleDateString('pt-BR')}` : `em ${new Date(top.p.t).toLocaleDateString('pt-BR')}`;
+      const peak = top.p.v > cur ? `<br><span class="evo-peak">🏔️ Maior já registrado: <b>${fmtNum(top.p.v)}</b> ${topWhen} <span class="muted">(${fmtNum(top.p.v - cur)} acima do atual)</span></span>` : '';
       body.innerHTML = `<div class="evo-sum">
           <span class="evo-gain ${cls}">${sign}${fmtNum(Math.abs(diff))}</span>
           <span class="small">de ${esc(attr.label)} desde ${since}${pct != null && diff ? ` <b class="${cls}">(${sign}${Math.abs(pct).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%)</b>` : ''}<br>
-          <span class="muted">Agora: <b>${fmtNum(cur)}</b>${last ? ` · última atualização em ${new Date(last).toLocaleDateString('pt-BR')}` : ''}</span></span>
+          <span class="muted">Agora: <b>${fmtNum(cur)}</b>${last ? ` · última atualização em ${new Date(last).toLocaleDateString('pt-BR')}` : ''}</span>${peak}</span>
         </div>
         ${lineChart(pts, { time: true, aria: `${attr.label} ao longo do tempo` })}`;
     };

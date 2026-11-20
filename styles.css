@@ -1070,3 +1070,4 @@ body.has-fab main { padding-bottom: 90px; }
 .res-line.win > b:first-of-type { color: var(--gold); }
 .res-line.loss > b:first-of-type { color: var(--no); }
 .res-line .res-sc { margin-left: 4px; padding: 1px 8px; border-radius: 6px; background: var(--panel-2); font-weight: 700; white-space: nowrap; }
+.evo-peak { color: var(--gold); }
