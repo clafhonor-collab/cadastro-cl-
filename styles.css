@@ -1132,3 +1132,10 @@ body.has-fab main { padding-bottom: 90px; }
 }
 .pg-req { flex-wrap: wrap; }
 .pg-req > .spacer { min-width: 220px; }
+.kd-list { margin: 0; padding-left: 20px; display: grid; gap: 4px; }
+/* Celular: os botões da linha do membro (Nick, Tornar piloto, histórico, cargo) descem para baixo do nome */
+@media (max-width: 600px) {
+  .member { flex-wrap: wrap; }
+  .member .name { flex: 1 1 calc(100% - 64px); }
+  .member > .btn, .member > select, .member > .role-tag { flex: none; }
+}

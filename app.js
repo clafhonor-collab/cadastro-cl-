@@ -308,6 +308,8 @@
       async addPilot(accountId, pilotId) { ok(await sb.rpc('add_pilot', { p_account: accountId, p_pilot: pilotId })); },
       // ----- Membro piloto e Pilotagem (supabase/pilotagem.sql) -----
       async setAccountKind(pilotOnly, isPilot, note) { ok(await sb.rpc('set_account_kind', { p_pilot_only: !!pilotOnly, p_is_pilot: !!isPilot, p_note: note || null })); },
+      // Staff: transforma um membro em membro piloto (ou de volta em jogador)
+      async setMemberKind(userId, pilotOnly, note) { ok(await sb.rpc('set_member_kind', { p_user: userId, p_pilot_only: !!pilotOnly, p_note: note || null })); },
       async pilotageBoard() { return ok(await sb.rpc('pilotage_board')) || { offers: [], requests: [] }; },
       async savePilotOffer(about, active) { ok(await sb.rpc('save_pilot_offer', { p_about: about, p_active: !!active })); },
       async deletePilotOffer(pilotId) { ok(await sb.rpc('delete_pilot_offer', { p_pilot: pilotId })); },
@@ -780,6 +782,15 @@
     const raffleStaffDemo = () => { if (!isOfficer()) throw new Error('Só a staff (líder e oficiais) pode fazer isso'); };
     const raffleOpenDemo = (r, msg) => { if (!r || r.status !== 'open' || Date.parse(r.draw_at) <= Date.now()) throw new Error(msg); };
 
+    // Conta que vira membro piloto: sai dos próximos eventos e deixa de ser pilotada (igual a pilot_only_cleanup do banco)
+    const pilotOnlyCleanupDemo = (id) => {
+      const future = new Set(db.events.filter((e) => Date.parse(e.starts_at) > Date.now()).map((e) => e.id));
+      db.rsvps = db.rsvps.filter((r) => !(r.user_id === id && future.has(r.event_id)));
+      db.slots = db.slots.filter((s) => !(s.user_id === id && future.has(s.event_id)));
+      db.pilots = db.pilots.filter((x) => x.account_id !== id);
+      db.pilotReqs.filter((r) => r.account_id === id && r.status === 'pending')
+        .forEach((r) => Object.assign(r, { status: 'cancelled', decided_at: new Date().toISOString(), answer: r.answer || 'A conta virou membro piloto' }));
+    };
     // Posso agir por esta conta? (a minha, ou sou piloto aprovado dela) — igual à regra do banco
     const canActAsDemo = (acct) => acct === state.user?.id
       || (ACTIVE_ROLES.includes(profile(state.user?.id)?.role)
@@ -1136,17 +1147,32 @@
         const n = String(note || '').trim().slice(0, 200) || null;
         if (pilotOnly && !n) throw new Error('Informe qual conta você pilota');
         const pilot = !!pilotOnly || !!isPilot;
+        const was = !!p.pilot_only;
         Object.assign(p, { pilot_only: !!pilotOnly, is_pilot: pilot, pilot_note: pilot ? n : null });
-        if (pilotOnly) {
-          const future = new Set(db.events.filter((e) => Date.parse(e.starts_at) > Date.now()).map((e) => e.id));
-          db.rsvps = db.rsvps.filter((r) => !(r.user_id === p.id && future.has(r.event_id)));
-          db.slots = db.slots.filter((s) => !(s.user_id === p.id && future.has(s.event_id)));
-        }
+        if (pilotOnly && !was) pilotOnlyCleanupDemo(p.id);
+        if (!!pilotOnly !== was) db.history.push({ id: db.history.length + 1, user_id: p.id, changed_by: p.id, changed_at: new Date().toISOString(), changes: { pilot_only: [was, !!pilotOnly] } });
         if (!pilot) {
           db.pilotOffers = db.pilotOffers.filter((o) => o.pilot_id !== p.id);
           db.pilotReqs.filter((r) => r.pilot_id === p.id && r.status === 'pending')
             .forEach((r) => Object.assign(r, { status: 'declined', decided_at: new Date().toISOString(), answer: 'Deixou de oferecer pilotagem' }));
         }
+      },
+      async setMemberKind(userId, pilotOnly, note) {
+        const me = profile(state.user.id).role;
+        if (!['leader', 'officer'].includes(me)) throw new Error('Só oficiais e o líder podem mudar o tipo de conta dos membros');
+        if (me === 'officer' && permMode('pilots') !== 'allow') throw new Error('O líder não permite esta ação para oficiais (pilots)');
+        const t = profile(userId);
+        if (!t) throw new Error('Membro não encontrado');
+        if (t.role === 'former') throw new Error('Esta conta está fora do clã');
+        if (t.managed) throw new Error('Conta sem login não pode ser membro piloto (ela é uma conta do jogo pilotada por alguém)');
+        if (me === 'officer' && userId !== state.user.id && !['pending', 'member'].includes(t.role)) throw new Error('Só o líder pode mudar o tipo de conta de oficiais e do líder');
+        const was = !!t.pilot_only;
+        const n = String(note || '').trim().slice(0, 200) || null;
+        if (pilotOnly) {
+          Object.assign(t, { pilot_only: true, is_pilot: true, pilot_note: n || t.pilot_note || null });
+          if (!was) pilotOnlyCleanupDemo(userId);
+        } else t.pilot_only = false;
+        if (!!pilotOnly !== was) db.history.push({ id: db.history.length + 1, user_id: userId, changed_by: state.user.id, changed_at: new Date().toISOString(), changes: { pilot_only: [was, !!pilotOnly] } });
       },
       async pilotageBoard() {
         if (!isMember()) return null;
@@ -3569,9 +3595,11 @@
   const FIELD_LABEL = {
     game_name: 'Nome do personagem', google_name: 'Nome na conta Google', char_class: 'Classe',
     ...Object.fromEntries(ATTRS.map((a) => [a.key, a.label])),
+    pilot_only: 'Tipo de conta',
   };
   const isAttr = (f) => ATTRS.some((a) => a.key === f);
   function fmtField(f, v) {
+    if (f === 'pilot_only') return v ? 'Membro piloto' : 'Jogador';
     if (v === null || v === undefined || v === '') return '—';
     if (f === 'char_class') return CLASS[v]?.label || String(v);
     if (isAttr(f)) return fmtNum(Number(v));
@@ -3580,7 +3608,7 @@
 
   function histItemsHtml(entries) {
     return entries.slice().sort((a, b) => Date.parse(b.changed_at) - Date.parse(a.changed_at)).map((h) => {
-      const lines = Object.keys(FIELD_LABEL).filter((f) => h.changes?.[f]).map((f) => {
+      const lines = Object.keys(FIELD_LABEL).filter((f) => Array.isArray(h.changes?.[f])).map((f) => {
         const [o, n] = h.changes[f];
         const delta = isAttr(f) && o !== null && n !== null ? Number(n) - Number(o) : null;
         const deltaTxt = delta ? ` <span class="${delta > 0 ? 'c-yes' : 'c-no'} small">(${delta > 0 ? '+' : ''}${fmtNum(delta)})</span>` : '';
@@ -3623,6 +3651,52 @@
           await api.renameMember(m.id, name);
           dlg.close();
           toast(`Nick alterado para “${name}”`);
+          await after?.();
+        } catch (err) { fail(err); btn.disabled = false; }
+      });
+    });
+  }
+
+  // ---------- Tipo de conta: Jogador × Membro piloto (staff) ----------
+  // Líder: qualquer conta. Oficial com a permissão "Gerenciar pilotos de contas": membros e quem aguarda aprovação.
+  const canChangeKind = (m) => !!m && isOfficer() && m.id !== state.user.id && !m.managed && m.role !== 'former'
+    && (isLeader() || (can('pilots') && ['pending', 'member'].includes(m.role)));
+  function openKindDialog(m, after) {
+    const toPilot = !isPilotOnly(m);
+    const who = esc(displayName(m));
+    const pilotsOfIt = approvedPilotIds(m.id).map((id) => displayName(memberById(id)));
+    openDialog(`<form id="kd" class="stack">
+      <h2>${toPilot ? `Tornar ${who} membro piloto` : `Tornar ${who} jogador`}</h2>
+      ${toPilot ? `<p style="margin:0">${who} passa a ser <b>🧑‍✈️ membro piloto</b>: não tem conta própria no jogo, só pilota contas de outros membros.</p>
+        <ul class="kd-list small">
+          <li>Sai do rank de força, da média do clã e da frequência (contam só as contas que ele pilota).</li>
+          <li>As respostas e vagas da própria conta nos próximos eventos são retiradas.</li>
+          ${pilotsOfIt.length ? `<li><b>${esc(pilotsOfIt.join(', '))}</b> ${pilotsOfIt.length === 1 ? 'deixa' : 'deixam'} de pilotar a conta de ${who}.</li>` : ''}
+          <li>Classe e atributos ficam guardados: se ele voltar a ser jogador, voltam a contar.</li>
+        </ul>
+        <div class="field">
+          <label for="kd-note">Qual conta ele pilota <span class="muted small">(opcional)</span></label>
+          <input id="kd-note" maxlength="200" value="${esc(m.pilot_note || '')}" placeholder="Nick da conta (ou contas) que ele pilota">
+        </div>
+        <p class="muted small" style="margin:0">Depois, use <b>+ Vincular conta</b> no perfil dele para ligar as contas que ele pilota.</p>`
+        : `<p style="margin:0">${who} volta a ser <b>🎮 jogador</b>, com a própria conta no jogo: volta ao rank, à média do clã e à frequência e responde aos eventos pela própria conta.
+          Continua podendo pilotar outras contas.</p>
+          ${hasBuild(m) ? '' : '<p class="muted small" style="margin:0">Ele ainda não tem classe e atributos: precisa preencher em Editar perfil para entrar no rank.</p>'}`}
+      <p class="muted small" style="margin:0">A mudança fica no histórico de ${who}, com o seu nome.</p>
+      <div class="row end">
+        <button type="button" class="btn ghost" data-close>Cancelar</button>
+        <button type="submit" class="btn primary">${toPilot ? 'Tornar membro piloto' : 'Tornar jogador'}</button>
+      </div>
+    </form>`, (d) => {
+      $('#kd', d).addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const btn = $('button[type=submit]', d);
+        btn.disabled = true;
+        try {
+          await api.setMemberKind(m.id, toPilot, toPilot ? $('#kd-note', d).value.trim() : null);
+          dlg.close();
+          toast(toPilot ? `${displayName(m)} agora é membro piloto` : `${displayName(m)} voltou a ser jogador`);
+          state.pilots = await api.pilots().catch(() => state.pilots);
           await after?.();
         } catch (err) { fail(err); btn.disabled = false; }
       });
@@ -4996,7 +5070,7 @@
             ${!po && me.is_pilot ? '<div class="muted small">🧑‍✈️ Também é piloto</div>' : ''}
           </div>
           ${self ? `<div class="row me-actions"><button class="btn small" id="btn-photo-pf">📷 ${me.custom_avatar_url ? 'Trocar foto' : 'Enviar foto'}</button><button class="btn small" id="btn-edit-pf">✎ Editar perfil</button></div>`
-            : canRename(me) ? '<button class="btn small" id="btn-rename">✎ Editar nick</button>' : ''}
+            : canRename(me) || canChangeKind(me) ? `<div class="row me-actions">${canRename(me) ? '<button class="btn small" id="btn-rename">✎ Editar nick</button>' : ''}${canChangeKind(me) ? `<button class="btn small" id="btn-kind">${po ? '🎮 Tornar jogador' : '🧑‍✈️ Tornar membro piloto'}</button>` : ''}</div>` : ''}
         </div>
       </div>
 
@@ -5053,6 +5127,7 @@
       });
     });
     $('#btn-rename')?.addEventListener('click', () => openRenameDialog(me, () => viewMyPanel(userId)));
+    $('#btn-kind')?.addEventListener('click', () => openKindDialog(me, () => viewMyPanel(userId)));
     $('#btn-pr-fill')?.addEventListener('click', () => openProfile());
     $('#btn-pr-info')?.addEventListener('click', () => openPowerInfo(me, pw));
     if (!po) bindEvo(me, myChanges, self);
@@ -6377,6 +6452,8 @@
     const formerly = (m) => { const n = [...new Set(oldNames(m.id))].filter((x) => x !== displayName(m) && x !== m.google_name); return n.length ? `<span class="formerly">antes: ${esc(n.join(', '))}</span>` : ''; };
     const histBtn = (m) => (histBy[m.id]?.length
       ? `<button class="btn small ghost" data-history="${esc(m.id)}" title="Ver histórico de alterações">🕘 ${histBy[m.id].length}</button>` : '');
+    const kindBtn = (m) => (canChangeKind(m)
+      ? `<button class="btn small ghost" data-kind="${esc(m.id)}" title="${isPilotOnly(m) ? `Tornar ${esc(displayName(m))} jogador (com conta própria no jogo)` : `Tornar ${esc(displayName(m))} membro piloto (sem conta própria no jogo)`}">${isPilotOnly(m) ? '🎮 Tornar jogador' : '🧑‍✈️ Tornar piloto'}</button>` : '');
     // Membro piloto: no lugar da classe, as contas que ele pilota (ou o que escreveu no cadastro)
     const pilotLine = (m) => {
       const flown = flownBy(m.id);
@@ -6389,7 +6466,7 @@
         <small>${m.managed ? 'conta sem login' : (m.game_name ? esc(m.google_name) : '')} ${phoneLink(m)}</small>
         ${isPilotOnly(m) ? pilotLine(m)
           : m.char_class ? `<div class="member-build">${classTag(m.char_class)} <span>${esc(CLASS[m.char_class].label)}</span><span class="chip-stats">${statsLine(m)}</span></div>` : '<div class="member-build muted small">Classe e atributos não informados</div>'}
-      </div>${canRename(m) ? `<button class="btn small ghost" data-rename="${esc(m.id)}" title="Editar o nick de ${esc(displayName(m))}">✎ Nick</button>` : ''}${histBtn(m)}${ctrl}</div>`;
+      </div>${canRename(m) ? `<button class="btn small ghost" data-rename="${esc(m.id)}" title="Editar o nick de ${esc(displayName(m))}">✎ Nick</button>` : ''}${kindBtn(m)}${histBtn(m)}${ctrl}</div>`;
 
     main.innerHTML = `
       <div class="page-head"><h1>Membros</h1><span class="muted">${active.length} ativos${pilotsOnly.length ? ` · ${pilotsOnly.length} ${pilotsOnly.length === 1 ? 'membro piloto' : 'membros piloto'}` : ''}</span>
@@ -6481,6 +6558,10 @@
     main.querySelectorAll('[data-rename]').forEach((b) => b.addEventListener('click', () => {
       const m = [...pending, ...activeAll, ...former].find((x) => x.id === b.dataset.rename);
       if (m) openRenameDialog(m, () => viewMembers());
+    }));
+    main.querySelectorAll('[data-kind]').forEach((b) => b.addEventListener('click', () => {
+      const m = [...pending, ...activeAll].find((x) => x.id === b.dataset.kind);
+      if (m) openKindDialog(m, () => viewMembers());
     }));
     $('#btn-csv')?.addEventListener('click', async (e) => {
       e.target.disabled = true;
