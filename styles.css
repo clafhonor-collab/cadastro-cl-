@@ -1076,3 +1076,24 @@ body.has-fab main { padding-bottom: 90px; }
 .leave-card { margin-top: 12px; }
 .leave-card.pending { border-color: #6b4a12; }
 .leave-card .row.end { margin-top: 10px; }
+
+/* ---------- Medalhas ---------- */
+.medals { display: inline-flex; gap: 3px; vertical-align: middle; margin-left: 4px; white-space: nowrap; }
+.medal { display: inline-flex; align-items: center; gap: 1px; font-size: .72rem; font-weight: 700; line-height: 1; padding: 2px 5px; border-radius: 999px; border: 1px solid var(--border); background: rgba(255,255,255,.04); color: var(--text); font-family: "Inter", sans-serif; letter-spacing: 0; cursor: help; }
+.medal.m-streak { border-color: rgba(255,122,47,.55); color: #ffb183; }
+.medal.m-month { border-color: rgba(220,170,82,.55); color: var(--gold); }
+.medal.m-gain { border-color: rgba(92,200,140,.5); color: #8fe0b0; }
+.me-name .medals { margin-left: 8px; }
+.me-name .medal { font-size: .8rem; padding: 3px 7px; }
+
+/* Medalhas de rank e evolução (imagem) */
+.medal.m-rank i { font-style: normal; margin-right: 1px; }
+.medal.m-gold { border-color: rgba(255,200,60,.8); color: #ffd45e; background: rgba(255,200,60,.12); box-shadow: 0 0 6px rgba(255,200,60,.35); }
+.medal.m-silver { border-color: rgba(205,215,230,.7); color: #dfe6ef; background: rgba(205,215,230,.08); }
+.medal.m-silver i { filter: grayscale(1) brightness(1.35); }
+.medal.m-bronze { border-color: rgba(205,127,50,.75); color: #e3a06a; background: rgba(205,127,50,.1); }
+.medal.m-bronze i { filter: sepia(1) saturate(2.2) hue-rotate(-18deg) brightness(.85); }
+.medal.m-top10 { border-color: rgba(220,170,82,.45); color: var(--gold); }
+.medal.m-gain { padding: 0 3px; border-color: rgba(120,220,80,.45); }
+.medal.m-gain img { height: 15px; width: auto; display: block; }
+.me-name .medal.m-gain img { height: 18px; }

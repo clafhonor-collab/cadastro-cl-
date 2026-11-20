@@ -2359,502 +2359,81 @@ create policy "rsvps_select" on public.rsvps
   for select to authenticated
   using (public.can_act_as(user_id) or public.is_officer());
 
+-- ==============================================================
 -- =====================================================================
---  Ausência programada (Novembro/2026)
---  O membro (ou quem pilota a conta, ou a liderança) informa um período
---  em que não vai jogar. Todos os eventos do período ficam "Não vou"
---  automaticamente, inclusive os criados depois. A pessoa pode trocar
---  para "Vou" num evento específico. Eventos da ausência não contam
---  como falta na frequência nem nas medalhas.
---  O motivo é obrigatório e só a própria pessoa e a liderança veem.
---  Só ADICIONA tabela, coluna, funções e gatilhos. Nenhum dado existente
---  é alterado ou apagado.
--- =====================================================================
-
-create table if not exists public.absences (
-  id         bigint generated always as identity primary key,
-  user_id    uuid not null references public.profiles(id) on delete cascade,
-  starts_on  date not null,
-  ends_on    date not null,
-  reason     text not null check (char_length(btrim(reason)) between 1 and 300),
-  created_by uuid default auth.uid() references public.profiles(id) on delete set null,
-  created_at timestamptz not null default now(),
-  check (ends_on >= starts_on and ends_on - starts_on <= 180)
-);
-create index if not exists absences_user_idx on public.absences (user_id, starts_on);
-
--- Resposta "Não vou" criada pela ausência (guarda o número da ausência)
-alter table public.rsvps add column if not exists absence_id bigint;
-
-alter table public.absences enable row level security;
--- Ver: a própria pessoa, quem pilota a conta e a liderança. Escrever: só pelas funções abaixo.
-drop policy if exists "absences_select" on public.absences;
-create policy "absences_select" on public.absences
-  for select to authenticated using (public.can_act_as(user_id) or public.is_officer());
-
--- Data do evento no horário de Brasília
-create or replace function public.event_day(p_ts timestamptz) returns date
-language sql immutable as $$ select (p_ts at time zone 'America/Sao_Paulo')::date $$;
-
--- Aplica uma ausência nos eventos futuros do período.
--- Sem resposta → "Não vou". "Vou" → "Não vou" se ainda dá para mudar (prazo aberto e sem time travado);
--- oficiais e líder mudam sempre. Devolve quantos eventos foram alterados.
-create or replace function public.apply_absence(p_id bigint) returns integer
-language plpgsql security definer set search_path = public as $$
-declare a public.absences; n integer := 0; k integer;
-begin
-  select * into a from public.absences where id = p_id;
-  if not found then return 0; end if;
-  insert into public.rsvps (event_id, user_id, going, absence_id, updated_at)
-  select e.id, a.user_id, false, a.id, now()
-    from public.events e
-   where e.starts_at > now() and public.event_day(e.starts_at) between a.starts_on and a.ends_on
-     and not exists (select 1 from public.rsvps r where r.event_id = e.id and r.user_id = a.user_id);
-  get diagnostics k = row_count; n := n + k;
-  update public.rsvps r set going = false, discord = null, absence_id = a.id, updated_at = now(),
-         withdraw_reason = null, withdraw_requested_at = null
-    from public.events e
-   where r.event_id = e.id and r.user_id = a.user_id and r.going
-     and e.starts_at > now() and public.event_day(e.starts_at) between a.starts_on and a.ends_on
-     and (public.is_officer() or public.can_change_rsvp_for(e.id, a.user_id));
-  get diagnostics k = row_count; n := n + k;
-  return n;
-end $$;
-
--- Cadastra uma ausência. Devolve { id, changed }.
-create or replace function public.save_absence(p_user uuid, p_start date, p_end date, p_reason text) returns json
-language plpgsql security definer set search_path = public as $$
-declare v_id bigint; today date := public.event_day(now());
-begin
-  if not (public.can_act_as(p_user) or public.is_officer()) then
-    raise exception 'Você não pode programar ausência para esta conta' using errcode = '42501';
-  end if;
-  if not public.is_active_account(p_user) then raise exception 'Esta conta não está ativa no clã'; end if;
-  if p_start is null or p_end is null or p_end < p_start then raise exception 'Confira as datas da ausência'; end if;
-  if p_start < today then raise exception 'A ausência não pode começar antes de hoje'; end if;
-  if p_end - p_start > 180 then raise exception 'A ausência pode ter no máximo 180 dias'; end if;
-  if char_length(btrim(coalesce(p_reason, ''))) = 0 then raise exception 'Informe o motivo da ausência'; end if;
-  if exists (select 1 from public.absences where user_id = p_user and starts_on <= p_end and ends_on >= p_start) then
-    raise exception 'Já existe uma ausência neste período';
-  end if;
-  insert into public.absences (user_id, starts_on, ends_on, reason)
-  values (p_user, p_start, p_end, left(btrim(p_reason), 300)) returning id into v_id;
-  return json_build_object('id', v_id, 'changed', public.apply_absence(v_id));
-end $$;
-
--- Encerra (em andamento) ou cancela (futura) uma ausência.
--- (Os eventos que já passaram continuam fora da frequência.)
-create or replace function public.delete_absence(p_id bigint) returns void
-language plpgsql security definer set search_path = public as $$
-declare a public.absences;
-begin
-  select * into a from public.absences where id = p_id;
-  if not found then return; end if;
-  if not (public.can_act_as(a.user_id) or public.is_officer()) then
-    raise exception 'Sem permissão para cancelar esta ausência' using errcode = '42501';
-  end if;
-  -- Em andamento (Encerrar): a data final passa a ser hoje e só os eventos depois de hoje são liberados.
-  -- Ainda não começou (Cancelar): libera todos os eventos e a ausência sai da lista.
-  delete from public.rsvps r using public.events e
-   where r.event_id = e.id and r.absence_id = a.id and not r.going and e.starts_at > now()
-     and (a.starts_on > public.event_day(now()) or public.event_day(e.starts_at) > public.event_day(now()));
-  if a.starts_on <= public.event_day(now()) then
-    update public.absences set ends_on = least(ends_on, public.event_day(now())) where id = a.id;
-  else
-    delete from public.absences where id = a.id;
-  end if;
-end $$;
-
--- Evento criado ou com data alterada: aplica as ausências que cobrem a nova data
-create or replace function public.events_absences() returns trigger
-language plpgsql security definer set search_path = public as $$
-begin
-  if tg_op = 'UPDATE' then
-    if new.starts_at is not distinct from old.starts_at then return new; end if;
-    delete from public.rsvps where event_id = new.id and absence_id is not null and not going;
-  end if;
-  if new.starts_at > now() then
-    insert into public.rsvps (event_id, user_id, going, absence_id, updated_at)
-    select new.id, a.user_id, false, a.id, now()
-      from public.absences a
-     where public.event_day(new.starts_at) between a.starts_on and a.ends_on
-       and public.is_active_account(a.user_id)
-    on conflict (event_id, user_id) do nothing;
-  end if;
-  return new;
-end $$;
-drop trigger if exists events_absences on public.events;
-create trigger events_absences after insert or update of starts_at on public.events
-  for each row execute function public.events_absences();
-
--- Quem troca para "Vou" deixa de estar marcado como ausente naquele evento
-create or replace function public.rsvps_clear_absence() returns trigger
-language plpgsql as $$
-begin
-  if new.going and new.absence_id is not null then new.absence_id := null; end if;
-  return new;
-end $$;
-drop trigger if exists rsvps_clear_absence on public.rsvps;
-create trigger rsvps_clear_absence before update on public.rsvps
-  for each row execute function public.rsvps_clear_absence();
-
-revoke execute on function public.apply_absence(bigint) from public, anon, authenticated;
-revoke execute on function public.save_absence(uuid, date, date, text) from public, anon;
-revoke execute on function public.delete_absence(bigint) from public, anon;
-grant  execute on function public.save_absence(uuid, date, date, text) to authenticated;
-grant  execute on function public.delete_absence(bigint) to authenticated;
-
-
--- =====================================================================
---  Resultado das Guerras (Novembro/2026)
---  Oficiais e líder registram o resultado de um evento que já começou:
---  Vitória ou Derrota, clã adversário, placar (Nós × Eles, opcional)
---  e observações. Todos os membros veem o resultado na página do evento;
---  as observações ficam numa tabela separada que só a liderança lê.
---  Permissão nova em Configurações: "results" (Registrar resultados).
---  Só ADICIONA tabelas e funções. Nenhum dado existente é alterado ou apagado.
--- =====================================================================
-
-create table if not exists public.event_results (
-  event_id   bigint primary key references public.events(id) on delete cascade,
-  outcome    text not null check (outcome in ('win', 'loss')),
-  opponent   text check (opponent is null or char_length(opponent) between 1 and 60),
-  score_us   integer check (score_us is null or score_us between 0 and 1000000000),
-  score_them integer check (score_them is null or score_them between 0 and 1000000000),
-  updated_by uuid default auth.uid() references public.profiles(id) on delete set null,
-  updated_at timestamptz not null default now()
-);
-
--- Observações: só oficiais e líder
-create table if not exists public.event_result_notes (
-  event_id bigint primary key references public.event_results(event_id) on delete cascade,
-  notes    text not null check (char_length(notes) between 1 and 1000)
-);
-
-alter table public.event_results      enable row level security;
-alter table public.event_result_notes enable row level security;
-
--- Ler: resultado para todos os membros; observações só para a liderança.
--- Escrever: só pelas funções abaixo.
-drop policy if exists "results_select" on public.event_results;
-create policy "results_select" on public.event_results
-  for select to authenticated using (public.is_member());
-
-drop policy if exists "result_notes_select" on public.event_result_notes;
-create policy "result_notes_select" on public.event_result_notes
-  for select to authenticated using (public.is_officer());
-
--- Registra ou altera o resultado de um evento
-create or replace function public.save_event_result(
-  p_event bigint, p_outcome text, p_opponent text, p_us integer, p_them integer, p_notes text
-) returns void
-language plpgsql security definer set search_path = public as $$
-declare v_notes text := nullif(btrim(coalesce(p_notes, '')), '');
-begin
-  if not public.is_officer() then
-    raise exception 'Só oficiais e o líder registram resultados' using errcode = '42501';
-  end if;
-  perform public.require_perm('results');
-  if not exists (select 1 from public.events where id = p_event and starts_at <= now()) then
-    raise exception 'O resultado só pode ser registrado depois que o evento começar';
-  end if;
-  if p_outcome not in ('win', 'loss') then raise exception 'Escolha Vitória ou Derrota'; end if;
-  insert into public.event_results (event_id, outcome, opponent, score_us, score_them, updated_by, updated_at)
-  values (p_event, p_outcome, nullif(left(btrim(coalesce(p_opponent, '')), 60), ''), p_us, p_them, auth.uid(), now())
-  on conflict (event_id) do update
-    set outcome = excluded.outcome, opponent = excluded.opponent, score_us = excluded.score_us,
-        score_them = excluded.score_them, updated_by = excluded.updated_by, updated_at = excluded.updated_at;
-  if v_notes is null then
-    delete from public.event_result_notes where event_id = p_event;
-  else
-    insert into public.event_result_notes (event_id, notes) values (p_event, left(v_notes, 1000))
-    on conflict (event_id) do update set notes = excluded.notes;
-  end if;
-end $$;
-
--- Tira o resultado de um evento (as observações saem junto)
-create or replace function public.delete_event_result(p_event bigint) returns void
-language plpgsql security definer set search_path = public as $$
-begin
-  if not public.is_officer() then
-    raise exception 'Só oficiais e o líder alteram resultados' using errcode = '42501';
-  end if;
-  perform public.require_perm('results');
-  delete from public.event_results where event_id = p_event;
-end $$;
-
-revoke execute on function public.save_event_result(bigint, text, text, integer, integer, text) from public, anon;
-revoke execute on function public.delete_event_result(bigint) from public, anon;
-grant  execute on function public.save_event_result(bigint, text, text, integer, integer, text) to authenticated;
-grant  execute on function public.delete_event_result(bigint) to authenticated;
-
--- =====================================================================
---  Rank de força e comparação com a mesma faixa de Ressonância
---  O membro comum não recebe os atributos dos outros (seguranca_dados.sql).
---  Esta função entrega só o resultado pronto que o site mostra no perfil:
---  média do clã, média da mesma faixa de Ressonância (±500), posição no
---  rank, Top 10 (nome, classe e pontos) e o melhor valor de cada atributo.
+--  Medalhas (Novembro/2026)
+--  Calcula, para cada membro ativo, só o necessário para as medalhas:
+--    streak         = presenças seguidas (do evento mais recente para trás)
+--    perfect_months = meses fechados com 100% de presença (mínimo 4 eventos)
+--    res_gain       = Ressonância ganha desde o primeiro valor registrado
+--  Eventos de ausência programada (sem presença) não quebram a sequência
+--  nem o mês perfeito.
+--  Oficiais e líder recebem os números exatos. O membro comum recebe só o
+--  NÍVEL de cada medalha, que é o que o site mostra (sequência 5/10/20/50;
+--  Ressonância +500/+1.000/+2.000), seguindo as regras de seguranca_dados.sql.
 --  Só ADICIONA uma função. Nenhum dado é alterado ou apagado.
+--  Depende de ausencias.sql (coluna rsvps.absence_id).
 -- =====================================================================
-
-create or replace function public.power_overview(p_user uuid) returns json
-language plpgsql stable security definer set search_path = public as $$
-declare v json; v_res integer;
-begin
-  if not public.is_member() or not (public.is_officer() or public.can_act_as(p_user)) then
-    raise exception 'Sem permissão' using errcode = '42501';
-  end if;
-  select coalesce(resonance, 0) into v_res from public.profiles where id = p_user;
-  with base as (
-    select id, coalesce(nullif(trim(game_name), ''), nullif(trim(google_name), ''), 'Membro') as name, char_class,
-           armor, armor_pen, potency, resistance, resonance
-      from public.profiles
-     where role in ('member', 'officer', 'leader') and char_class is not null
-       and armor is not null and armor_pen is not null and potency is not null
-       and resistance is not null and resonance is not null
-  ), mx as (
-    select max(armor) as armor, max(armor_pen) as armor_pen, max(potency) as potency,
-           max(resistance) as resistance, max(resonance) as resonance from base
-  ), sc as (
-    select b.*, round(10 * (
-        0.5   * case when mx.resonance  > 0 then 100.0 * b.resonance  / mx.resonance  else 0 end
-      + 0.175 * case when mx.armor      > 0 then 100.0 * b.armor      / mx.armor      else 0 end
-      + 0.175 * case when mx.armor_pen  > 0 then 100.0 * b.armor_pen  / mx.armor_pen  else 0 end
-      + 0.075 * case when mx.potency    > 0 then 100.0 * b.potency    / mx.potency    else 0 end
-      + 0.075 * case when mx.resistance > 0 then 100.0 * b.resistance / mx.resistance else 0 end))::int as score
-      from base b cross join mx
-  ), rk as (
-    select sc.*,
-           row_number() over (order by score desc, lower(name)) as pos,
-           row_number() over (partition by char_class order by score desc, lower(name)) as cls_pos,
-           count(*) over (partition by char_class) as cls_total
-      from sc
-  ), band as (
-    select * from base
-     where id <> p_user and resonance between greatest(0, v_res - 500) and v_res + 500
+create or replace function public.member_badges()
+returns table (user_id uuid, streak integer, perfect_months integer, res_gain integer)
+language sql stable security definer set search_path = public as $$
+  with mem as (
+    select p.id, p.created_at, p.resonance
+      from public.profiles p
+     where public.is_member() and p.role in ('member', 'officer', 'leader')
+  ),
+  reg as (
+    select e.id, e.starts_at
+      from public.events e
+     where e.starts_at <= now() and exists (select 1 from public.attendance a where a.event_id = e.id)
+  ),
+  hist0 as (
+    select m.id as uid, r.id as event_id, r.starts_at,
+           coalesce((select a.present from public.attendance a where a.event_id = r.id and a.user_id = m.id), false) as was
+      from mem m join reg r on r.starts_at >= m.created_at
+  ),
+  hist as (
+    select h.uid, h.starts_at, h.was from hist0 h
+     where h.was or not exists (select 1 from public.rsvps v
+                                 where v.event_id = h.event_id and v.user_id = h.uid and v.absence_id is not null)
+  ),
+  ordered as (
+    select uid, was,
+           sum(case when was then 0 else 1 end) over (partition by uid order by starts_at desc rows unbounded preceding) as misses
+      from hist
+  ),
+  stk as (select uid, (count(*) filter (where misses = 0))::int as streak from ordered group by uid),
+  months as (
+    select uid, date_trunc('month', starts_at at time zone 'America/Sao_Paulo') as mon, count(*) as n, bool_and(was) as all_in
+      from hist group by uid, date_trunc('month', starts_at at time zone 'America/Sao_Paulo')
+  ),
+  pm as (
+    select uid, (count(*) filter (where n >= 4 and all_in
+                   and mon < date_trunc('month', now() at time zone 'America/Sao_Paulo')))::int as perfect
+      from months group by uid
+  ),
+  rg as (
+    select distinct on (h.user_id) h.user_id as uid, (h.changes -> 'resonance' ->> 0)::numeric as first_val
+      from public.profile_history h
+     where h.changes ? 'resonance' and jsonb_typeof(h.changes -> 'resonance' -> 0) = 'number'
+     order by h.user_id, h.changed_at asc
+  ),
+  res as (
+    select m.id, coalesce(s.streak, 0) as streak, coalesce(p.perfect, 0) as perfect,
+           greatest(0, coalesce(m.resonance - rg.first_val, 0))::int as gain
+      from mem m
+      left join stk s on s.uid = m.id
+      left join pm  p on p.uid = m.id
+      left join rg    on rg.uid = m.id
   )
-  select json_build_object(
-    'clan', json_build_object('count', (select count(*) from base), 'avg', (select json_build_object(
-        'armor', round(avg(armor)), 'armor_pen', round(avg(armor_pen)), 'potency', round(avg(potency)),
-        'resistance', round(avg(resistance)), 'resonance', round(avg(resonance))) from base)),
-    'band', json_build_object('lo', greatest(0, v_res - 500), 'hi', v_res + 500, 'count', (select count(*) from band),
-        'avg', (select json_build_object(
-          'armor', round(avg(armor)), 'armor_pen', round(avg(armor_pen)), 'potency', round(avg(potency)),
-          'resistance', round(avg(resistance)), 'resonance', round(avg(resonance))) from band)),
-    'best', json_build_object(
-        'armor',      (select json_build_object('value', armor,      'name', name) from base order by armor desc,      lower(name) limit 1),
-        'armor_pen',  (select json_build_object('value', armor_pen,  'name', name) from base order by armor_pen desc,  lower(name) limit 1),
-        'potency',    (select json_build_object('value', potency,    'name', name) from base order by potency desc,    lower(name) limit 1),
-        'resistance', (select json_build_object('value', resistance, 'name', name) from base order by resistance desc, lower(name) limit 1),
-        'resonance',  (select json_build_object('value', resonance,  'name', name) from base order by resonance desc,  lower(name) limit 1)),
-    'total', (select count(*) from rk),
-    'top', (select coalesce(json_agg(json_build_object('id', id, 'game_name', name, 'char_class', char_class, 'score', score) order by pos), '[]'::json)
-              from rk where pos <= 10),
-    'me', (select json_build_object('pos', pos, 'score', score, 'cls_pos', cls_pos, 'cls_total', cls_total) from rk where id = p_user)
-  ) into v;
-  return v;
-end $$;
+  select r.id,
+         case when public.is_officer() then r.streak
+              else case when r.streak >= 50 then 50 when r.streak >= 20 then 20 when r.streak >= 10 then 10 when r.streak >= 5 then 5 else 0 end end,
+         r.perfect,
+         case when public.is_officer() then r.gain
+              else case when r.gain >= 2000 then 2000 when r.gain >= 1000 then 1000 when r.gain >= 500 then 500 else 0 end end
+    from res r;
+$$;
 
-revoke execute on function public.power_overview(uuid) from public, anon;
-grant  execute on function public.power_overview(uuid) to authenticated;
-
--- =====================================================================
---  Correções de segurança (bloco 1 da checagem de segurança)
---
---  1. Respostas dos eventos (rsvps), quando gravadas direto pela API:
---     - o prazo e os times travados também valem para o evento de destino;
---     - não dá para mudar o evento nem a conta de uma resposta;
---     - "respondido por" é sempre quem está logado (não dá para forjar);
---     - pedido de saída só pelas funções do site (botão "Não vou poder ir…");
---     - "ausência programada" só pela tela de ausências (não dá para marcar
---       uma resposta como ausência direto e tirar o evento da frequência).
---     As funções do site (pedido de saída, decisão da staff etc.) continuam
---     funcionando como antes.
---  3. Foto de perfil: o endereço só pode ser do espaço de fotos do próprio
---     Supabase, na pasta da pessoa. Fotos com endereço de fora do site são
---     apagadas (a pessoa volta para a foto da conta Google ou a inicial).
---
---  Pode ser executado de novo.
--- =====================================================================
-
--- ---------- 1. Respostas dos eventos ----------
-drop policy if exists "rsvps_update" on public.rsvps;
-create policy "rsvps_update" on public.rsvps
-  for update to authenticated
-  using (public.can_act_as(user_id) and (public.is_officer() or public.can_change_rsvp_for(event_id, user_id)))
-  with check (public.can_act_as(user_id) and public.is_active_account(user_id)
-              and (public.is_officer() or public.can_change_rsvp_for(event_id, user_id)));
-
--- Gravação direta pela API (usuário "authenticated"). As funções do banco rodam
--- como dono das tabelas e não passam por estas travas.
-create or replace function public.rsvp_guard() returns trigger
-language plpgsql set search_path = public as $$
-declare
-  v_abs_new bigint;
-  v_abs_old bigint;
-begin
-  if current_user not in ('authenticated', 'anon') then
-    return new;
-  end if;
-  -- Ausência programada (coluna absence_id, se existir): só pode ser apagada, nunca criada direto
-  v_abs_new := (to_jsonb(new) ->> 'absence_id')::bigint;
-  v_abs_old := case when tg_op = 'UPDATE' then (to_jsonb(old) ->> 'absence_id')::bigint end;
-  if v_abs_new is not null and v_abs_new is distinct from v_abs_old then
-    raise exception 'Ausências são registradas na tela de ausências' using errcode = '42501';
-  end if;
-  if tg_op = 'UPDATE' then
-    if new.event_id is distinct from old.event_id or new.user_id is distinct from old.user_id then
-      raise exception 'Não é possível mover uma resposta para outro evento ou outra conta' using errcode = '42501';
-    end if;
-    if (new.withdraw_reason, new.withdraw_requested_at) is distinct from (old.withdraw_reason, old.withdraw_requested_at) then
-      raise exception 'Use o botão "Não vou poder ir…" para pedir saída' using errcode = '42501';
-    end if;
-    if new.going is distinct from old.going then
-      new.answered_by := auth.uid();
-    else
-      new.answered_by := old.answered_by;
-    end if;
-  else
-    if new.withdraw_reason is not null or new.withdraw_requested_at is not null then
-      raise exception 'Use o botão "Não vou poder ir…" para pedir saída' using errcode = '42501';
-    end if;
-    new.answered_by := auth.uid();
-  end if;
-  return new;
-end $$;
-
-drop trigger if exists rsvps_guard on public.rsvps;
-create trigger rsvps_guard before insert or update on public.rsvps
-  for each row execute function public.rsvp_guard();
-
--- ---------- 3. Foto de perfil ----------
--- Remove endereços que não são do espaço de fotos do site
-update public.profiles
-   set custom_avatar_url = null
- where custom_avatar_url is not null
-   and custom_avatar_url not like 'https://oxwuryqvoariuxypviae.supabase.co/storage/v1/object/public/avatars/' || id::text || '/%';
-
-alter table public.profiles drop constraint if exists profiles_custom_avatar_url_check;
-alter table public.profiles add constraint profiles_custom_avatar_url_check check (
-  custom_avatar_url is null
-  or custom_avatar_url like 'https://oxwuryqvoariuxypviae.supabase.co/storage/v1/object/public/avatars/' || id::text || '/%'
-);
-
--- =====================================================================
---  Pedido para sair do clã (Novembro/2026)
---  O membro (ou quem pilota a conta) pede para sair, com motivo obrigatório.
---  A liderança aprova ou recusa. Aprovado: a conta vira "Ex-membro", igual
---  ao "Remover do clã" (o histórico é mantido e dá para readmitir depois).
---  Quem aprova: o líder sempre; oficiais conforme a nova permissão
---  "leave_approve" (Configurações → Membros → Aprovar saída do clã).
---  Oficiais só aprovam pedidos de membros comuns; o de oficiais fica com o líder.
---  Só ADICIONA tabela e funções, e atualiza o gatilho de permissões de cargo
---  para aceitar a saída aprovada. Nenhum dado existente é alterado ou apagado.
--- =====================================================================
-
-create table if not exists public.leave_requests (
-  id           bigint generated always as identity primary key,
-  user_id      uuid not null references public.profiles(id) on delete cascade,
-  reason       text not null check (char_length(btrim(reason)) between 1 and 300),
-  requested_by uuid default auth.uid() references public.profiles(id) on delete set null,
-  requested_at timestamptz not null default now(),
-  status       text not null default 'pending' check (status in ('pending', 'approved', 'rejected', 'cancelled')),
-  decided_by   uuid references public.profiles(id) on delete set null,
-  decided_at   timestamptz,
-  note         text check (note is null or char_length(note) <= 300)
-);
--- No máximo um pedido em aberto por conta
-create unique index if not exists leave_requests_one_pending on public.leave_requests (user_id) where status = 'pending';
-
-alter table public.leave_requests enable row level security;
--- Ver: a própria pessoa, quem pilota a conta e a liderança. Escrever: só pelas funções abaixo.
-drop policy if exists "leave_select" on public.leave_requests;
-create policy "leave_select" on public.leave_requests
-  for select to authenticated using (public.can_act_as(user_id) or public.is_officer());
-
--- Pedir para sair
-create or replace function public.request_leave(p_user uuid, p_reason text) returns bigint
-language plpgsql security definer set search_path = public as $$
-declare v_role text; v_id bigint;
-begin
-  if not public.can_act_as(p_user) then
-    raise exception 'Você não pode pedir a saída desta conta' using errcode = '42501';
-  end if;
-  select role into v_role from public.profiles where id = p_user;
-  if v_role = 'leader' then raise exception 'O líder não pode sair do clã por aqui'; end if;
-  if v_role is null or v_role not in ('member', 'officer') then raise exception 'Esta conta não está ativa no clã'; end if;
-  if char_length(btrim(coalesce(p_reason, ''))) = 0 then raise exception 'Informe o motivo da saída'; end if;
-  if exists (select 1 from public.leave_requests where user_id = p_user and status = 'pending') then
-    raise exception 'Já existe um pedido de saída em aberto para esta conta';
-  end if;
-  insert into public.leave_requests (user_id, reason) values (p_user, left(btrim(p_reason), 300)) returning id into v_id;
-  return v_id;
-end $$;
-
--- Desistir do pedido
-create or replace function public.cancel_leave(p_id bigint) returns void
-language plpgsql security definer set search_path = public as $$
-declare r public.leave_requests;
-begin
-  select * into r from public.leave_requests where id = p_id for update;
-  if not found or r.status <> 'pending' then raise exception 'Este pedido não está mais em aberto'; end if;
-  if not public.can_act_as(r.user_id) then raise exception 'Sem permissão' using errcode = '42501'; end if;
-  update public.leave_requests set status = 'cancelled', decided_by = auth.uid(), decided_at = now() where id = p_id;
-end $$;
-
--- Aprovar ou recusar
-create or replace function public.decide_leave(p_id bigint, p_approve boolean, p_note text) returns void
-language plpgsql security definer set search_path = public as $$
-declare r public.leave_requests; v_cur text; v_me text := public.my_role();
-begin
-  select * into r from public.leave_requests where id = p_id for update;
-  if not found or r.status <> 'pending' then raise exception 'Este pedido já foi decidido'; end if;
-  if public.can_act_as(r.user_id) then raise exception 'Você não pode decidir o pedido da sua própria conta'; end if;
-  select role into v_cur from public.profiles where id = r.user_id;
-  if v_me = 'leader' then
-    null;
-  elsif v_me = 'officer' and v_cur in ('member', 'former') then
-    perform public.require_perm('leave_approve');
-  else
-    raise exception 'Sem permissão para decidir este pedido' using errcode = '42501';
-  end if;
-  if p_approve and v_cur is distinct from 'former' then
-    -- Mesmo efeito do "Remover do clã"
-    perform set_config('forhonor.leave_ok', '1', true);
-    perform set_config('forhonor.reason', left('Pediu para sair do clã: ' || r.reason, 300), true);
-    update public.profiles set role = 'former' where id = r.user_id;
-    delete from public.rsvps v using public.events e
-     where v.event_id = e.id and v.user_id = r.user_id and e.starts_at > now();
-    delete from public.member_contacts where user_id = r.user_id;
-    delete from public.account_pilots where pilot_id = r.user_id;
-    perform set_config('forhonor.leave_ok', '', true);
-  end if;
-  update public.leave_requests
-     set status = case when p_approve then 'approved' else 'rejected' end,
-         decided_by = auth.uid(), decided_at = now(),
-         note = nullif(left(btrim(coalesce(p_note, '')), 300), '')
-   where id = p_id;
-end $$;
-
-revoke execute on function public.request_leave(uuid, text) from public, anon;
-revoke execute on function public.cancel_leave(bigint) from public, anon;
-revoke execute on function public.decide_leave(bigint, boolean, text) from public, anon;
-grant  execute on function public.request_leave(uuid, text) to authenticated;
-grant  execute on function public.cancel_leave(bigint) to authenticated;
-grant  execute on function public.decide_leave(bigint, boolean, text) to authenticated;
-
--- Gatilho de permissões de cargo: a saída aprovada por decide_leave usa a permissão
--- "leave_approve" (já conferida lá), e não "Remover membros".
-create or replace function public.perm_profiles_role() returns trigger
-language plpgsql security definer set search_path = public as $$
-begin
-  if current_setting('forhonor.leave_ok', true) = '1' then return new; end if;
-  if public.my_role() = 'officer' and new.id <> auth.uid() and new.role is distinct from old.role then
-    if old.role = 'pending' and new.role = 'member' then
-      perform public.require_perm('member_approve');
-    elsif new.role = 'former' or (old.role = 'member' and new.role = 'pending') then
-      perform public.require_perm('member_remove');
-    end if;
-  end if;
-  return new;
-end $$;
+revoke execute on function public.member_badges() from public, anon;
+grant  execute on function public.member_badges() to authenticated;

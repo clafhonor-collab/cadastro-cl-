@@ -253,6 +253,8 @@
         ok(await sb.rpc('save_event_result', { p_event: eventId, p_outcome: o.outcome, p_opponent: o.opponent || null, p_us: o.score_us ?? null, p_them: o.score_them ?? null, p_notes: o.notes || null }));
       },
       async deleteResult(eventId) { ok(await sb.rpc('delete_event_result', { p_event: eventId })); },
+      // Medalhas de todos os membros ativos (o banco calcula; a frequência detalhada continua privada)
+      async badges() { return ok(await sb.rpc('member_badges')) || []; },
       async saveProfile(fields, phone) {
         ok(await sb.from('profiles').update(fields).eq('id', state.user.id));
         if (phone !== undefined) ok(await sb.from('member_contacts').upsert({ user_id: state.user.id, phone: phone || null }));
@@ -909,6 +911,30 @@
           .map(attach);
       },
       async event(id) { const e = db.events.find((x) => x.id === id); return e ? attach(e) : null; },
+      // Igual à função member_badges do banco
+      async badges() {
+        const now = Date.now();
+        const monKey = (t) => { const d = new Date(t); return d.getFullYear() * 12 + d.getMonth(); };
+        const reg = db.events.filter((e) => Date.parse(e.starts_at) <= now && db.attendance.some((a) => a.event_id === e.id))
+          .sort((a, b) => Date.parse(b.starts_at) - Date.parse(a.starts_at));
+        return db.profiles.filter((p) => ACTIVE_ROLES.includes(p.role)).map((p) => {
+          const joined = Date.parse(p.created_at || 0) || 0;
+          const hist = reg.filter((e) => Date.parse(e.starts_at) >= joined)
+            .map((e) => ({ e, t: Date.parse(e.starts_at), was: db.attendance.some((a) => a.event_id === e.id && a.user_id === p.id && a.present) }))
+            // ausência programada (sem presença) não conta como falta
+            .filter((h) => h.was || !db.rsvps.some((r) => r.event_id === h.e.id && r.user_id === p.id && r.absence_id));
+          let streak = 0;
+          for (const h of hist) { if (h.was) streak++; else break; }
+          const months = {};
+          hist.forEach((h) => { const m = (months[monKey(h.t)] ||= { n: 0, all: true }); m.n++; if (!h.was) m.all = false; });
+          const perfect = Object.entries(months).filter(([k, m]) => Number(k) < monKey(now) && m.n >= 4 && m.all).length;
+          const first = db.history.filter((h) => h.user_id === p.id && typeof h.changes?.resonance?.[0] === 'number')
+            .sort((a, b) => Date.parse(a.changed_at) - Date.parse(b.changed_at))[0];
+          const gain = first ? Math.max(0, (p.resonance || 0) - first.changes.resonance[0]) : 0;
+          if (isOfficer()) return { user_id: p.id, streak, perfect_months: perfect, res_gain: gain };
+          return { user_id: p.id, streak: badgeLevel(streak, STREAK_LV), perfect_months: perfect, res_gain: badgeLevel(gain, GAIN_LV.map(([n]) => n)) };
+        });
+      },
       async history(sinceIso) {
         const since = sinceIso ? Date.parse(sinceIso) : -Infinity;
         return db.events.filter((e) => Date.parse(e.starts_at) <= Date.now() && Date.parse(e.starts_at) >= since)
@@ -2363,7 +2389,7 @@
   }
 
   // bare = só nome e classe (sem atributos), usado na visão do membro e na opção "Ocultar"
-  function chip(p, { draggable = false, removable = false, selected = false, compact = false, bare = false } = {}) {
+  function chip(p, { draggable = false, removable = false, selected = false, compact = false, bare = false, medals = false } = {}) {
     const mine = p.id === actingId();
     const who = `${p.name} · ${CLASS[p.build.char_class]?.label || 'sem classe'}`;
     // Oficiais e líder veem os 5 atributos (também nos times); a dica (title) repete os nomes completos
@@ -2371,7 +2397,7 @@
     const stats = bare ? '' : statsLine(p.build);
     return `<div class="chip${selected ? ' sel' : ''}${mine ? ' mine' : ''}${compact ? ' compact' : ''}${bare ? ' bare' : ''}" data-uid="${esc(p.id)}" title="${esc(bare ? who : `${who}\n${full}`)}" ${draggable ? 'draggable="true" tabindex="0" role="button"' : ''}>
       ${classTag(p.build.char_class)}
-      <div class="chip-body"><div class="chip-name">${esc(p.name)}${p.discord ? ` ${dcIcon}` : ''}${p.wd && isOfficer() ? ` <span class="wd-flag" title="Pediu para sair: ${esc(p.wd)}">⚠</span>` : ''}${isOfficer() && approvedPilotIds(p.id).length ? ` <span class="pilot-flag" title="Pilotada por ${esc(approvedPilotIds(p.id).map((i) => displayName(memberById(i))).join(', '))}">🧑‍✈️</span>` : ''}</div>${bare ? `<div class="chip-class">${esc(CLASS[p.build.char_class]?.label || 'Sem classe')}</div>` : `<div class="chip-stats">${stats}</div>`}</div>
+      <div class="chip-body"><div class="chip-name">${esc(p.name)}${medals ? medalsHtml(p.id) : ''}${p.discord ? ` ${dcIcon}` : ''}${p.wd && isOfficer() ? ` <span class="wd-flag" title="Pediu para sair: ${esc(p.wd)}">⚠</span>` : ''}${isOfficer() && approvedPilotIds(p.id).length ? ` <span class="pilot-flag" title="Pilotada por ${esc(approvedPilotIds(p.id).map((i) => displayName(memberById(i))).join(', '))}">🧑‍✈️</span>` : ''}</div>${bare ? `<div class="chip-class">${esc(CLASS[p.build.char_class]?.label || 'Sem classe')}</div>` : `<div class="chip-stats">${stats}</div>`}</div>
       ${removable ? `<button class="chip-x" data-unassign="${esc(p.id)}" title="Tirar do time" aria-label="Tirar ${esc(p.name)} do time">×</button>` : ''}
     </div>`;
   }
@@ -2414,7 +2440,7 @@
     return `<div class="team${mineHere ? ' mine' : ''}${people.length >= TEAM_SIZE ? ' full' : ''}${editable && sel ? ' target' : ''}" data-team="${esc(name)}">
       <div class="team-head"><strong>${esc(name)}${renameIndex !== null ? ` <button type="button" class="team-rename" data-rename="${renameIndex}" title="Renomear este time" aria-label="Renomear ${esc(name)}">✏️</button>` : ''}</strong><span class="muted small">${people.some((p) => p.discord) ? `<span class="dc-count" title="Integrantes no Discord">🎧 ${people.filter((p) => p.discord).length}</span> · ` : ''}${people.length}/${TEAM_SIZE}</span></div>
       ${edits ? editTag(edits[name]) : ''}
-      <div class="team-slots">${people.map((p) => chip(p, { draggable: editable, removable: editable, selected: sel === p.id, compact: true, bare: hide })).join('')}${empties}</div>
+      <div class="team-slots">${people.map((p) => chip(p, { draggable: editable, removable: editable, selected: sel === p.id, compact: true, bare: hide, medals: true })).join('')}${empties}</div>
       ${people.length && showFoot && !hide ? teamFoot(people) : ''}
     </div>`;
   }
@@ -2916,7 +2942,7 @@
           </tr></thead>
           <tbody>
             ${rows.map((r) => `<tr>
-              <td><div class="row" style="gap:8px;flex-wrap:nowrap">${avatar(r.m)}<span class="name"><a class="member-link" href="#/membro/${encodeURIComponent(r.m.id)}">${esc(displayName(r.m))}</a>${r.m.char_class ? ` ${classTag(r.m.char_class)}` : ''}</span></div></td>
+              <td><div class="row" style="gap:8px;flex-wrap:nowrap">${avatar(r.m)}<span class="name"><a class="member-link" href="#/membro/${encodeURIComponent(r.m.id)}">${esc(displayName(r.m))}</a>${medalsHtml(r.m.id)}${r.m.char_class ? ` ${classTag(r.m.char_class)}` : ''}</span></div></td>
               <td><div class="pct"><b class="${pctClass(r.pct)}">${pctText(r.pct)}</b><span class="pct-bar"><span class="${pctClass(r.pct)}" style="width:${Math.round((r.pct || 0) * 100)}%"></span></span></div></td>
               <td class="num">${r.present}<span class="muted">/${r.total}</span></td>
               <td class="num ${r.noShow ? 'c-no' : 'muted'}">${r.noShow}</td>
@@ -3063,7 +3089,7 @@
             </div>
           </div>
           <div class="pool-list">
-            ${pool.map((p) => chip(p, { draggable: true, selected: T.sel === p.id })).join('')
+            ${pool.map((p) => chip(p, { draggable: true, selected: T.sel === p.id, medals: true })).join('')
               || `<p class="muted small center">${T.people.length ? 'Todos os confirmados já estão em times.' : 'Ninguém confirmou presença ainda.'}</p>`}
           </div>
           ${classSummary()}
@@ -4778,7 +4804,7 @@
         <div class="row">
           ${avatar(me, 'xl')}
           <div class="spacer">
-            <div class="me-name">${esc(displayName(me))}${me.role === 'former' ? ' <span class="badge former-badge">Ex-membro</span>' : ''}</div>
+            <div class="me-name">${esc(displayName(me))}${medalsHtml(me.id, 4)}${me.role === 'former' ? ' <span class="badge former-badge">Ex-membro</span>' : ''}</div>
             <div class="muted small">${me.game_name ? `${esc(me.google_name)} · ` : ''}${ROLE_LABEL[me.role]}${me.created_at ? ` · no clã desde ${new Date(me.created_at).toLocaleDateString('pt-BR')}` : ''}${phone ? ` · <a href="tel:${esc(phone.replace(/[^\d+]/g, ''))}">📞 ${esc(phone)}</a>` : ''}</div>
             ${me.char_class ? `<div class="member-build">${classTag(me.char_class)} <span>${esc(CLASS[me.char_class].label)}</span><span class="chip-stats">${statsLine(me)}</span></div>` : ''}
           </div>
@@ -4973,7 +4999,7 @@
     const cls = CLASS[person.char_class];
     const rowHtml = (r, i) => `<li class="${r.m.id === person.id ? 'me' : ''}">
           <span class="pr-n">${i + 1}</span>${avatar(r.m)}
-          <span class="pr-name">${esc(displayName(r.m))}</span>${classTag(r.m.char_class)}
+          <span class="pr-name">${esc(displayName(r.m))}${medalsHtml(r.m.id)}</span>${classTag(r.m.char_class)}
           <span class="pr-score">${r.score}</span></li>`;
     const head = !mine
       ? `<div class="pr-missing">${self
@@ -5895,7 +5921,7 @@
     const histBtn = (m) => (histBy[m.id]?.length
       ? `<button class="btn small ghost" data-history="${esc(m.id)}" title="Ver histórico de alterações">🕘 ${histBy[m.id].length}</button>` : '');
     const row = (m, ctrl) => `<div class="member clickable" data-search="${esc(searchText(m))}" data-profile="${esc(m.id)}" title="Abrir o perfil de ${esc(displayName(m))}">${avatar(m, 'lg')}
-      <div class="name"><a class="member-link" href="#/membro/${encodeURIComponent(m.id)}">${esc(displayName(m))}</a> ${absTag(m)} ${noteBadge(m)} ${pilotLabel(m)} ${formerly(m)}
+      <div class="name"><a class="member-link" href="#/membro/${encodeURIComponent(m.id)}">${esc(displayName(m))}</a>${medalsHtml(m.id)} ${absTag(m)} ${noteBadge(m)} ${pilotLabel(m)} ${formerly(m)}
         <small>${m.managed ? 'conta sem login' : (m.game_name ? esc(m.google_name) : '')} ${phoneLink(m)}</small>
         ${m.char_class ? `<div class="member-build">${classTag(m.char_class)} <span>${esc(CLASS[m.char_class].label)}</span><span class="chip-stats">${statsLine(m)}</span></div>` : '<div class="member-build muted small">Classe e atributos não informados</div>'}
       </div>${canRename(m) ? `<button class="btn small ghost" data-rename="${esc(m.id)}" title="Editar o nick de ${esc(displayName(m))}">✎ Nick</button>` : ''}${histBtn(m)}${ctrl}</div>`;
@@ -6243,6 +6269,48 @@
   const memberUI = () => isMember() && !myLeave();
   // Posso decidir este pedido? (líder sempre; oficial só de membro comum e com a permissão)
   const canDecideLeave = (l) => !canActAs(l.user_id) && (isLeader() || (can('leave_approve') && memberById(l.user_id)?.role === 'member'));
+
+  // ---------- Medalhas ----------
+  // 🔥 sequência atual de presenças · 📅 meses perfeitos · 📈 Ressonância ganha (registrada no site)
+  // O membro comum recebe do banco só o nível de cada medalha (sem os números exatos) e o Top 10 do Rank de força.
+  async function loadBadges() {
+    try { state.badges = Object.fromEntries((await api.badges()).map((b) => [b.user_id, b])); } catch { state.badges = {}; }
+    if (!isOfficer()) {
+      try { state.rankTop = Object.fromEntries(((await api.powerOverview(state.user.id))?.top || []).map((r, i) => [r.id, i + 1])); } catch { state.rankTop = {}; }
+    }
+  }
+  const STREAK_LV = [50, 20, 10, 5];
+  // Nível alcançado (ex.: sequência 13 → 10); é o que o membro comum recebe do banco
+  const badgeLevel = (v, levels) => levels.find((n) => v >= n) || 0;
+  // Evolução: quanto mais Ressonância ganha, mais setas
+  const GAIN_LV = [[2000, '+2.000', 4], [1000, '+1.000', 3], [500, '+500', 2]];
+  // Posição no Rank de força (recalcula só quando a lista de membros muda)
+  // (só o Top 10 vira medalha; oficiais e líder calculam com a lista completa, o membro comum usa o Top 10 do banco)
+  let rankCache = { list: null, pos: {} };
+  function rankPos(id) {
+    if (!isOfficer()) return state.rankTop?.[id] || 0;
+    if (rankCache.list !== state.members) {
+      rankCache = { list: state.members, pos: Object.fromEntries(computePower(activeMembers().filter(hasBuild), { id: null }).top.map((r, i) => [r.m.id, i + 1])) };
+    }
+    return rankCache.pos[id] || 0;
+  }
+  const RANK_MEDAL = { 1: ['gold', 'ouro'], 2: ['silver', 'prata'], 3: ['bronze', 'bronze'] };
+  // Medalhas ao lado do nome, na ordem: rank → sequência → mês perfeito → evolução (no máximo "max")
+  function medalsHtml(id, max = 3) {
+    const out = [];
+    const pos = rankPos(id);
+    if (RANK_MEDAL[pos]) out.push(`<span class="medal m-rank m-${RANK_MEDAL[pos][0]}" title="Coroa de ${RANK_MEDAL[pos][1]}: ${pos}º lugar no Rank de força do clã"><i>👑</i>${pos}º</span>`);
+    else if (pos && pos <= 10) out.push(`<span class="medal m-top10" title="Top 10 do Rank de força do clã (${pos}º lugar)">⭐Top 10</span>`);
+    const b = state.badges?.[id];
+    if (!b) return out.length ? ` <span class="medals">${out.slice(0, max).join('')}</span>` : '';
+    const s = STREAK_LV.find((n) => b.streak >= n);
+    if (s) out.push(`<span class="medal m-streak" title="Sequência: ${s}+ presenças seguidas${isOfficer() ? ` (atual: ${b.streak})` : ''}">🔥${s}</span>`);
+    if (b.perfect_months > 0) out.push(`<span class="medal m-month" title="Mês perfeito: 100% de presença em ${b.perfect_months} ${b.perfect_months === 1 ? 'mês' : 'meses'} (mínimo 4 eventos no mês)">📅${b.perfect_months > 1 ? `×${b.perfect_months}` : ''}</span>`);
+    const g = GAIN_LV.find(([n]) => b.res_gain >= n);
+    if (g) out.push(`<span class="medal m-gain" title="Evolução: ${g[1]} de Ressonância registrada no site${isOfficer() ? ` (total: +${fmtNum(b.res_gain)})` : ''}"><img src="img/evolucao-${g[2]}.png" alt="Evolução ${g[1]}"></span>`);
+    return out.length ? ` <span class="medals">${out.slice(0, max).join('')}</span>` : '';
+  }
+
   async function loadBell() {
     if (!state.user || !isMember()) { state.bellUp = []; state.bellPast = []; return; }
     const [up, past] = await Promise.all([
@@ -6397,7 +6465,7 @@
   async function route() {
     const { ev, tm, mp, rc, tk, key } = parseRoute();
     if (state.user && isOfficer()) await loadPerms();
-    if (state.user && isMember()) await Promise.all([loadRecruits(), loadTickets(), loadRaffles(), loadBell(), loadLeaves()]);
+    if (state.user && isMember()) await Promise.all([loadRecruits(), loadTickets(), loadRaffles(), loadBell(), loadLeaves(), loadBadges()]);
     bellOpen = false;
     renderHeader(key);
     if (!state.user) return viewLogin();
