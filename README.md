@@ -219,6 +219,9 @@ O menu mostra um ponto vermelho quando há uma edição nova que você ainda nã
   O oficial edita o nick de membros, de quem aguarda aprovação e de ex-membros; o líder edita o de qualquer pessoa. Cada um troca o próprio nick em **Editar perfil**.
   A troca vai para o **🕘 Histórico** do membro com "por Nome", mostrando quem trocou. Nas **Configurações**, o líder escolhe se os oficiais podem fazer isso direto, com aprovação ou nunca.
   Para funcionar, rode o [`supabase/editar_nick.sql`](supabase/editar_nick.sql) (veja **Dicas**).
+- **Nick único:** duas contas ativas (aguardando aprovação, membro, oficial ou líder) não podem ter o mesmo nick. Isso impede alguém de se passar por outro membro, como o líder.
+  A comparação ignora maiúsculas, acentos e espaços extras ("Máximus" = "maximus"). Vale ao editar o perfil, quando a staff troca o nick, ao cadastrar conta pilotada e ao aprovar ou readmitir alguém.
+  Ex-membros não contam: o nick de quem saiu pode ser usado de novo. Ative com o [`supabase/nick_unico.sql`](supabase/nick_unico.sql) (veja **Dicas**).
 - **Nome e foto da conta Google** são atualizados automaticamente a cada login.
 - **Busca:** encontra um membro pelo nome atual ou por um nome antigo, que aparece como "antes: …".
 - **⬇ Exportar CSV:** baixa uma planilha separada por `;`, que abre direto no Excel. Ela traz personagem, conta Google, cargo, classe, os 5 atributos, telefone, a frequência dos últimos 90 dias e a data de entrada.
@@ -335,6 +338,7 @@ O que protege os dados são as **regras do banco (RLS)** e as funções, que val
   - 30 mensagens por hora por pessoa (a staff não tem esse limite);
   - 3 recrutamentos ativos por pessoa.
 - **Pilotos:** não trocam o nick nem a foto da conta do dono.
+- **Nick único:** ninguém ativo no clã pode usar o mesmo nick de outra pessoa (veja **Membros**).
 
 Para aplicar os ajustes mais recentes, rode o [`supabase/seguranca_dados.sql`](supabase/seguranca_dados.sql), o [`supabase/seguranca_correcoes.sql`](supabase/seguranca_correcoes.sql) e o [`supabase/limites.sql`](supabase/limites.sql) (veja **Dicas**).
 Como o site só usa o login do Google, desligue também o login por e-mail: no Supabase, **Authentication → Sign In / Providers → Email**, desative e salve.
@@ -354,6 +358,11 @@ Como o site só usa o login do Google, desligue também o login por e-mail: no S
 - **Ajuste de segurança (perfis e respostas):** rode o [`supabase/seguranca_dados.sql`](supabase/seguranca_dados.sql) no **SQL Editor**. Ele só troca duas regras de leitura e cria a função `list_profiles`; nenhum dado é alterado. Pode ser executado de novo e está no fim do `schema.sql` (veja **Segurança dos dados**).
 - **Correções de segurança (respostas e fotos):** rode o [`supabase/seguranca_correcoes.sql`](supabase/seguranca_correcoes.sql) no **SQL Editor**. Ele trava as respostas dos eventos contra alterações indevidas pela API e só aceita fotos de perfil do espaço de fotos do site. Fotos com endereço de fora são removidas, e a pessoa volta para a foto do Google ou a inicial. Pode ser executado de novo e está no fim do `schema.sql`.
 - **Limites e regra dos pilotos:** rode o [`supabase/limites.sql`](supabase/limites.sql) no **SQL Editor**. Ele ativa os limites de 3 tickets por dia, 30 mensagens por hora e 3 recrutamentos ativos por pessoa, e impede o piloto de trocar o nick e a foto da conta do dono. Só cria gatilhos, nenhum dado é alterado. Pode ser executado de novo e está no fim do `schema.sql`. Para mudar os números, altere o `limites.sql` e a constante `LIMITS` no `app.js`.
+- **Nick único:** rode o [`supabase/nick_unico.sql`](supabase/nick_unico.sql) no **SQL Editor**. Primeiro ele verifica se já existem nicks repetidos.
+  - Se existirem, ele para sem alterar nada e mostra a lista (nick, cargo e data de entrada de cada conta). Troque os repetidos em **Membros → ✎ Nick** e rode de novo.
+  - Se não existirem, a regra é ativada.
+
+  Pode ser executado de novo e está no fim do `schema.sql`.
 - **Ativar o Sorteio:** no Supabase, abra o **SQL Editor**, cole todo o conteúdo de [`supabase/sorteio.sql`](supabase/sorteio.sql) e clique em **Run**. Ele só acrescenta o que falta e pode ser executado de novo sem problema. O mesmo trecho também está no fim do `schema.sql`.
   O script também agenda o sorteio às 22h com o **pg_cron** do Supabase. Se aparecer o aviso "pg_cron indisponível", ative a extensão em **Database → Extensions → pg_cron** e rode o arquivo de novo. Enquanto ela não estiver ativa, o sorteio acontece na primeira visita ao site depois das 22h.
 - **Só Recrutamentos e Tickets:** o [`supabase/recrutamentos_tickets.sql`](supabase/recrutamentos_tickets.sql) instala apenas essas duas partes, sem mexer no resto. Ele depende das Configurações do líder, que já vêm no `schema.sql`. Quem roda o `schema.sql` completo não precisa dele.

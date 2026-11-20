@@ -490,6 +490,14 @@
       nextId: 100,
     };
     const profile = (id) => db.profiles.find((p) => p.id === id);
+    // Nick único entre contas ativas (mesma regra do supabase/nick_unico.sql)
+    const nickKey = (s) => String(s || '').trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ') || null;
+    const nickFree = (name, exceptId) => {
+      const k = nickKey(name);
+      if (k && db.profiles.some((p) => p.id !== exceptId && ['pending', 'member', 'officer', 'leader'].includes(p.role) && nickKey(p.game_name) === k)) {
+        throw new Error(`O nick "${String(name).trim()}" já é usado por outro membro do clã. Escolha outro.`);
+      }
+    };
     const answer = (eventId, userId, going) => db.rsvps.push({
       event_id: eventId, user_id: userId, going, discord: going ? rnd() < 0.7 : null, ...(going ? pick(profile(userId), BUILD_KEYS) : {}),
     });
@@ -897,6 +905,7 @@
       async saveProfile(fields, phone) {
         // Mesmo comportamento do gatilho do banco: registra o que mudou
         const p = profile(state.user.id);
+        if ('game_name' in fields && nickKey(fields.game_name) !== nickKey(p.game_name)) nickFree(fields.game_name, p.id);
         const tracked = ['google_name', 'game_name', ...BUILD_KEYS];
         const changes = {};
         tracked.filter((k) => k in fields).forEach((k) => { if ((p[k] ?? null) !== (fields[k] ?? null)) changes[k] = [p[k] ?? null, fields[k] ?? null]; });
@@ -1064,6 +1073,7 @@
       },
       async createPilotedAccount(gameName, b) {
         if (!isMember()) throw new Error('Só membros aprovados podem cadastrar contas pilotadas');
+        nickFree(gameName, null);
         const id = `m${db.nextId++}`;
         const now = new Date().toISOString();
         db.profiles.push({ id, google_name: '', game_name: gameName, role: 'pending', managed: true, created_at: now, ...b });
@@ -1143,6 +1153,7 @@
         if (!v) throw new Error('Escreva o nick');
         if (v.length > 40) throw new Error('O nick pode ter no máximo 40 caracteres');
         if (me !== 'leader' && me !== 'officer') throw new Error('Só oficiais e o líder podem editar o nick dos membros');
+        if (nickKey(v) !== nickKey(p.game_name)) nickFree(v, p.id);
         if (me === 'officer' && userId !== state.user.id && !['pending', 'member', 'former'].includes(p.role)) throw new Error('Só o líder pode editar o nick de oficiais e do líder');
         if ((p.game_name || null) !== v) db.history.push({ id: db.history.length + 1, user_id: p.id, changed_by: state.user.id, changed_at: new Date().toISOString(), changes: { game_name: [p.game_name || null, v] } });
         p.game_name = v;
