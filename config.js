@@ -14,5 +14,5 @@ window.CLAN_CONFIG = {
   // Preenchido, o login usa o botão oficial do Google e a janela mostra o domínio do site
   // em vez do endereço do Supabase. Antes, adicione o domínio do site em
   // "Origens JavaScript autorizadas" desse cliente (veja o README). Vazio = login antigo.
-  googleClientId: "",
+  googleClientId: "391644068900-tjfotf5828nk8tql4adcbs4g7ai1aeft.apps.googleusercontent.com",
 };
