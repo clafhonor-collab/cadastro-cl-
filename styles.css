@@ -1139,3 +1139,12 @@ body.has-fab main { padding-bottom: 90px; }
   .member .name { flex: 1 1 calc(100% - 64px); }
   .member > .btn, .member > select, .member > .role-tag { flex: none; }
 }
+.pg-approved { color: var(--muted); }
+.pg-approved b { color: var(--text); }
+.pg-log-row { padding: 8px 0; border-bottom: 1px solid var(--border); display: grid; gap: 2px; }
+.pg-log-row:last-child { border-bottom: 0; }
+.pg-log-about { overflow-wrap: anywhere; }
+.pg-diff { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 6px; }
+.pg-diff > div { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; }
+.pg-pending-edit { margin: 6px 0; padding: 6px 10px; border: 1px dashed #8a6a1c; border-radius: 8px; }
+@media (max-width: 600px) { .pg-diff { grid-template-columns: 1fr; } }
