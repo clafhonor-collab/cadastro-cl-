@@ -303,7 +303,8 @@ O que protege os dados são as **regras do banco (RLS)** e as funções, que val
   - os eventos;
   - as próprias respostas e as das contas que pilota;
   - o próprio time;
-  - os perfis dos outros sem o nome real da conta Google de quem já tem nick;
+  - dos outros membros, só nome, foto, cargo e classe (sem o nome real da conta Google de quem já tem nick, sem data de entrada e sem atributos; os atributos aparecem só de quem se candidatou a um recrutamento que ele vê);
+  - a média de atributos do clã, só como média (função `clan_averages`);
   - recrutamentos, sorteios e Malah News;
   - os próprios tickets.
 - **Ficam só com a staff:**

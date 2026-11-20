@@ -174,6 +174,8 @@
         if (error.code !== 'PGRST202' && !/list_profiles/.test(error.message || '')) throw error;
         return ok(await sb.from('profiles').select('*'));
       },
+      // Média dos atributos do clã (só os números, sem os atributos de cada membro)
+      async clanAverages() { return ok(await sb.rpc('clan_averages')); },
       async myPhone() { return ok(await sb.from('member_contacts').select('phone').eq('user_id', state.user.id).maybeSingle())?.phone ?? ''; },
       async contacts() { return ok(await sb.from('member_contacts').select('user_id, phone')); },
       async syncProfile() { ok(await sb.rpc('sync_google_profile')); },
@@ -716,7 +718,23 @@
       async signIn() { user = { id: 'u0' }; listener(user); },
       async signOut() { user = null; listener(null); },
       async myProfile() { return { ...profile(state.user.id) }; },
-      async members() { return db.profiles.map((p) => ({ ...p })); },
+      // Mesma regra da função list_profiles do banco
+      async members() {
+        if (isOfficer()) return db.profiles.map((p) => ({ ...p }));
+        const applied = (id) => db.applications.some((a) => a.user_id === id
+          && db.recruits.some((r) => r.id === a.recruit_id && (r.status === 'open' || r.created_by === state.user.id)));
+        return db.profiles.filter((p) => canActAsDemo(p.id) || (isMember() && p.role !== 'pending')).map((p) => {
+          if (canActAsDemo(p.id)) return { ...p };
+          const out = {
+            id: p.id, game_name: p.game_name, google_name: (p.game_name || '').trim() ? '' : p.google_name,
+            avatar_url: p.avatar_hidden || p.custom_avatar_url ? null : p.avatar_url,
+            custom_avatar_url: p.avatar_hidden ? null : p.custom_avatar_url, avatar_hidden: p.avatar_hidden,
+            role: p.role, managed: p.managed, char_class: p.role === 'former' ? null : p.char_class,
+          };
+          if (applied(p.id)) ATTRS.forEach((a) => { out[a.key] = p[a.key]; });
+          return out;
+        });
+      },
       async myPhone() { return db.contacts.find((c) => c.user_id === state.user.id)?.phone ?? ''; },
       async contacts() { return db.contacts.map((c) => ({ ...c })); },
       async syncProfile() { /* no modo demonstração não há conta Google */ },
@@ -724,6 +742,12 @@
       // Só na demonstração: permite ver o site como líder, oficial ou membro comum
       async demoSetRole(role) { profile(state.user.id).role = role; },
       async profileHistory() { return db.history.filter((h) => isOfficer() || canActAsDemo(h.user_id)).map((h) => ({ ...h })); },
+      async clanAverages() {
+        const rows = db.profiles.filter((p) => ['member', 'officer', 'leader'].includes(p.role) && hasBuild(p));
+        const out = { count: rows.length };
+        ATTRS.forEach((a) => { out[a.key] = rows.length ? Math.round(rows.reduce((s, p) => s + p[a.key], 0) / rows.length) : null; });
+        return out;
+      },
       async saveProfile(fields, phone) {
         // Mesmo comportamento do gatilho do banco: registra o que mudou
         const p = profile(state.user.id);
@@ -4243,10 +4267,13 @@
     }).join('');
 
     // Meus atributos comparados com a média do clã
+    // Membro comum não recebe os atributos de todos: a média vem pronta do banco
     const clan = activeMembers().filter(hasBuild);
+    const avgs = !isOfficer() && hasBuild(me) ? await api.clanAverages().catch(() => null) : null;
     const cmp = hasBuild(me) ? ATTRS.map((a) => {
       const vals = clan.map((m) => m[a.key]);
-      const mean = vals.length ? Math.round(vals.reduce((s, v) => s + v, 0) / vals.length) : null;
+      const mean = avgs && Number.isFinite(Number(avgs[a.key])) ? Math.round(Number(avgs[a.key]))
+        : vals.length ? Math.round(vals.reduce((s, v) => s + v, 0) / vals.length) : null;
       const mineVal = me[a.key];
       const scale = Math.max(mineVal, mean || 0) * 1.1 || 1;
       const diff = mean ? (mineVal - mean) / mean : 0;
