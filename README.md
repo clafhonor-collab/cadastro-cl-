@@ -288,6 +288,13 @@ Para adicionar, trocar ou remover um link, edite a lista `UTIL_LINKS` no [`app.j
 ## Dicas
 - **Atualizando o site:** se você já tinha executado uma versão anterior do `schema.sql`, rode o arquivo inteiro de novo no SQL Editor. Ele só acrescenta o que falta e não apaga dados. Ao publicar arquivos novos, aumente o número `?v=` no `index.html` para os navegadores baixarem a versão nova.
 - **Ativar o histórico de alterações dos eventos:** no Supabase, abra o **SQL Editor**, cole todo o conteúdo de [`supabase/historico_eventos.sql`](supabase/historico_eventos.sql) e clique em **Run**. Ele só acrescenta o que falta, pode ser executado de novo e também está no fim do `schema.sql`. Enquanto ele não for executado, o site funciona normalmente, só sem o histórico.
+- **Login sem o endereço do Supabase:** no login padrão, a janela do Google mostra `…supabase.co`. Para ela mostrar **forhonorcla.com.br** (sem custo):
+  1. No [Google Cloud](https://console.cloud.google.com/apis/credentials), abra **APIs e serviços → Credenciais** e clique no cliente OAuth usado no Supabase (tipo "Aplicativo da Web").
+  2. Em **Origens JavaScript autorizadas**, adicione `https://forhonorcla.com.br` e salve. Não remova nada em "URIs de redirecionamento autorizados".
+  3. No `config.js`, preencha `googleClientId` com o **ID do cliente** desse mesmo cliente (termina em `.apps.googleusercontent.com`).
+
+  A tela de entrada passa a usar o botão oficial do Google, e a janela diz "Fazer login em forhonorcla.com.br". Se o script do Google não carregar, o site volta sozinho para o botão antigo. Para voltar ao login antigo, deixe `googleClientId` vazio.
+  Na **Tela de consentimento OAuth** (Google Auth Platform → Branding), vale preencher o nome do app (**FOR HONOR**), o logotipo e `forhonorcla.com.br` em **Domínios autorizados**.
 - **Ativar o histórico de quem encerrou os tickets:** do mesmo jeito, cole todo o conteúdo de [`supabase/tickets_historico.sql`](supabase/tickets_historico.sql) no **SQL Editor** e clique em **Run**. Ele também só acrescenta o que falta, pode ser executado de novo e está no fim do `schema.sql`.
 - **Ativar o Sorteio:** no Supabase, abra o **SQL Editor**, cole todo o conteúdo de [`supabase/sorteio.sql`](supabase/sorteio.sql) e clique em **Run**. Ele só acrescenta o que falta e pode ser executado de novo sem problema. O mesmo trecho também está no fim do `schema.sql`.
   O script também agenda o sorteio às 22h com o **pg_cron** do Supabase. Se aparecer o aviso "pg_cron indisponível", ative a extensão em **Database → Extensions → pg_cron** e rode o arquivo de novo. Enquanto ela não estiver ativa, o sorteio acontece na primeira visita ao site depois das 22h.

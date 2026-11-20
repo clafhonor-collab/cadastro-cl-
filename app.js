@@ -161,6 +161,8 @@
       async currentUser() { const { data } = await sb.auth.getSession(); return data.session?.user ?? null; },
       onAuthChange(cb) { sb.auth.onAuthStateChange((evt, s) => { if (evt === 'SIGNED_IN' || evt === 'SIGNED_OUT') cb(s?.user ?? null); }); },
       signIn() { return sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: location.origin + location.pathname } }); },
+      // Login pelo botão do Google no próprio site: a janela do Google mostra o domínio do site, não o do Supabase
+      async signInWithIdToken(token, nonce) { ok(await sb.auth.signInWithIdToken({ provider: 'google', token, nonce })); },
       signOut() { return sb.auth.signOut(); },
       async myProfile() { return ok(await sb.from('profiles').select('*').eq('id', state.user.id).maybeSingle()); },
       async members() { return ok(await sb.from('profiles').select('*')); },
@@ -1572,6 +1574,49 @@
       try { sessionStorage.setItem('after-login', location.hash); } catch { /* ignora */ }
       api.signIn().catch(fail);
     });
+    if (CFG.googleClientId && !DEMO) mountGoogleButton();
+  }
+
+  // Botão oficial do Google (Google Identity Services). Com ele, a janela de login do Google
+  // diz "Fazer login em forhonorcla.com.br", e não mostra o endereço do Supabase.
+  // Se o script do Google não carregar, fica o botão antigo (que continua funcionando).
+  let gisLoading = null;
+  const loadGis = () => (gisLoading ||= new Promise((resolve, reject) => {
+    if (window.google?.accounts?.id) { resolve(); return; }
+    const s = document.createElement('script');
+    s.src = 'https://accounts.google.com/gsi/client';
+    s.async = true;
+    s.onload = () => resolve();
+    s.onerror = () => { gisLoading = null; reject(new Error('Não foi possível carregar o login do Google')); };
+    document.head.appendChild(s);
+  }));
+  async function mountGoogleButton() {
+    const old = $('#btn-login');
+    if (!old) return;
+    try {
+      // nonce: o Google recebe o hash e o Supabase confere com o valor original
+      const raw = [...crypto.getRandomValues(new Uint8Array(24))].map((b) => b.toString(16).padStart(2, '0')).join('');
+      const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(raw)))]
+        .map((b) => b.toString(16).padStart(2, '0')).join('');
+      await loadGis();
+      if (!document.body.contains(old)) return; // a tela mudou enquanto carregava
+      google.accounts.id.initialize({
+        client_id: CFG.googleClientId,
+        nonce: hash,
+        ux_mode: 'popup',
+        auto_select: false,
+        cancel_on_tap_outside: true,
+        callback: async (resp) => {
+          try { await api.signInWithIdToken(resp.credential, raw); } catch (e) { fail(e); }
+        },
+      });
+      const box = document.createElement('div');
+      box.className = 'gis-btn';
+      old.replaceWith(box);
+      google.accounts.id.renderButton(box, { type: 'standard', theme: 'outline', size: 'large', shape: 'pill', text: 'signin_with', logo_alignment: 'left', locale: 'pt-BR', width: 280 });
+    } catch (e) {
+      console.warn('login Google', e); // segue com o botão antigo
+    }
   }
 
   function viewPending() {

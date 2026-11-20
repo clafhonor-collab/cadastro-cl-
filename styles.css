@@ -87,6 +87,8 @@ h2 { font-size: 1.2rem; color: var(--gold); }
 .btn.google { background: #fff; border-color: #dadce0; color: #1f1f1f; font-size: 1.05rem; padding: 12px 22px; display: inline-flex; align-items: center; gap: 10px; }
 .btn.google:hover { background: #f2f2f2; }
 .btn.google .g-logo { width: 20px; height: 20px; flex: none; }
+/* Botão oficial do Google (quando googleClientId está no config.js) */
+.gis-btn { display: flex; justify-content: center; min-height: 44px; }
 
 .btn.yes.on { background: var(--yes); border-color: var(--yes); color: #08130c; }
 .btn.no.on  { background: var(--no);  border-color: var(--no);  color: #1a0605; }
