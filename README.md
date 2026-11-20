@@ -318,8 +318,15 @@ O que protege os dados são as **regras do banco (RLS)** e as funções, que val
   - tickets de outras pessoas;
   - solicitações e configurações dos oficiais.
 - **Nada é gravado sem passar pelas regras:** o banco confere o cargo e as permissões em cada ação (cargo, times, presença, eventos, sorteio, tickets etc.).
+- **Respostas dos eventos:** mesmo pela API, o prazo e os times travados valem também para o evento de destino. Não dá para mudar o evento ou a conta de uma resposta, forjar "respondido por" nem criar um pedido de saída sem o botão do site.
+- **Fotos:** a foto de perfil só aceita endereços do espaço de fotos do próprio Supabase. As imagens de tickets e da Malah News são redesenhadas antes do envio, o que apaga os metadados (localização GPS, modelo do celular, data). Isso protege também quem abre ticket anônimo.
+- **No navegador:**
+  - o script do Supabase é carregado com verificação de integridade (`integrity`): se o arquivo for alterado no CDN, o navegador recusa;
+  - uma política de segurança (`Content-Security-Policy`, no `index.html`) só permite scripts, imagens e conexões do próprio site, do Supabase, do Google e das fontes.
 
-Para aplicar o ajuste mais recente (perfis e respostas), rode o [`supabase/seguranca_dados.sql`](supabase/seguranca_dados.sql) (veja **Dicas**).
+  Ao trocar o projeto do Supabase ou a versão do `supabase-js`, atualize o endereço na política e o hash `integrity` no `index.html`.
+
+Para aplicar os ajustes mais recentes, rode o [`supabase/seguranca_dados.sql`](supabase/seguranca_dados.sql) e o [`supabase/seguranca_correcoes.sql`](supabase/seguranca_correcoes.sql) (veja **Dicas**).
 Como o site só usa o login do Google, desligue também o login por e-mail: no Supabase, **Authentication → Sign In / Providers → Email**, desative e salve.
 
 ## Dicas
@@ -335,6 +342,7 @@ Como o site só usa o login do Google, desligue também o login por e-mail: no S
 - **Ativar o histórico de quem encerrou os tickets:** do mesmo jeito, cole todo o conteúdo de [`supabase/tickets_historico.sql`](supabase/tickets_historico.sql) no **SQL Editor** e clique em **Run**. Ele também só acrescenta o que falta, pode ser executado de novo e está no fim do `schema.sql`.
 - **Ativar a edição de nick pela staff:** do mesmo jeito, rode o [`supabase/editar_nick.sql`](supabase/editar_nick.sql) no **SQL Editor**. Ele só cria a função `set_member_name`, pode ser executado de novo e está no fim do `schema.sql`.
 - **Ajuste de segurança (perfis e respostas):** rode o [`supabase/seguranca_dados.sql`](supabase/seguranca_dados.sql) no **SQL Editor**. Ele só troca duas regras de leitura e cria a função `list_profiles`; nenhum dado é alterado. Pode ser executado de novo e está no fim do `schema.sql` (veja **Segurança dos dados**).
+- **Correções de segurança (respostas e fotos):** rode o [`supabase/seguranca_correcoes.sql`](supabase/seguranca_correcoes.sql) no **SQL Editor**. Ele trava as respostas dos eventos contra alterações indevidas pela API e só aceita fotos de perfil do espaço de fotos do site. Fotos com endereço de fora são removidas, e a pessoa volta para a foto do Google ou a inicial. Pode ser executado de novo e está no fim do `schema.sql`.
 - **Ativar o Sorteio:** no Supabase, abra o **SQL Editor**, cole todo o conteúdo de [`supabase/sorteio.sql`](supabase/sorteio.sql) e clique em **Run**. Ele só acrescenta o que falta e pode ser executado de novo sem problema. O mesmo trecho também está no fim do `schema.sql`.
   O script também agenda o sorteio às 22h com o **pg_cron** do Supabase. Se aparecer o aviso "pg_cron indisponível", ative a extensão em **Database → Extensions → pg_cron** e rode o arquivo de novo. Enquanto ela não estiver ativa, o sorteio acontece na primeira visita ao site depois das 22h.
 - **Só Recrutamentos e Tickets:** o [`supabase/recrutamentos_tickets.sql`](supabase/recrutamentos_tickets.sql) instala apenas essas duas partes, sem mexer no resto. Ele depende das Configurações do líder, que já vêm no `schema.sql`. Quem roda o `schema.sql` completo não precisa dele.

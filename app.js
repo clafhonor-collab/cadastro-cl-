@@ -3426,20 +3426,24 @@
   }
 
   // Reduz imagens muito grandes antes do envio (economiza espaço; GIF fica como está para manter a animação)
+  // Toda imagem é redesenhada antes do envio: isso reduz o tamanho e APAGA os metadados
+  // da foto (EXIF: localização GPS, modelo do celular, data), inclusive em tickets anônimos.
   async function prepareImage(file) {
     const MAX_W = 2000;
-    const MAX_BYTES = 1.5 * 1024 * 1024;
-    if (file.type === 'image/gif') return file;
+    if (file.type === 'image/gif') return file; // GIF não guarda localização; redesenhar perderia a animação
     const img = await createImageBitmap(file).catch(() => null);
-    if (!img) return file;
-    if (file.size <= MAX_BYTES && img.width <= MAX_W) return file;
+    if (!img) throw new Error('Não foi possível ler esta imagem. Use uma imagem JPG, PNG ou WebP.');
     const scale = Math.min(1, MAX_W / img.width);
     const canvas = document.createElement('canvas');
     canvas.width = Math.round(img.width * scale);
     canvas.height = Math.round(img.height * scale);
     canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-    const blob = await new Promise((r) => canvas.toBlob(r, 'image/webp', 0.9));
-    return blob && blob.size < file.size ? new File([blob], 'malah-news.webp', { type: 'image/webp' }) : file;
+    const toBlob = (type, q) => new Promise((r) => canvas.toBlob(r, type, q));
+    let blob = await toBlob('image/webp', 0.9);
+    if (!blob || blob.type !== 'image/webp') blob = await toBlob('image/jpeg', 0.9); // navegadores sem WebP
+    if (!blob) throw new Error('Não foi possível preparar esta imagem para envio.');
+    const ext = blob.type === 'image/webp' ? 'webp' : 'jpg';
+    return new File([blob], `imagem.${ext}`, { type: blob.type });
   }
 
   async function viewNews() {
@@ -4985,7 +4989,9 @@
     const own = account.id === state.user.id;
     const row = (a, live) => {
       const now = a.starts_on <= today && a.ends_on >= today;
-      const by = a.created_by && a.created_by !== account.id ? ` · registrada por ${esc(nameOf(a.created_by))}` : '';
+      // Membro comum não recebe os nomes da staff: aparece só "pela staff"
+      const by = a.created_by && a.created_by !== account.id
+        ? ` · registrada ${memberById(a.created_by) ? `por ${esc(nameOf(a.created_by))}` : 'pela staff'}` : '';
       return `<div class="abs-row${now ? ' now' : ''}">
         <div class="spacer"><b>✈️ ${esc(fmtDay3(a.starts_on))} a ${esc(fmtDay3(a.ends_on))}</b> ${now ? `<span class="badge warn">${a.ends_on === today ? 'termina hoje' : 'em andamento'}</span>` : live ? '<span class="badge">programada</span>' : ''}
           <div class="muted small">“${esc(a.reason || '')}”${by}</div></div>
