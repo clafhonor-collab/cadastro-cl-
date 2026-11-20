@@ -974,3 +974,12 @@ body.has-fab main { padding-bottom: 90px; }
 .help-fab-badge[hidden] { display: none; }
 @keyframes fab-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.15); } }
 @media (prefers-reduced-motion: reduce) { .help-fab-badge { animation: none; } }
+/* Central de Atendimento: categoria + "Atendidos por mim" */
+.tk-filters.tk-sub { margin-top: -6px; gap: 14px; flex-wrap: wrap; align-items: center; }
+.tk-who { display: inline-flex; gap: 14px; flex-wrap: wrap; }
+.tk-who label { white-space: nowrap; width: auto; margin: 0; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; color: var(--muted); font-weight: 600; }
+.tk-who label:has(input:checked) { color: var(--text); }
+.tk-who input { width: auto; accent-color: var(--accent); margin: 0; }
+
+/* Resposta do ticket: caixa maior e que cresce com o texto */
+.tk-compose textarea { min-height: 180px; max-height: 60vh; line-height: 1.5; }

@@ -3600,7 +3600,8 @@
       t.anonymous ? '<span class="badge rc-closed">🕶️ Anônimo</span>' : '',
       t.mine && staff ? '<span class="badge rc-mine">Seu ticket</span>' : '',
       ticketHasNews(t) ? '<span class="badge warn">Resposta nova</span>' : '',
-      staff && !t.mine && pend ? `<span class="badge tk-pend-${pend}">${pend === 'staff' ? '⏳ Pendente atendimento' : '💬 Pendente autor'}</span>` : '',
+      staff && !t.mine && pend ? (ticketStage(t) === 'triage' ? '<span class="badge tk-pend-staff">🆕 Triagem</span>'
+        : `<span class="badge tk-pend-${pend}">${pend === 'staff' ? '⏳ Pendente retorno' : '💬 Pendente solicitante'}</span>`) : '',
     ].join('');
   }
   // Responsável em destaque (quem atende)
@@ -3698,54 +3699,71 @@
   }
 
   // ---------- Aba "Atendimento" (líder e oficiais) ----------
-  const SUP = { view: 'open', cat: '' };
+  // me = só os tickets atendidos por mim (responsável = eu); vale nas abas Pendentes, Encerrados e Todos
+  const SUP = { view: 'p_return', cat: '', me: true };
   const SUP_VIEWS = [
-    ['open', 'Em aberto'], ['new', 'Não iniciado'], ['mine_pending', 'Pendente comigo'], ['p_author', 'Pendente autor'],
-    ['opened', 'Abertos por mim'], ['resolved', 'Resolvidos'], ['all', 'Todos'],
+    ['triage', 'Triagem'], ['p_return', 'Pendente Retorno'], ['p_req', 'Pendente Solicitante'],
+    ['closed', 'Encerrados'], ['opened', 'Abertos por mim'], ['all', 'Todos'],
   ];
+  const SUP_WHO = ['p_return', 'p_req', 'closed', 'all'];
+  // Etapa do ticket: triagem (ninguém assumiu nem respondeu), pendente retorno (última mensagem do solicitante),
+  // pendente solicitante (última mensagem da liderança) ou encerrado
+  function ticketStage(t) {
+    if (t.status === 'resolved') return 'closed';
+    if (!t.assigned_to && !t.messages.some((m) => !m.from_author && !m.internal)) return 'triage';
+    return ticketPending(t) === 'staff' ? 'p_return' : 'p_req';
+  }
+  const STAGE_LABEL = { triage: 'Triagem', p_return: 'Pendente Retorno', p_req: 'Pendente Solicitante', closed: 'Encerrados' };
   const SUP_PICK = {
-    open: (t) => !t.mine && t.status !== 'resolved',
-    // Ninguém assumiu nem respondeu ainda
-    new: (t) => !t.mine && t.status !== 'resolved' && !t.assigned_to && !t.messages.some((m) => !m.from_author && !m.internal),
-    // Estou atendendo e a última mensagem é do autor
-    mine_pending: (t) => !t.mine && t.assigned_to === state.user.id && ticketPending(t) === 'staff',
-    p_author: (t) => !t.mine && ticketPending(t) === 'author',
+    triage: (t) => !t.mine && ticketStage(t) === 'triage',
+    p_return: (t) => !t.mine && ticketStage(t) === 'p_return',
+    p_req: (t) => !t.mine && ticketStage(t) === 'p_req',
+    closed: (t) => !t.mine && ticketStage(t) === 'closed',
     opened: (t) => t.mine,
-    resolved: (t) => !t.mine && t.status === 'resolved',
     all: () => true,
   };
+  const attendedByMe = (t) => t.assigned_to === state.user.id;
   async function viewSupport() {
     if (!supportOn()) { location.hash = '#/tickets'; return; }
     renderHeader('support');
     const all = state.tickets;
-    const list = all.filter(SUP_PICK[SUP.view] || SUP_PICK.all).filter((t) => !SUP.cat || t.category === SUP.cat)
+    if (!SUP_PICK[SUP.view]) SUP.view = 'p_return';
+    const who = SUP_WHO.includes(SUP.view);
+    const onlyMe = who && SUP.me;
+    const list = all.filter(SUP_PICK[SUP.view]).filter((t) => !SUP.cat || t.category === SUP.cat).filter((t) => !onlyMe || attendedByMe(t))
       .sort((a, b) => (ticketAwaiting(b) - ticketAwaiting(a)) || (Date.parse(lastActivity(b)) - Date.parse(lastActivity(a))));
-    const nNew = all.filter(SUP_PICK.new).length;
-    const nMine = all.filter(SUP_PICK.mine_pending).length;
+    const nTriage = all.filter(SUP_PICK.triage).length;
+    const nReturnMe = all.filter((t) => SUP_PICK.p_return(t) && attendedByMe(t)).length;
+    const nReturn = all.filter(SUP_PICK.p_return).length;
     const nNews = all.filter(ticketHasNews).length;
-    const nWaiting = all.filter(ticketAwaiting).length;
     const reportsHidden = !isLeader() && permMode('ticket_reports') === 'deny';
-    const fcount = { new: nNew, mine_pending: nMine, opened: nNews };
-    // Em "Todos" e "Abertos por mim", os resolvidos ficam numa seção separada
-    const split = ['all', 'opened'].includes(SUP.view);
-    const active = list.filter((t) => t.status !== 'resolved');
-    const done = list.filter((t) => t.status === 'resolved');
+    const fcount = { triage: nTriage, p_return: SUP.me ? nReturnMe : nReturn, opened: nNews };
     const rows = (arr) => arr.map((t) => ticketRowHtml(t, true)).join('');
+    // Em "Todos", um bloco por etapa
+    const sections = () => ['triage', 'p_return', 'p_req', 'closed']
+      .map((k) => [k, list.filter((t) => ticketStage(t) === k)]).filter(([, arr]) => arr.length)
+      .map(([k, arr]) => `<div class="section-head"><h2>${STAGE_LABEL[k]} <span class="muted small">(${arr.length})</span></h2></div>${rows(arr)}`).join('');
     main.innerHTML = `
       <div class="page-head"><h1>Central de Atendimento</h1><button class="btn primary" id="btn-new-tk">+ Abrir ticket</button></div>
-      <p class="muted small">Tickets dos membros; os que você abriu ficam em “Abertos por mim”. <b>${nNew}</b> não iniciado${nNew === 1 ? '' : 's'} · <b>${nMine}</b> pendente${nMine === 1 ? '' : 's'} com você · <b>${nWaiting}</b> pendente${nWaiting === 1 ? '' : 's'} de atendimento no total.${reportsHidden ? ' Os tickets de Reclamação / Denúncia ficam só com o líder.' : ''}</p>
+      <p class="muted small"><b>${nTriage}</b> na triagem · <b>${nReturnMe}</b> pendente${nReturnMe === 1 ? '' : 's'} de retorno com você · <b>${nReturn}</b> pendente${nReturn === 1 ? '' : 's'} de retorno no total.${reportsHidden ? ' Os tickets de Reclamação / Denúncia ficam só com o líder.' : ''}</p>
       <div class="row tk-filters">
         <div class="seg rc-filter" role="group" aria-label="Filtrar tickets">
           ${SUP_VIEWS.map(([k, l]) => `<button class="${SUP.view === k ? 'on' : ''}" data-sup-v="${k}">${l}${fcount[k] ? ` <span class="tk-fcount">${fcount[k]}</span>` : ''}</button>`).join('')}
         </div>
+      </div>
+      <div class="row tk-filters tk-sub">
         <select class="inline" id="sup-cat" aria-label="Filtrar por categoria">
           <option value="">Todas as categorias</option>
           ${TICKET_CATS.filter((c) => !(reportsHidden && c.key === 'report')).map((c) => `<option value="${c.key}" ${SUP.cat === c.key ? 'selected' : ''}>${c.icon} ${esc(c.label)}</option>`).join('')}
         </select>
+        ${who ? `<div class="tk-who" role="radiogroup" aria-label="Quem atende">
+          <label><input type="radio" name="tk-who" value="all" ${SUP.me ? '' : 'checked'}> Todos</label>
+          <label><input type="radio" name="tk-who" value="me" ${SUP.me ? 'checked' : ''}> Atendidos por mim</label>
+        </div>` : ''}
       </div>
-      ${!list.length ? '<div class="card empty">Nenhum ticket aqui.</div>'
-        : split ? `${active.length ? `<div class="section-head"><h2>Em aberto</h2></div>${rows(active)}` : ''}${done.length ? `<div class="section-head"><h2>Resolvidos</h2></div>${rows(done)}` : ''}`
-        : rows(list)}`;
+      ${!list.length ? `<div class="card empty">Nenhum ticket aqui${onlyMe ? ' atendido por você' : ''}.</div>`
+        : SUP.view === 'all' ? sections() : rows(list)}`;
+    main.querySelectorAll('input[name=tk-who]').forEach((r) => r.addEventListener('change', () => { SUP.me = r.value === 'me'; viewSupport(); }));
     $('#btn-new-tk').addEventListener('click', openTicketForm);
     main.querySelectorAll('[data-sup-v]').forEach((b) => b.addEventListener('click', () => { SUP.view = b.dataset.supV; viewSupport(); }));
     $('#sup-cat').addEventListener('change', (e) => { SUP.cat = e.target.value; viewSupport(); });
@@ -3840,6 +3858,9 @@
     const form = $('#tk-reply');
     if (form) {
       const picker = bindImagePicker(form);
+      // A caixa cresce com o texto (até 60% da tela; depois rola)
+      const box = $('#tk-body'); const grow = () => { box.style.height = 'auto'; box.style.height = `${Math.min(box.scrollHeight + 2, window.innerHeight * 0.6)}px`; };
+      box.addEventListener('input', grow);
       const internal = $('#tk-internal');
       internal?.addEventListener('change', () => form.classList.toggle('internal', internal.checked));
       form.addEventListener('submit', async (e) => {
@@ -5483,10 +5504,10 @@
       });
       if (supportOn()) {
         const all = state.tickets || [];
-        const nNew = all.filter(SUP_PICK.new).length;
-        const nMine = all.filter(SUP_PICK.mine_pending).length;
-        if (nNew) lead.push({ icon: '🎫', text: `${plural(nNew, 'ticket não iniciado', 'tickets não iniciados')}`, href: '#/atendimento', sup: 'new' });
-        if (nMine) lead.push({ icon: '🎫', text: `${plural(nMine, 'ticket pendente', 'tickets pendentes')} com você`, sub: 'O autor respondeu', href: '#/atendimento', sup: 'mine_pending' });
+        const nNew = all.filter(SUP_PICK.triage).length;
+        const nMine = all.filter((t) => SUP_PICK.p_return(t) && attendedByMe(t)).length;
+        if (nNew) lead.push({ icon: '🎫', text: `${plural(nNew, 'ticket na triagem', 'tickets na triagem')}`, href: '#/atendimento', sup: 'triage' });
+        if (nMine) lead.push({ icon: '🎫', text: `${plural(nMine, 'ticket pendente', 'tickets pendentes')} de retorno com você`, sub: 'O solicitante respondeu', href: '#/atendimento', sup: 'p_return:me' });
       }
       if (isLeader()) {
         const n = pendingRequests().length;
@@ -5522,7 +5543,7 @@
       </div>`;
     $('#btn-bell').addEventListener('click', (e) => { e.stopPropagation(); bellOpen = !bellOpen; renderBell(); });
     wrap.querySelectorAll('.bell-item').forEach((a) => a.addEventListener('click', () => {
-      if (a.dataset.sup) SUP.view = a.dataset.sup;
+      if (a.dataset.sup) { const [v, who] = a.dataset.sup.split(':'); SUP.view = v; if (who) SUP.me = who === 'me'; }
       bellOpen = false;
       if (a.getAttribute('href') === location.hash) route(); else renderBell();
     }));
