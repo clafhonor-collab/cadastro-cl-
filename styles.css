@@ -1148,3 +1148,21 @@ body.has-fab main { padding-bottom: 90px; }
 .pg-diff > div { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; }
 .pg-pending-edit { margin: 6px 0; padding: 6px 10px; border: 1px dashed #8a6a1c; border-radius: 8px; }
 @media (max-width: 600px) { .pg-diff { grid-template-columns: 1fr; } }
+/* Evolução do personagem: maior valor já registrado em destaque no canto superior direito */
+.evo-sum { flex-wrap: wrap; }
+.evo-peak-box { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; text-align: right; gap: 2px;
+  padding: 8px 14px; border: 1px solid rgba(220, 170, 82, .45); border-radius: 10px; background: rgba(220, 170, 82, .08); }
+.evo-peak-label { font-size: .8rem; color: var(--gold); font-weight: 600; }
+.evo-peak-num { font-family: "Cinzel", serif; font-size: 2rem; font-weight: 700; line-height: 1.05; color: var(--gold); text-shadow: 0 0 10px rgba(220, 170, 82, .35); }
+.evo-peak-sub { font-size: .78rem; color: var(--muted); }
+.evo-peak-sub b { color: var(--text); }
+@media (max-width: 560px) {
+  .evo-peak-box { margin-left: 0; width: 100%; align-items: flex-start; text-align: left; }
+  .evo-peak-num { font-size: 1.7rem; }
+}
+/* Quadro largo: o destaque ocupa o canto superior direito, ao lado do título e das abas */
+.evo-card { position: relative; container-type: inline-size; }
+@container (min-width: 780px) {
+  .evo-peak-box { position: absolute; top: 16px; right: 18px; }
+  .evo-tabs { max-width: calc(100% - 270px); }
+}

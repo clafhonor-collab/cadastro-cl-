@@ -5300,11 +5300,17 @@
       const top = pts.reduce((b, p, i) => (p.v > b.p.v ? { p, i } : b), { p: pts[0], i: 0 });
       const topWhen = top.i === 0 && pts[0].tip.includes('valor inicial')
         ? `antes de ${new Date(pts[1].t).toLocaleDateString('pt-BR')}` : `em ${new Date(top.p.t).toLocaleDateString('pt-BR')}`;
-      const peak = top.p.v > cur ? `<br><span class="evo-peak">🏔️ Maior já registrado: <b>${fmtNum(top.p.v)}</b> ${topWhen} <span class="muted">(${fmtNum(top.p.v - cur)} acima do atual)</span></span>` : '';
+      // Destaque no canto superior direito do quadro
+      const peak = top.p.v > cur ? `<div class="evo-peak-box" title="Maior valor de ${esc(attr.label)} já registrado">
+          <span class="evo-peak-label">🏔️ Maior já registrado</span>
+          <span class="evo-peak-num">${fmtNum(top.p.v)}</span>
+          <span class="evo-peak-sub">${topWhen} · <b>${fmtNum(top.p.v - cur)}</b> acima do atual</span>
+        </div>` : '';
       body.innerHTML = `<div class="evo-sum">
           <span class="evo-gain ${cls}">${sign}${fmtNum(Math.abs(diff))}</span>
           <span class="small">de ${esc(attr.label)} desde ${since}${pct != null && diff ? ` <b class="${cls}">(${sign}${Math.abs(pct).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%)</b>` : ''}<br>
-          <span class="muted">Agora: <b>${fmtNum(cur)}</b>${last ? ` · última atualização em ${new Date(last).toLocaleDateString('pt-BR')}` : ''}</span>${peak}</span>
+          <span class="muted">Agora: <b>${fmtNum(cur)}</b>${last ? ` · última atualização em ${new Date(last).toLocaleDateString('pt-BR')}` : ''}</span></span>
+          ${peak}
         </div>
         ${lineChart(pts, { time: true, aria: `${attr.label} ao longo do tempo` })}`;
     };
