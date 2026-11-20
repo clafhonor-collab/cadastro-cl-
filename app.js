@@ -165,15 +165,33 @@
       async signInWithIdToken(token, nonce) { ok(await sb.auth.signInWithIdToken({ provider: 'google', token, nonce })); },
       signOut() { return sb.auth.signOut(); },
       async myProfile() { return ok(await sb.from('profiles').select('*').eq('id', state.user.id).maybeSingle()); },
-      // Perfis pela função list_profiles: oficiais e líder recebem tudo; o membro comum recebe
-      // os dados completos só das contas dele e, dos outros, só o que o site mostra.
-      // Enquanto o supabase/seguranca_dados.sql não for executado, usa a leitura antiga.
+      // Perfis.
+      //  - Oficiais e líder: a lista completa (função list_profiles).
+      //  - Membro comum: o site NÃO busca a lista de perfis. Lê só as próprias contas (e as que
+      //    pilota) e, dos outros, só o nome de quem aparece para ele (função my_people),
+      //    sem foto, sem endereço de imagem e sem cargo.
       async members() {
-        const { data, error } = await sb.rpc('list_profiles');
-        if (!error) return data || [];
-        if (error.code !== 'PGRST202' && !/list_profiles/.test(error.message || '')) throw error;
-        return ok(await sb.from('profiles').select('*'));
+        const missing = (e, fn) => e && (e.code === 'PGRST202' || new RegExp(fn).test(e.message || ''));
+        if (isOfficer()) {
+          const { data, error } = await sb.rpc('list_profiles');
+          if (!error) return data || [];
+          if (!missing(error, 'list_profiles')) throw error;
+          return ok(await sb.from('profiles').select('*'));
+        }
+        const own = ok(await sb.from('profiles').select('*')) || []; // o banco só entrega as minhas contas
+        const { data, error } = await sb.rpc('my_people');
+        if (error) {
+          // Só enquanto o supabase/seguranca_dados.sql mais recente não for executado
+          if (!missing(error, 'my_people')) throw error;
+          const { data: all, error: e2 } = await sb.rpc('list_profiles');
+          if (e2) throw e2;
+          return all || own;
+        }
+        const have = new Set(own.map((p) => p.id));
+        return [...own, ...(data || []).filter((p) => !have.has(p.id))];
       },
+      // Pedido de piloto (membro comum): busca uma conta pelo nick, sem baixar a lista do clã
+      async findAccounts(q) { return ok(await sb.rpc('find_accounts', { p_q: q })) || []; },
       // Média dos atributos do clã (só os números, sem os atributos de cada membro)
       async clanAverages() { return ok(await sb.rpc('clan_averages')); },
       async myPhone() { return ok(await sb.from('member_contacts').select('phone').eq('user_id', state.user.id).maybeSingle())?.phone ?? ''; },
@@ -718,22 +736,44 @@
       async signIn() { user = { id: 'u0' }; listener(user); },
       async signOut() { user = null; listener(null); },
       async myProfile() { return { ...profile(state.user.id) }; },
-      // Mesma regra da função list_profiles do banco
+      // Mesmas regras do banco: oficiais e líder recebem a lista completa (list_profiles);
+      // o membro comum recebe as próprias contas e só o nome de quem aparece para ele (my_people)
       async members() {
         if (isOfficer()) return db.profiles.map((p) => ({ ...p }));
-        const applied = (id) => db.applications.some((a) => a.user_id === id
-          && db.recruits.some((r) => r.id === a.recruit_id && (r.status === 'open' || r.created_by === state.user.id)));
-        return db.profiles.filter((p) => canActAsDemo(p.id) || (isMember() && p.role !== 'pending')).map((p) => {
-          if (canActAsDemo(p.id)) return { ...p };
-          const out = {
-            id: p.id, game_name: p.game_name, google_name: (p.game_name || '').trim() ? '' : p.google_name,
-            avatar_url: p.avatar_hidden || p.custom_avatar_url ? null : p.avatar_url,
-            custom_avatar_url: p.avatar_hidden ? null : p.custom_avatar_url, avatar_hidden: p.avatar_hidden,
-            role: p.role, managed: p.managed, char_class: p.role === 'former' ? null : p.char_class,
-          };
-          if (applied(p.id)) ATTRS.forEach((a) => { out[a.key] = p[a.key]; });
-          return out;
+        const own = db.profiles.filter((p) => canActAsDemo(p.id)).map((p) => ({ ...p }));
+        if (!isMember()) return own;
+        const me = state.user.id;
+        const vis = db.recruits.filter((r) => r.status === 'open' || r.created_by === me);
+        const myTicket = (tid) => db.tickets.some((t) => t.id === tid && t.author_id === me);
+        const ids = new Map(); // id -> mostrar atributos?
+        const add = (id, attrs = false) => { if (id) ids.set(id, ids.get(id) || attrs); };
+        db.slots.forEach((s) => {
+          if (db.slots.some((x) => x.event_id === s.event_id && x.team === s.team && canActAsDemo(x.user_id))) add(s.user_id);
         });
+        vis.forEach((r) => { add(r.created_by); add(r.decided_by); });
+        db.applications.filter((a) => vis.some((r) => r.id === a.recruit_id)).forEach((a) => add(a.user_id, true));
+        (db.rwinners || []).forEach((w) => add(w.user_id));
+        db.tickets.filter((t) => t.author_id === me).forEach((t) => add(t.assigned_to));
+        db.tmsgs.filter((m) => myTicket(m.ticket_id) && !m.internal).forEach((m) => add(m.author_id));
+        (db.tlog || []).filter((l) => myTicket(l.ticket_id)).forEach((l) => add(l.actor));
+        db.pilots.filter((p) => canActAsDemo(p.account_id)).forEach((p) => add(p.pilot_id));
+        db.pilots.filter((p) => p.pilot_id === me).forEach((p) => add(p.account_id));
+        (db.news || []).forEach((n) => add(n.author_id));
+        const people = [...ids].map(([id, attrs]) => {
+          const p = profile(id);
+          if (!p || canActAsDemo(id)) return null;
+          const out = { id, game_name: (p.game_name || '').trim() || (p.google_name || '').trim() || 'Membro', google_name: '', char_class: p.role === 'former' ? null : p.char_class };
+          if (attrs && p.role !== 'former') ATTRS.forEach((a) => { out[a.key] = p[a.key]; });
+          return out;
+        }).filter(Boolean);
+        return [...own, ...people];
+      },
+      async findAccounts(q) {
+        const s = String(q || '').trim().toLowerCase();
+        if (!isMember() || s.length < 3) return [];
+        return db.profiles.filter((p) => ['member', 'officer', 'leader'].includes(p.role) && p.id !== state.user.id
+          && displayName(p).toLowerCase().includes(s))
+          .sort(byName).slice(0, 8).map((p) => ({ id: p.id, game_name: displayName(p), char_class: p.char_class }));
       },
       async myPhone() { return db.contacts.find((c) => c.user_id === state.user.id)?.phone ?? ''; },
       async contacts() { return db.contacts.map((c) => ({ ...c })); },
@@ -4510,11 +4550,14 @@
   function openAskPilotDialog(after) {
     const taken = new Set(state.pilots.filter((p) => p.pilot_id === state.user.id).map((p) => p.account_id));
     const list = activeMembers().filter((m) => m.id !== state.user.id && !taken.has(m.id)).sort(byName);
+    // Membro comum não recebe a lista do clã: busca a conta pelo nick (mínimo de 3 letras)
+    const search = !isOfficer();
     openDialog(`
       <form id="ap-form" class="stack">
         <h2>Pedir acesso a uma conta</h2>
         <p class="small" style="margin:0">Escolha a conta que você também joga. O <b>dono da conta</b> aprova no perfil dele; se ele não puder, um oficial ou o líder aprova.</p>
-        ${memberPickerHtml(list)}
+        ${search ? `<input type="search" id="ap-q" placeholder="Digite o nick da conta (mínimo 3 letras)…" autocomplete="off">
+          <div class="picker" id="ap-results"><p class="muted small">Digite pelo menos 3 letras do nick.</p></div>` : memberPickerHtml(list)}
         <div class="field"><label for="ap-reason">Motivo <span class="muted small">(opcional)</span></label>
           <textarea id="ap-reason" maxlength="300" placeholder="Ex.: jogo na conta dele nas Guerras"></textarea></div>
         <div class="row end">
@@ -4523,6 +4566,28 @@
         </div>
       </form>`, (d) => {
       bindPicker(d);
+      const q = $('#ap-q', d);
+      if (q) {
+        const box = $('#ap-results', d);
+        let timer = null; let seq = 0;
+        q.addEventListener('input', () => {
+          clearTimeout(timer);
+          const text = q.value.trim();
+          if (text.length < 3) { box.innerHTML = '<p class="muted small">Digite pelo menos 3 letras do nick.</p>'; return; }
+          timer = setTimeout(async () => {
+            const mine = ++seq;
+            box.innerHTML = '<p class="muted small">Buscando…</p>';
+            let found = [];
+            try { found = await api.findAccounts(text); } catch (err) { fail(err); }
+            if (mine !== seq) return; // chegou uma busca mais nova
+            found = found.filter((m) => !taken.has(m.id));
+            box.innerHTML = found.length ? found.map((m) => `<label class="pick-row">
+                <input type="radio" name="pk" value="${esc(m.id)}" required> ${avatar(m)}<span>${esc(displayName(m))}</span>${m.char_class ? classTag(m.char_class) : ''}
+              </label>`).join('') : '<p class="muted small">Nenhuma conta encontrada com esse nick.</p>';
+          }, 350);
+        });
+        q.focus();
+      }
       $('#ap-form', d).addEventListener('submit', async (e) => {
         e.preventDefault();
         const id = d.querySelector('input[name="pk"]:checked')?.value;

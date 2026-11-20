@@ -190,7 +190,7 @@ A lista já vem marcada com quem confirmou "Vou"; basta desmarcar quem faltou e 
 
 **🧑‍✈️ Contas pilotadas** (para quem joga com mais de uma conta do jogo): em **Meu perfil → Contas pilotadas**, o piloto pode:
 - **Cadastrar uma conta sem login**: uma conta do jogo que só ele joga. Ela vai para "Aguardando aprovação" e um oficial ou o líder aprova.
-- **Pedir acesso a uma conta existente** (que já tem dono no site): o dono aprova no perfil dele, ou um oficial ou o líder aprova em **Membros → Pedidos de piloto**.
+- **Pedir acesso a uma conta existente** (que já tem dono no site): o membro digita pelo menos 3 letras do nick da conta e escolhe entre os resultados. O dono aprova no perfil dele, ou um oficial ou o líder aprova em **Membros → Pedidos de piloto**.
 
 Depois de aprovado, aparece no topo o seletor **"Respondendo como"**: o piloto escolhe a conta e responde aos eventos (Vou e Não vou, classe e atributos, Discord, pedido de saída) por ela.
 - Cada conta tem a própria frequência, os próprios times e o próprio histórico.
@@ -303,7 +303,9 @@ O que protege os dados são as **regras do banco (RLS)** e as funções, que val
   - os eventos;
   - as próprias respostas e as das contas que pilota;
   - o próprio time;
-  - dos outros membros, só nome, foto, cargo e classe (sem o nome real da conta Google de quem já tem nick, sem data de entrada e sem atributos; os atributos aparecem só de quem se candidatou a um recrutamento que ele vê);
+  - os perfis completos só das próprias contas (e das que pilota). **O site não busca a lista de perfis para o membro comum**: só oficiais e o líder recebem essa lista (`list_profiles`);
+  - dos outros, **só o nome** de quem aparece para ele no site (função `my_people`): colegas de time, recrutamentos que ele vê, ganhadores do sorteio, quem atendeu os tickets dele, pilotos e autores do Malah News. Não vêm foto, endereço de imagem, cargo, datas nem o nome da conta Google de quem tem nick. A classe vem só onde o site a mostra, e os atributos só dos candidatos de recrutamento;
+  - no pedido de piloto, a conta é encontrada **digitando o nick** (mínimo de 3 letras, até 8 resultados, função `find_accounts`), sem baixar a lista do clã;
   - a média de atributos do clã, só como média (função `clan_averages`);
   - recrutamentos, sorteios e Malah News;
   - os próprios tickets.
