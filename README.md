@@ -293,6 +293,32 @@ Nos tickets, o líder também pode impedir que os oficiais vejam, respondam ou r
 **🧰 Utils** (menu do topo, para todos): links úteis que abrem em uma nova aba. O primeiro é o **Discord da Aliança** (https://discord.gg/YncQxQ4bzB), seguido de builds, gemas, ranking PvP, Reddit, patch notes, fórum oficial, calculadora de gemas e o Discord oficial do jogo.
 Para adicionar, trocar ou remover um link, edite a lista `UTIL_LINKS` no [`app.js`](app.js): cada item tem um ícone, um título, uma descrição e o endereço.
 
+## Segurança dos dados
+
+O site roda no navegador e conversa direto com o Supabase. Por isso, **qualquer pessoa logada consegue fazer as mesmas consultas fora do site** (Postman, console do navegador), usando o próprio login. Isso é normal e não dá para impedir.
+A chave do `config.js` é pública de propósito. A chave secreta do Supabase (`service_role`) **nunca** deve ir para o site.
+
+O que protege os dados são as **regras do banco (RLS)** e as funções, que valem para qualquer consulta, de dentro ou de fora do site:
+- **Membro comum lê só o que o site mostra para ele:**
+  - os eventos;
+  - as próprias respostas e as das contas que pilota;
+  - o próprio time;
+  - os perfis dos outros sem o nome real da conta Google de quem já tem nick;
+  - recrutamentos, sorteios e Malah News;
+  - os próprios tickets.
+- **Ficam só com a staff:**
+  - telefones;
+  - anotações internas;
+  - histórico de alterações;
+  - histórico de eventos;
+  - pedidos de saída;
+  - tickets de outras pessoas;
+  - solicitações e configurações dos oficiais.
+- **Nada é gravado sem passar pelas regras:** o banco confere o cargo e as permissões em cada ação (cargo, times, presença, eventos, sorteio, tickets etc.).
+
+Para aplicar o ajuste mais recente (perfis e respostas), rode o [`supabase/seguranca_dados.sql`](supabase/seguranca_dados.sql) (veja **Dicas**).
+Como o site só usa o login do Google, desligue também o login por e-mail: no Supabase, **Authentication → Sign In / Providers → Email**, desative e salve.
+
 ## Dicas
 - **Atualizando o site:** se você já tinha executado uma versão anterior do `schema.sql`, rode o arquivo inteiro de novo no SQL Editor. Ele só acrescenta o que falta e não apaga dados. Ao publicar arquivos novos, aumente o número `?v=` no `index.html` para os navegadores baixarem a versão nova.
 - **Ativar o histórico de alterações dos eventos:** no Supabase, abra o **SQL Editor**, cole todo o conteúdo de [`supabase/historico_eventos.sql`](supabase/historico_eventos.sql) e clique em **Run**. Ele só acrescenta o que falta, pode ser executado de novo e também está no fim do `schema.sql`. Enquanto ele não for executado, o site funciona normalmente, só sem o histórico.
@@ -305,6 +331,7 @@ Para adicionar, trocar ou remover um link, edite a lista `UTIL_LINKS` no [`app.j
   Na **Tela de consentimento OAuth** (Google Auth Platform → Branding), vale preencher o nome do app (**FOR HONOR**), o logotipo e `forhonorcla.com.br` em **Domínios autorizados**.
 - **Ativar o histórico de quem encerrou os tickets:** do mesmo jeito, cole todo o conteúdo de [`supabase/tickets_historico.sql`](supabase/tickets_historico.sql) no **SQL Editor** e clique em **Run**. Ele também só acrescenta o que falta, pode ser executado de novo e está no fim do `schema.sql`.
 - **Ativar a edição de nick pela staff:** do mesmo jeito, rode o [`supabase/editar_nick.sql`](supabase/editar_nick.sql) no **SQL Editor**. Ele só cria a função `set_member_name`, pode ser executado de novo e está no fim do `schema.sql`.
+- **Ajuste de segurança (perfis e respostas):** rode o [`supabase/seguranca_dados.sql`](supabase/seguranca_dados.sql) no **SQL Editor**. Ele só troca duas regras de leitura e cria a função `list_profiles`; nenhum dado é alterado. Pode ser executado de novo e está no fim do `schema.sql` (veja **Segurança dos dados**).
 - **Ativar o Sorteio:** no Supabase, abra o **SQL Editor**, cole todo o conteúdo de [`supabase/sorteio.sql`](supabase/sorteio.sql) e clique em **Run**. Ele só acrescenta o que falta e pode ser executado de novo sem problema. O mesmo trecho também está no fim do `schema.sql`.
   O script também agenda o sorteio às 22h com o **pg_cron** do Supabase. Se aparecer o aviso "pg_cron indisponível", ative a extensão em **Database → Extensions → pg_cron** e rode o arquivo de novo. Enquanto ela não estiver ativa, o sorteio acontece na primeira visita ao site depois das 22h.
 - **Só Recrutamentos e Tickets:** o [`supabase/recrutamentos_tickets.sql`](supabase/recrutamentos_tickets.sql) instala apenas essas duas partes, sem mexer no resto. Ele depende das Configurações do líder, que já vêm no `schema.sql`. Quem roda o `schema.sql` completo não precisa dele.

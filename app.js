@@ -165,7 +165,15 @@
       async signInWithIdToken(token, nonce) { ok(await sb.auth.signInWithIdToken({ provider: 'google', token, nonce })); },
       signOut() { return sb.auth.signOut(); },
       async myProfile() { return ok(await sb.from('profiles').select('*').eq('id', state.user.id).maybeSingle()); },
-      async members() { return ok(await sb.from('profiles').select('*')); },
+      // Perfis pela função list_profiles: oficiais e líder recebem tudo; o membro comum recebe
+      // os dados completos só das contas dele e, dos outros, só o que o site mostra.
+      // Enquanto o supabase/seguranca_dados.sql não for executado, usa a leitura antiga.
+      async members() {
+        const { data, error } = await sb.rpc('list_profiles');
+        if (!error) return data || [];
+        if (error.code !== 'PGRST202' && !/list_profiles/.test(error.message || '')) throw error;
+        return ok(await sb.from('profiles').select('*'));
+      },
       async myPhone() { return ok(await sb.from('member_contacts').select('phone').eq('user_id', state.user.id).maybeSingle())?.phone ?? ''; },
       async contacts() { return ok(await sb.from('member_contacts').select('user_id, phone')); },
       async syncProfile() { ok(await sb.rpc('sync_google_profile')); },
@@ -648,10 +656,10 @@
       const officer = isOfficer();
       const slots = db.slots.filter((s) => s.event_id === e.id);
       const myTeams = new Set(slots.filter((s) => canActAsDemo(s.user_id)).map((s) => s.team));
-      const teammate = (u) => slots.some((s) => s.user_id === u && myTeams.has(s.team));
       return {
         ...e,
-        rsvps: db.rsvps.filter((r) => r.event_id === e.id && (officer || canActAsDemo(r.user_id) || teammate(r.user_id))).map((r) => ({ ...r })),
+        // Mesma regra do banco: membro comum só recebe as respostas das contas que controla
+        rsvps: db.rsvps.filter((r) => r.event_id === e.id && (officer || canActAsDemo(r.user_id))).map((r) => ({ ...r })),
         team_slots: slots.filter((s) => officer || myTeams.has(s.team)).map((s) => ({ user_id: s.user_id, team: s.team })),
         attendance: db.attendance.filter((a) => a.event_id === e.id && (officer || canActAsDemo(a.user_id))).map((a) => ({ user_id: a.user_id, present: a.present })),
       };
@@ -1960,10 +1968,22 @@
   // Lista de quem confirmou presença, já com classe/atributos do evento
   function goingPeople(ev) {
     const byId = Object.fromEntries(state.members.map((m) => [m.id, m]));
-    return ev.rsvps.filter((r) => r.going && byId[r.user_id]).map((r) => {
+    const out = ev.rsvps.filter((r) => r.going && byId[r.user_id]).map((r) => {
       const p = byId[r.user_id];
       return { id: p.id, name: displayName(p), profile: p, build: buildFor(r, p), discord: !!r.discord, wd: r.withdraw_requested_at ? (r.withdraw_reason || 'Sem motivo') : null };
     });
+    // Membro comum: o banco só entrega as respostas das contas dele. Os colegas do time
+    // vêm das vagas do time, com o nome e a classe do perfil (o que o membro vê).
+    if (!isOfficer()) {
+      const have = new Set(out.map((p) => p.id));
+      (ev.team_slots || []).forEach((s) => {
+        const p = byId[s.user_id];
+        if (!p || have.has(p.id)) return;
+        have.add(p.id);
+        out.push({ id: p.id, name: displayName(p), profile: p, build: buildFor(null, p), discord: false, wd: null });
+      });
+    }
+    return out;
   }
 
   // bare = só nome e classe (sem atributos), usado na visão do membro e na opção "Ocultar"
