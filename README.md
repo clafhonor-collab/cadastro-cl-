@@ -12,6 +12,8 @@ O nome e o lema aparecem no topo e na tela de login, e podem ser trocados no [`c
 - Cada membro cadastra **classe** (DH, Cruzado, Mago, BK, Monge, Druida, Bárbaro, Necromante, Bruxo, Tempest), os **atributos** (Armadura, Perfurar Armadura, Potência, Resistência, Ressonância) e, se quiser, um **telefone**. Ao clicar em "Vou", o membro confirma ou corrige a classe e os atributos.
 - **Líder e oficiais** criam, editam, repetem e apagam eventos, e aprovam novos membros.
 - **Montagem de times** com quem confirmou presença: formato **Guerra** (12 times de 8: Exaltação, Eminência, Renome e Orgulho, de 1 a 3 cada) ou **Rito** (até 10 times de 8).
+  Eventos de torre (tipo ou nome com "torre", como Guerra das Torres e Torre Amaldiçoada) têm sempre **3 times: Time 1, Time 2 e Time 3**. Não dá para escolher o formato Guerra, mudar a quantidade nem renomear.
+  Uma torre criada antes com outro formato passa sozinha para os 3 times se ninguém estiver escalado; se já houver membros escalados, o site pede para converter.
 - **Frequência**: depois do evento, um oficial marca quem realmente compareceu. O painel mostra a % de presença de cada membro, quem confirmou e faltou e quem não respondeu.
 - Em cada evento aparece quem vai, quem não vai e quem ainda não respondeu. Os botões "Copiar lista" e "Copiar times" geram textos prontos para colar no Discord.
 - **Recrutamentos**: membros procuram gente para um Grupo Guerreiro, um evento PvP ou outra atividade; os candidatos se inscrevem e quem criou escolhe quem entra.

@@ -136,7 +136,9 @@
     const t = norm(title);
     if (!t) return null;
     const other = types.find((x) => norm(x.name) === 'outros');
-    const hit = types.find((x) => x !== other && t.includes(norm(x.name).split(' ')[0]));
+    const hit = types.find((x) => x !== other && t.includes(norm(x.name)))
+      || (t.includes('torre') && types.find((x) => norm(x.name).includes('torre')))
+      || types.find((x) => x !== other && t.includes(norm(x.name).split(' ')[0]));
     return (hit || other)?.id ?? null;
   }
 
@@ -2099,7 +2101,14 @@
 
   // Formato "Outros": o oficial pode renomear cada time (ex.: "Time 1" → "Revenge"). Vazio = nome padrão.
   const customTeamName = (ev, i) => (ev.team_names?.[i] || '').trim() || `Time ${i + 1}`;
+  // Guerra das Torres (tipo ou nome com "torre"): sempre 3 times, Time 1, Time 2 e Time 3, sem renomear
+  const TOWER_TEAMS = ['Time 1', 'Time 2', 'Time 3'];
+  const isTower = (ev) => norm(`${typeName(ev.type_id)} ${ev.title || ''}`).includes('torre');
+  // (eventos antigos que já tinham times renomeados continuam mostrando os nomes, para não perder o histórico)
+  const towerNeedsFix = (ev) => isTower(ev) && (ev.team_format !== 'rito' || ev.team_count !== TOWER_TEAMS.length);
+  const fmtLabel = (ev) => (isTower(ev) ? 'Torres · 3 times' : FORMAT_LABEL[ev.team_format] || '');
   function teamNames(ev) {
+    if (isTower(ev) && ev.team_format === 'rito') return TOWER_TEAMS.map((_, i) => customTeamName(ev, i));
     if (ev.team_format === 'guerra') return WAR_GROUPS.flatMap((g) => [1, 2, 3].map((n) => `${g} ${n}`));
     if (ev.team_format === 'rito') return Array.from({ length: ev.team_count || RITE_MAX }, (_, i) => customTeamName(ev, i));
     return [];
@@ -2825,7 +2834,7 @@
   }
 
   function teamsText(ev, people, slots) {
-    const lines = [`**${ev.title}** — ${fmtDay(ev.starts_at)} às ${fmtTime(ev.starts_at)} (${FORMAT_LABEL[ev.team_format] || ''})`];
+    const lines = [`**${ev.title}** — ${fmtDay(ev.starts_at)} às ${fmtTime(ev.starts_at)} (${fmtLabel(ev)})`];
     teamNames(ev).forEach((t) => {
       const ps = people.filter((p) => slots.get(p.id) === t);
       if (ps.length) lines.push(`__${t}__ (${ps.length}/${TEAM_SIZE}): ${ps.map((p) => `${p.name} (${CLASS[p.build.char_class]?.label || '?'})${p.discord ? ' 🎧' : ''}`).join(', ')}`);
@@ -3078,11 +3087,11 @@
       ${wdBox}
       ${myTeam(ev) ? `<div class="card my-team row">
           <span class="my-team-icon" aria-hidden="true">🛡</span>
-          <span>Você está no time <b>${esc(myTeam(ev))}</b>${ev.team_format ? ` <span class="muted">· ${FORMAT_LABEL[ev.team_format]}</span>` : ''}</span>
+          <span>Você está no time <b>${esc(myTeam(ev))}</b>${ev.team_format ? ` <span class="muted">· ${fmtLabel(ev)}</span>` : ''}</span>
         </div>` : ''}
       ${attendanceBox}
       ${!showTeams ? '' : officer
-        ? `<div class="section-head"><h2>Times · ${FORMAT_LABEL[ev.team_format]}</h2>
+        ? `<div class="section-head"><h2>Times · ${esc(fmtLabel(ev))}</h2>
             <div class="seg" role="group" aria-label="Mostrar nos times">
               <button class="${aggMode() === 'avg' ? 'on' : ''}" data-agg="avg" title="Média dos atributos de cada time">Média</button>
               <button class="${aggMode() === 'sum' ? 'on' : ''}" data-agg="sum" title="Soma dos atributos de cada time">Totalizador</button>
@@ -3142,7 +3151,7 @@
       $('#btn-dup')?.addEventListener('click', async () => {
         const d = new Date(ev.starts_at); d.setDate(d.getDate() + 7);
         try {
-          await api.createEvents([{ title: ev.title, description: ev.description || null, type_id: ev.type_id ?? null, rsvp_close_minutes: ev.rsvp_close_minutes ?? null, starts_at: d.toISOString(), team_format: ev.team_format, team_count: ev.team_count, ...(ev.team_names?.some(Boolean) ? { team_names: ev.team_names } : {}) }]);
+          await api.createEvents([{ title: ev.title, description: ev.description || null, type_id: ev.type_id ?? null, rsvp_close_minutes: ev.rsvp_close_minutes ?? null, starts_at: d.toISOString(), team_format: ev.team_format, team_count: ev.team_count, ...(ev.team_names?.some(Boolean) && !isTower(ev) ? { team_names: ev.team_names } : {}) }]);
           toast(`Criado para ${d.toLocaleDateString('pt-BR')}`);
         } catch (e) { fail(e); }
       });
@@ -3388,7 +3397,24 @@
     T.orig = new Map(T.slots);
     T.sel = null;
     T.log = await api.eventLog(id).catch((e) => { console.warn('histórico do evento', e); return []; });
+    // Torres criadas com outro formato: sem ninguém escalado, já passa direto para os 3 times
+    if (towerNeedsFix(ev) && !T.orig.size) {
+      try { await api.updateEvent(ev.id, { team_format: 'rito', team_count: TOWER_TEAMS.length }); await viewTeams(id); return; } catch (e) { fail(e); }
+    }
     renderTeams();
+  }
+
+  // Converte uma Guerra das Torres para os 3 times fixos (quem estava em outro time volta para "Sem time")
+  async function toTowerFormat() {
+    const ev = T.ev;
+    const keep = new Set(teamNames({ ...ev, team_format: 'rito', team_count: TOWER_TEAMS.length }));
+    const out = [...T.orig.values()].filter((t) => !keep.has(t));
+    if (out.length && !(await confirmDialog(`${out.length} membro(s) estão em times que não existem na Guerra das Torres e voltarão para “Sem time”. Continuar?`, 'Continuar'))) return;
+    try {
+      if (out.length) await api.removeTeams(ev.id, [...new Set(out)]);
+      await api.updateEvent(ev.id, { team_format: 'rito', team_count: TOWER_TEAMS.length });
+      await viewTeams(ev.id);
+    } catch (e) { fail(e); }
   }
 
   function sortedPool() {
@@ -3407,6 +3433,7 @@
 
   function renderTeams() {
     const { ev } = T;
+    const tower = isTower(ev); const towerFix = towerNeedsFix(ev);
     const assigned = T.people.filter((p) => T.slots.has(p.id)).length;
     const pool = sortedPool();
     const capacity = teamNames(ev).length * TEAM_SIZE;
@@ -3421,13 +3448,13 @@
           <div class="muted small">${esc(fmtDay(ev.starts_at))} · ${fmtTime(ev.starts_at)} · ${T.people.length} confirmados · ${assigned} em times${capacity ? ` · ${capacity} vagas` : ''}</div>
         </div>
         <div class="row">
-          <div class="seg" role="group" aria-label="Formato">
+          ${tower ? '<span class="tower-tag" title="Guerra das Torres tem sempre 3 times">🗼 Guerra das Torres · 3 times</span>' : `<div class="seg" role="group" aria-label="Formato">
             <button class="${ev.team_format === 'guerra' ? 'on' : ''}" data-format="guerra">Guerra</button>
             <button class="${ev.team_format === 'rito' ? 'on' : ''}" data-format="rito">Outros</button>
-          </div>
-          ${ev.team_format === 'rito' ? `<label class="inline-label">Times
+          </div>`}
+          ${ev.team_format === 'rito' && !tower ? `<label class="inline-label">Times
             <select class="inline" id="rite-count">${Array.from({ length: RITE_MAX }, (_, i) => i + 1).map((n) => `<option ${n === (ev.team_count || RITE_MAX) ? 'selected' : ''}>${n}</option>`).join('')}</select></label>` : ''}
-          ${ev.team_format ? `<div class="seg" role="group" aria-label="Mostrar nos times">
+          ${ev.team_format && !towerFix ? `<div class="seg" role="group" aria-label="Mostrar nos times">
               <button class="${aggMode() === 'avg' ? 'on' : ''}" data-agg="avg" title="Média dos atributos de cada time">Média</button>
               <button class="${aggMode() === 'sum' ? 'on' : ''}" data-agg="sum" title="Soma dos atributos de cada time">Totalizador</button>
               <button class="${aggMode() === 'hide' ? 'on' : ''}" data-agg="hide" title="Mostrar só nome e classe de cada membro">Ocultar</button>
@@ -3438,11 +3465,21 @@
             ${can('teams_lock') ? '' : '<!--'}<button class="btn small ${ev.teams_locked ? 'locked' : ''}" id="btn-lock" title="${ev.teams_locked ? 'Destravar: membros voltam a poder sair sozinhos' : 'Travar: quem está escalado só sai pedindo ao oficial'}">${ev.teams_locked ? '🔒 Travados' : '🔓 Travar times'}</button>${can('teams_lock') ? '' : '-->'}` : ''}
         </div>
       </div>
-      ${ev.team_format ? saveBar() : ''}
+      ${ev.team_format && !towerFix ? saveBar() : ''}
       ${samePilotBanner()}
       ${ev.teams_locked ? `<div class="lock-banner">🔒 <b>Times travados.</b> Quem está escalado não consegue sair sozinho: precisa enviar um pedido de saída, que aparece na página do evento. Você continua podendo editar os times.</div>` : ''}
       ${T.people.some((p) => p.wd) ? `<div class="lock-banner warn">⚠ ${T.people.filter((p) => p.wd).length} membro(s) pediram para sair. Decida na <a href="#/evento/${ev.id}">página do evento</a>.</div>` : ''}`;
 
+    if (towerFix) {
+      main.innerHTML = `${head}<div class="card empty">
+        <p>🗼 A Guerra das Torres tem sempre <b>3 times</b>: Time 1, Time 2 e Time 3.</p>
+        <p class="muted small">Este evento foi criado com outro formato${T.orig.size ? ' e já tem membros escalados' : ''}. Converta para montar os times.</p>
+        <div class="row" style="justify-content:center;margin-top:12px">
+          <button class="btn primary big" id="btn-tower">Usar 3 times<small>Time 1 · Time 2 · Time 3</small></button>
+        </div></div>`;
+      $('#btn-tower').addEventListener('click', toTowerFormat);
+      return;
+    }
     if (!ev.team_format) {
       main.innerHTML = `${head}<div class="card empty">
         <p>Escolha o formato dos times para este evento:</p>
@@ -3455,7 +3492,7 @@
     }
 
     main.innerHTML = `${head}
-      <p class="muted small hint">Clique em um membro e depois no time (ou arraste). Para tirar do time, clique no × ou arraste de volta para a lista.${ev.team_format === 'rito' ? ' Para renomear um time (ex.: “Revenge”), clique no ✏️ ao lado do nome.' : ''}</p>
+      <p class="muted small hint">Clique em um membro e depois no time (ou arraste). Para tirar do time, clique no × ou arraste de volta para a lista.${ev.team_format === 'rito' && !tower ? ' Para renomear um time (ex.: “Revenge”), clique no ✏️ ao lado do nome.' : ''}</p>
       <div class="tb">
         <aside class="pool card${T.sel && T.slots.has(T.sel) ? ' target' : ''}" id="pool">
           <div class="pool-head">
@@ -3478,7 +3515,7 @@
           </div>
           ${classSummary()}
         </aside>
-        <section class="teams-area">${teamsHtml(ev, T.people, T.slots, { editable: true, sel: T.sel, renamable: ev.team_format === 'rito', edits: lastRoomEdits(T.log) })}</section>
+        <section class="teams-area">${teamsHtml(ev, T.people, T.slots, { editable: true, sel: T.sel, renamable: ev.team_format === 'rito' && !tower, edits: lastRoomEdits(T.log) })}</section>
       </div>`;
     // Destaca quem foi movido e ainda não foi salvo
     main.querySelectorAll('.chip[data-uid]').forEach((c) => {
@@ -8008,7 +8045,16 @@
       const suggestFormat = () => {
         if (!fmt || fmt.dataset.touched) return;
         const t = norm(`${typeSel.selectedOptions[0]?.value ? typeSel.selectedOptions[0].textContent : ''} ${titleInput.value}`);
-        fmt.value = t.includes('guerra') ? 'guerra' : t.includes('rito') ? 'rito' : '';
+        fmt.value = t.includes('torre') ? 'rito' : t.includes('guerra') ? 'guerra' : t.includes('rito') ? 'rito' : '';
+      };
+      // Guerra das Torres: só 3 times (o formato Guerra fica bloqueado)
+      const towerForm = () => norm(`${typeSel.selectedOptions[0]?.value ? typeSel.selectedOptions[0].textContent : ''} ${titleInput.value}`).includes('torre');
+      const syncTower = () => {
+        if (!fmt) return;
+        const tw = towerForm();
+        fmt.querySelector('option[value="guerra"]').disabled = tw;
+        fmt.querySelector('option[value="rito"]').textContent = tw ? 'Torres (3 times: Time 1, Time 2 e Time 3)' : 'Outros (até 10 times)';
+        if (tw && fmt.value === 'guerra') fmt.value = 'rito';
       };
       // Sugere o tipo pelo nome digitado, até o oficial escolher um manualmente
       titleInput.addEventListener('input', () => {
@@ -8016,9 +8062,10 @@
           const g = guessTypeId(titleInput.value, state.types);
           typeSel.value = g ? String(g) : '';
         }
-        suggestFormat();
+        suggestFormat(); syncTower();
       });
-      typeSel.addEventListener('change', () => { typeSel.dataset.touched = '1'; suggestFormat(); });
+      typeSel.addEventListener('change', () => { typeSel.dataset.touched = '1'; suggestFormat(); syncTower(); });
+      syncTower();
       fmt?.addEventListener('change', () => { fmt.dataset.touched = '1'; });
       // Tipos com dia e horário fixos: ajusta a data para o próximo dia permitido e avisa se estiver fora
       const startInput = $('#f-start', d);
@@ -8067,9 +8114,10 @@
           } else {
             const weeks = Number($('#f-weeks', d).value);
             const team_format = fmt.value || null;
+            const tower = towerForm() && team_format === 'rito';
             const rows = Array.from({ length: weeks }, (_, i) => {
               const s = new Date(startDate); s.setDate(s.getDate() + 7 * i);
-              return { title, description, type_id, rsvp_close_minutes, starts_at: s.toISOString(), team_format, team_count: RITE_MAX };
+              return { title, description, type_id, rsvp_close_minutes, starts_at: s.toISOString(), team_format, team_count: tower ? TOWER_TEAMS.length : RITE_MAX };
             });
             await api.createEvents(rows);
             toast(weeks > 1 ? `${weeks} eventos criados` : 'Evento criado');
