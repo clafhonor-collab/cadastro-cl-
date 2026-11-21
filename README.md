@@ -18,7 +18,7 @@ O nome e o lema aparecem no topo e na tela de login, e podem ser trocados no [`c
   Ele fica com a bandeira vermelha 🚩 (e borda vermelha) nos times e na lista de confirmados. O "Sugerir times" nunca coloca essas pessoas em Exaltação, só de Eminência em diante.
   Oficiais e líder ainda podem colocar a pessoa em Exaltação manualmente: o site avisa e pede confirmação. Ative com o [`supabase/partidas_4_pontos.sql`](supabase/partidas_4_pontos.sql).
 - **Frequência**: depois do evento, um oficial marca quem realmente compareceu. O painel mostra a % de presença de cada membro, quem confirmou e faltou e quem não respondeu.
-- Em cada evento aparece quem vai, quem não vai e quem ainda não respondeu. Os botões "Copiar lista" e "Copiar times" geram textos prontos para colar no Discord.
+- Em cada evento aparece quem vai, quem não vai e quem ainda não respondeu. O botão "Copiar lista" gera um texto pronto para colar no Discord. O "Copiar times" gera a lista para o grupo do WhatsApp: o nome de cada time em negrito e um nome por linha, com um ponto (•) na frente.
 - **Recrutamentos**: membros procuram gente para um Grupo Guerreiro, um evento PvP ou outra atividade; os candidatos se inscrevem e quem criou escolhe quem entra.
 - **Sorteio**: todo domingo às 22h (Brasília) o site sorteia prêmios entre os inscritos que tiveram presença registrada nas duas Guerras das Sombras da semana.
 - **Central de Atendimento**: membros abrem tickets para a liderança (sugestões, dúvidas, problemas no site, denúncias), inclusive de forma anônima.
@@ -166,7 +166,7 @@ Só oficiais e o líder veem as anotações, e ninguém vê as anotações sobre
 **Como o membro vê o próprio time:** depois que os times são salvos, o card do evento mostra o selo **"Seu time: …"**.
 A página do evento mostra o aviso **"Você está no time …"** e **só o time dele**, com o nome e a classe de cada integrante, sem os atributos.
 O membro não vê os outros times, nem as médias ou os totais, nem o botão "Copiar times". O banco também só entrega a ele os dados do próprio time.
-O site não manda notificação; use **📋 Copiar times** para avisar no Discord.
+O site não manda notificação; use **📋 Copiar times** para avisar no grupo do WhatsApp.
 
 **Meu perfil** (menu do topo, para todos: membros, oficiais e líder): é o painel individual de cada um.
 Oficiais e líder também abrem o **perfil de qualquer membro**: basta clicar no membro na lista de **Membros** ou no nome dele na tabela de **Frequência**.

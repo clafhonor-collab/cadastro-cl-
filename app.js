@@ -2852,14 +2852,16 @@
     return `<div class="teams-grid">${shown.map(([t, i]) => teamCard(t, byTeam(t), { ...opts, renameIndex: opts.renamable ? i : null })).join('')}</div>`;
   }
 
+  // Texto para colar no grupo do WhatsApp: um nome por linha, com um ponto (•) na frente
   function teamsText(ev, people, slots) {
-    const lines = [`**${ev.title}** — ${fmtDay(ev.starts_at)} às ${fmtTime(ev.starts_at)} (${fmtLabel(ev)})`];
+    const lines = [`*${ev.title}*`, `${fmtDay(ev.starts_at)} às ${fmtTime(ev.starts_at)}`];
+    const block = (title, ps) => { lines.push('', `*${title}* (${ps.length})`, ...ps.map((p) => `• ${p.name}`)); };
     teamNames(ev).forEach((t) => {
       const ps = people.filter((p) => slots.get(p.id) === t);
-      if (ps.length) lines.push(`__${t}__ (${ps.length}/${TEAM_SIZE}): ${ps.map((p) => `${p.name} (${CLASS[p.build.char_class]?.label || '?'})${p.discord ? ' 🎧' : ''}`).join(', ')}`);
+      if (ps.length) block(t, ps);
     });
     const out = people.filter((p) => !slots.has(p.id));
-    if (out.length) lines.push(`Sem time (${out.length}): ${out.map((p) => p.name).join(', ')}`);
+    if (out.length) block('Sem time', out);
     return lines.join('\n');
   }
 
@@ -3130,7 +3132,7 @@
 
     bindRsvp(main, [ev], () => viewEvent(id));
     $('#btn-copy').addEventListener('click', () => copy(location.href, 'Link copiado'));
-    $('#btn-copy-teams')?.addEventListener('click', () => copy(teamsText(ev, people, slots), 'Times copiados — cole no Discord'));
+    $('#btn-copy-teams')?.addEventListener('click', () => copy(teamsText(ev, people, slots), 'Times copiados — é só colar no WhatsApp'));
     $('#btn-history')?.addEventListener('click', () => openEventLog(ev, log));
     const resolve = async (uid, accept) => {
       const p = state.members.find((m) => m.id === uid);
@@ -3796,7 +3798,7 @@
     $('#rite-count')?.addEventListener('change', (e) => changeFormat('rito', Number(e.target.value)));
     $('#pool-sort')?.addEventListener('change', (e) => { T.sort = e.target.value; renderTeams(); });
     $('#pool-class')?.addEventListener('change', (e) => { T.cls = e.target.value; renderTeams(); });
-    $('#btn-copy-teams')?.addEventListener('click', () => copy(teamsText(T.ev, T.people, T.slots), 'Times copiados — cole no Discord'));
+    $('#btn-copy-teams')?.addEventListener('click', () => copy(teamsText(T.ev, T.people, T.slots), 'Times copiados — é só colar no WhatsApp'));
     $('#btn-clear')?.addEventListener('click', async () => {
       if (!T.slots.size) return;
       if (!(await confirmDialog('Tirar todos os membros dos times? (Só vale depois de clicar em Salvar.)', 'Limpar'))) return;
