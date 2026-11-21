@@ -14,6 +14,9 @@ O nome e o lema aparecem no topo e na tela de login, e podem ser trocados no [`c
 - **Montagem de times** com quem confirmou presença: formato **Guerra** (12 times de 8: Exaltação, Eminência, Renome e Orgulho, de 1 a 3 cada) ou **Rito** (até 10 times de 8).
   Eventos de torre (tipo ou nome com "torre", como Guerra das Torres e Torre Amaldiçoada) têm sempre **3 times: Time 1, Time 2 e Time 3**. Não dá para escolher o formato Guerra, mudar a quantidade nem renomear.
   Uma torre criada antes com outro formato passa sozinha para os 3 times se ninguém estiver escalado; se já houver membros escalados, o site pede para converter.
+- **Preferência por partidas de 4 pontos** (Guerra das Sombras e Vigília): ao confirmar presença, o membro pode marcar a opção.
+  Ele fica com a bandeira vermelha 🚩 (e borda vermelha) nos times e na lista de confirmados. O "Sugerir times" nunca coloca essas pessoas em Exaltação, só de Eminência em diante.
+  Oficiais e líder ainda podem colocar a pessoa em Exaltação manualmente: o site avisa e pede confirmação. Ative com o [`supabase/partidas_4_pontos.sql`](supabase/partidas_4_pontos.sql).
 - **Frequência**: depois do evento, um oficial marca quem realmente compareceu. O painel mostra a % de presença de cada membro, quem confirmou e faltou e quem não respondeu.
 - Em cada evento aparece quem vai, quem não vai e quem ainda não respondeu. Os botões "Copiar lista" e "Copiar times" geram textos prontos para colar no Discord.
 - **Recrutamentos**: membros procuram gente para um Grupo Guerreiro, um evento PvP ou outra atividade; os candidatos se inscrevem e quem criou escolhe quem entra.

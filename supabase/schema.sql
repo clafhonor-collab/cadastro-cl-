@@ -4008,3 +4008,17 @@ revoke execute on function public.save_cycle(bigint, date, text) from public, an
 revoke execute on function public.delete_cycle(bigint) from public, anon;
 grant  execute on function public.save_cycle(bigint, date, text) to authenticated;
 grant  execute on function public.delete_cycle(bigint) to authenticated;
+-- =====================================================================
+--  Preferência por partidas de 4 pontos (Guerra das Sombras e Vigília)
+--  Rode este arquivo uma vez no Supabase (SQL Editor).
+--  Só ADICIONA uma coluna na tabela de respostas (rsvps): nada é apagado.
+--
+--  Quem marca a opção ao confirmar presença fica com uma bandeira vermelha
+--  nos times e não vai para Exaltação no "Sugerir times". Oficiais e líder
+--  ainda podem colocar a pessoa em Exaltação manualmente (o site avisa).
+-- =====================================================================
+
+alter table public.rsvps add column if not exists prefer_4pts boolean not null default false;
+
+-- Faz a API do Supabase enxergar a coluna nova na hora
+notify pgrst, 'reload schema';

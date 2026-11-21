@@ -525,6 +525,11 @@ h1 { background: linear-gradient(180deg, #fff1da, #e3b878); -webkit-background-c
 .join-box .card { opacity: 1; }
 .join-row .pilot-tag { margin-left: 6px; }
 .join-row[hidden] { display: none; }
+.p4-flag { font-size: .8rem; margin-left: 2px; filter: saturate(1.4); }
+.chip.p4 { border-color: #dc2626; box-shadow: inset 3px 0 0 #dc2626; }
+.chip.p4.sel { border-color: var(--gold); }
+.p4-flag { margin: 0 2px 0 0; }
+.p4-q { align-items: flex-start; border: 1px solid rgba(220, 38, 38, .35); background: rgba(220, 38, 38, .06); border-radius: 10px; padding: 8px 10px; }
 .tower-tag { font-size: .85rem; color: var(--gold); border: 1px solid rgba(220, 170, 82, .45); background: rgba(220, 170, 82, .08); border-radius: 999px; padding: 3px 10px; white-space: nowrap; }
 .left-info { text-align: right; max-width: 260px; line-height: 1.35; }
 .former-badge { background: #3a2a2a; color: #d9b3ac; border: 1px solid #6b3b35; font-family: "Inter", sans-serif; vertical-align: middle; }

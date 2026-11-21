@@ -317,7 +317,16 @@
       async deleteEvent(id) { ok(await sb.from('events').delete().eq('id', id)); },
       // accountId = conta do jogo que está respondendo (a própria ou uma conta pilotada)
       async setRsvp(eventId, going, build, accountId) {
-        ok(await sb.from('rsvps').upsert({ event_id: eventId, user_id: accountId || state.user.id, going, updated_at: new Date().toISOString(), ...(build || {}) }));
+        const row = { event_id: eventId, user_id: accountId || state.user.id, going, updated_at: new Date().toISOString(), ...(build || {}) };
+        const res = await sb.from('rsvps').upsert(row);
+        // Banco ainda sem a coluna prefer_4pts (falta rodar o partidas_4_pontos.sql): salva a presença sem a preferência
+        if (res.error && 'prefer_4pts' in row && /prefer_4pts/.test(res.error.message || '')) {
+          delete row.prefer_4pts;
+          ok(await sb.from('rsvps').upsert(row));
+          toast('Presença salva, mas a preferência por 4 pontos ainda não está ativa no banco. Avise a liderança.', true);
+          return;
+        }
+        ok(res);
       },
       async clearRsvp(eventId, accountId) { ok(await sb.from('rsvps').delete().eq('event_id', eventId).eq('user_id', accountId || state.user.id)); },
       async saveBuild(accountId, build) { ok(await sb.from('profiles').update(build).eq('id', accountId)); },
@@ -643,6 +652,8 @@
     db.profiles.slice(1, 31).forEach((p, i) => answer(1, p.id, i % 7 !== 3));
     db.profiles.slice(5, 26).forEach((p, i) => answer(3, p.id, i % 5 !== 0));
     db.profiles.slice(2, 6).forEach((p, i) => answer(2, p.id, i !== 1));
+    // Alguns confirmados da Guerra preferem partidas de 4 pontos
+    db.rsvps.filter((r) => r.event_id === 1 && r.going).slice(12, 30).filter((_, i) => i % 6 === 0).forEach((r) => { r.prefer_4pts = true; });
     // Alguns já distribuídos na Guerra
     db.rsvps.filter((r) => r.event_id === 1 && r.going).slice(0, 11)
       .forEach((r, i) => db.slots.push({ event_id: 1, user_id: r.user_id, team: i < 8 ? 'Exaltação 1' : 'Exaltação 2' }));
@@ -2072,9 +2083,9 @@
     return ATTRS.map((a) => `<span title="${esc(a.label)}">${a.short} <b>${fmtNum(b?.[a.key])}</b></span>`).join('');
   }
   const dcIcon = '<span class="dc" title="Vai usar o Discord neste evento">🎧</span>';
-  function personLine(p, build, discord, note) {
+  function personLine(p, build, discord, note, p4 = false) {
     const sub = [p.managed ? 'conta sem login' : (p.game_name ? p.google_name : ''), note].filter(Boolean).join(' · ');
-    return `<li>${avatar(p)}<span class="name">${esc(displayName(p))}${sub ? `<small>${esc(sub)}</small>` : ''}</span>${discord ? dcIcon : ''}${build?.char_class ? classTag(build.char_class) : ''}</li>`;
+    return `<li>${avatar(p)}<span class="name">${esc(displayName(p))}${sub ? `<small>${esc(sub)}</small>` : ''}</span>${p4 ? p4Flag : ''}${discord ? dcIcon : ''}${build?.char_class ? classTag(build.char_class) : ''}</li>`;
   }
 
   const fmtTime = (iso) => new Date(iso).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
@@ -2101,6 +2112,10 @@
 
   // Formato "Outros": o oficial pode renomear cada time (ex.: "Time 1" → "Revenge"). Vazio = nome padrão.
   const customTeamName = (ev, i) => (ev.team_names?.[i] || '').trim() || `Time ${i + 1}`;
+  // Guerra das Sombras e Vigília: na inscrição dá para marcar "preferência por partidas de 4 pontos"
+  const has4pts = (ev) => { const n = norm(`${typeName(ev.type_id)} ${ev.title || ''}`); return n.includes('guerra das sombras') || n.includes('vigilia'); };
+  const isExaltRoom = (team) => /^Exaltação\b/.test(team || '');
+  const p4Flag = '<span class="p4-flag" title="Prefere partidas de 4 pontos (não vai para Exaltação na sugestão automática)">🚩</span>';
   // Guerra das Torres (tipo ou nome com "torre"): sempre 3 times, Time 1, Time 2 e Time 3, sem renomear
   const TOWER_TEAMS = ['Time 1', 'Time 2', 'Time 3'];
   const isTower = (ev) => norm(`${typeName(ev.type_id)} ${ev.title || ''}`).includes('torre');
@@ -2536,6 +2551,8 @@
     const piloting = acct.id !== state.user.id;
     const initial = already && hasBuild(mine) ? pick(mine, BUILD_KEYS) : pick(acct, BUILD_KEYS);
     // Discord: se já respondeu, mantém; senão, sugere a última escolha feita neste navegador
+    const p4On = has4pts(ev);
+    const p4Init = !!mine?.prefer_4pts;
     let dcInit = already ? (mine?.discord ?? null) : null;
     if (dcInit === null) { try { const v = localStorage.getItem('last-discord'); dcInit = v === null ? null : v === '1'; } catch { /* ignora */ } }
     openDialog(`
@@ -2550,6 +2567,8 @@
           <label class="radio"><input type="radio" name="discord" value="1" required ${dcInit === true ? 'checked' : ''}> 🎧 Sim, vou estar no Discord</label>
           <label class="radio"><input type="radio" name="discord" value="0" ${dcInit === false ? 'checked' : ''}> Não vou usar o Discord</label>
         </fieldset>
+        ${p4On ? `<label class="check-line p4-q"><input type="checkbox" id="f-4pts" ${p4Init ? 'checked' : ''}>
+          <span>🚩 <b>Preferência por partidas de 4 pontos</b><br><span class="muted small">Na montagem automática dos times você não vai para Exaltação, só de Eminência em diante.</span></span></label>` : ''}
         <div class="row end">
           ${already ? '<button type="button" class="btn ghost danger" id="btn-unrsvp">Remover presença</button><span class="spacer"></span>' : ''}
           <button type="button" class="btn ghost" data-close>Cancelar</button>
@@ -2565,7 +2584,7 @@
         submit.disabled = true;
         try {
           await api.saveBuild(acct.id, build);
-          await api.setRsvp(ev.id, true, { ...build, discord }, acct.id);
+          await api.setRsvp(ev.id, true, { ...build, discord, ...(p4On ? { prefer_4pts: !!$('#f-4pts', d)?.checked } : {}) }, acct.id);
           if (!piloting) Object.assign(state.me, build);
           const m = memberById(acct.id);
           if (m) Object.assign(m, build);
@@ -2749,7 +2768,7 @@
     const byId = Object.fromEntries(state.members.map((m) => [m.id, m]));
     const out = ev.rsvps.filter((r) => r.going && byId[r.user_id]).map((r) => {
       const p = byId[r.user_id];
-      return { id: p.id, name: displayName(p), profile: p, build: buildFor(r, p), discord: !!r.discord, wd: r.withdraw_requested_at ? (r.withdraw_reason || 'Sem motivo') : null };
+      return { id: p.id, name: displayName(p), profile: p, build: buildFor(r, p), discord: !!r.discord, p4: has4pts(ev) && !!r.prefer_4pts, wd: r.withdraw_requested_at ? (r.withdraw_reason || 'Sem motivo') : null };
     });
     // Membro comum: o banco só entrega as respostas das contas dele. Os colegas do time
     // vêm das vagas do time, com o nome e a classe do perfil (o que o membro vê).
@@ -2772,9 +2791,9 @@
     // Oficiais e líder veem os 5 atributos (também nos times); a dica (title) repete os nomes completos
     const full = ATTRS.map((a) => `${a.label}: ${fmtNum(p.build[a.key])}`).join('\n');
     const stats = bare ? '' : statsLine(p.build);
-    return `<div class="chip${selected ? ' sel' : ''}${mine ? ' mine' : ''}${compact ? ' compact' : ''}${bare ? ' bare' : ''}" data-uid="${esc(p.id)}" title="${esc(bare ? who : `${who}\n${full}`)}" ${draggable ? 'draggable="true" tabindex="0" role="button"' : ''}>
+    return `<div class="chip${selected ? ' sel' : ''}${mine ? ' mine' : ''}${compact ? ' compact' : ''}${bare ? ' bare' : ''}${p.p4 ? ' p4' : ''}" data-uid="${esc(p.id)}" title="${esc(bare ? who : `${who}\n${full}`)}" ${draggable ? 'draggable="true" tabindex="0" role="button"' : ''}>
       ${classTag(p.build.char_class)}
-      <div class="chip-body"><div class="chip-name">${esc(p.name)}${medals ? medalsHtml(p.id) : ''}${p.discord ? ` ${dcIcon}` : ''}${p.wd && isOfficer() ? ` <span class="wd-flag" title="Pediu para sair: ${esc(p.wd)}">⚠</span>` : ''}${isOfficer() && approvedPilotIds(p.id).length ? ` <span class="pilot-flag" title="Pilotada por ${esc(approvedPilotIds(p.id).map((i) => displayName(memberById(i))).join(', '))}">🧑‍✈️</span>` : ''}</div>${bare ? `<div class="chip-class">${esc(CLASS[p.build.char_class]?.label || 'Sem classe')}</div>` : `<div class="chip-stats">${stats}</div>`}</div>
+      <div class="chip-body"><div class="chip-name">${p.p4 ? `${p4Flag} ` : ''}${esc(p.name)}${medals ? medalsHtml(p.id) : ''}${p.discord ? ` ${dcIcon}` : ''}${p.wd && isOfficer() ? ` <span class="wd-flag" title="Pediu para sair: ${esc(p.wd)}">⚠</span>` : ''}${isOfficer() && approvedPilotIds(p.id).length ? ` <span class="pilot-flag" title="Pilotada por ${esc(approvedPilotIds(p.id).map((i) => displayName(memberById(i))).join(', '))}">🧑‍✈️</span>` : ''}</div>${bare ? `<div class="chip-class">${esc(CLASS[p.build.char_class]?.label || 'Sem classe')}</div>` : `<div class="chip-stats">${stats}</div>`}</div>
       ${removable ? `<button class="chip-x" data-unassign="${esc(p.id)}" title="Tirar do time" aria-label="Tirar ${esc(p.name)} do time">×</button>` : ''}
     </div>`;
   }
@@ -3013,7 +3032,7 @@
         // Quando um piloto respondeu pela conta, mostra quem foi
         const by = x.r?.answered_by && x.r.answered_by !== x.p.id ? memberById(x.r.answered_by) : null;
         const note = x.r?.absence_id && !x.r.going ? '✈️ ausência programada' : by ? `respondido por ${displayName(by)}` : '';
-        return personLine(x.p, withClass ? buildFor(x.r, x.p) : null, withClass && x.r?.discord, note);
+        return personLine(x.p, withClass ? buildFor(x.r, x.p) : null, withClass && x.r?.discord, note, withClass && x.r?.going && !!x.r?.prefer_4pts && has4pts(ev));
       }).join('')}</ul>`
       : '<p class="muted small">Ninguém</p>');
 
@@ -3595,14 +3614,18 @@
       tiers = WAR_GROUPS.map((g) => m[g].map((n) => `${g} ${n}`));
     }
     const slots = new Map();
-    let i = 0;
+    let rest = pool; // ainda sem sala, do mais forte para o mais fraco
     for (const rooms of tiers) {
-      if (i >= pool.length) break;
-      const chunk = pool.slice(i, i + rooms.length * TEAM_SIZE);
-      i += chunk.length;
+      if (!rest.length) break;
+      // Quem prefere partidas de 4 pontos pula as salas de Exaltação (vai de Eminência em diante)
+      const exalt = rooms.some(isExaltRoom);
+      const chunk = rest.filter((p) => !(exalt && p.p4)).slice(0, rooms.length * TEAM_SIZE);
+      if (!chunk.length) continue;
+      const taken = new Set(chunk.map((p) => p.id));
+      rest = rest.filter((p) => !taken.has(p.id));
       balanceInto(rooms.length, chunk).forEach((members, r) => members.forEach((p) => slots.set(p.id, rooms[r])));
     }
-    return { slots, left: pool.length - i, noRes: pool.filter((p) => !Number.isFinite(p.build.resonance)).length };
+    return { slots, left: rest.length, noRes: pool.filter((p) => !Number.isFinite(p.build.resonance)).length };
   }
 
   function openSuggestDialog() {
@@ -3614,6 +3637,7 @@
         <h2>✨ Sugerir times</h2>
         <p class="muted small" style="margin:0">${T.people.length} confirmados. A força de cada membro é a <b>Ressonância</b>.
           ${war ? 'Os mais fortes vão para as salas mais altas, e as salas da mesma categoria ficam equilibradas entre si.' : ''}</p>
+        ${war && T.people.some((p) => p.p4) ? `<p class="small" style="margin:0">🚩 <b>${T.people.filter((p) => p.p4).length}</b> preferem partidas de 4 pontos: a sugestão não coloca essas pessoas em Exaltação, só de Eminência em diante.</p>` : ''}
         <div class="sg-modes">
           ${modes.map((k, i) => `<label class="sg-mode">
             <input type="radio" name="mode" value="${k}" ${i === 0 ? 'checked' : ''}>
@@ -3686,10 +3710,15 @@
   }
 
   // As mudanças ficam só no rascunho até clicar em "Salvar"
-  function assign(uid, team) {
+  async function assign(uid, team) {
     if (T.slots.get(uid) === team) { T.sel = null; renderTeams(); return; }
     const count = [...T.slots.values()].filter((t) => t === team).length;
     if (count >= TEAM_SIZE) { toast(`${team} já está completo (8/8)`, true); return; }
+    const who = T.people.find((p) => p.id === uid);
+    if (who?.p4 && isExaltRoom(team) && !isExaltRoom(T.slots.get(uid))
+      && !(await confirmDialog(`🚩 ${who.name} optou por jogar partidas de 4 pontos. Você está colocando essa pessoa na ${team}. Continuar mesmo assim?`, 'Colocar mesmo assim'))) {
+      T.sel = null; renderTeams(); return;
+    }
     T.slots.set(uid, team);
     T.sel = null;
     renderTeams();
