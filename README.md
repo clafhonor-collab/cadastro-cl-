@@ -236,6 +236,8 @@ O menu mostra um ponto vermelho quando há uma edição nova que você ainda nã
   Presenças passadas, alterações e anotações ficam guardadas. Somente as respostas e vagas em times de eventos futuros são apagadas, e o telefone é descartado.
 - **Recusar:** em "Aguardando aprovação", o botão **Recusar** move a pessoa direto para Ex-membros.
 - **Voltar ao clã:** se um ex-membro entrar de novo no site, ele vê "Você não faz mais parte do clã" e pode clicar em **Pedir para voltar**. O pedido aparece em "Aguardando aprovação". O líder também pode clicar em **Readmitir** na lista de ex-membros.
+- **Histórico de aprovações:** lista recolhida no fim da página Membros, só para oficiais e líder. Mostra quem aprovou cada membro novo (e cada readmissão), com cargo, data e hora, do mais recente para o mais antigo.
+  Dá para filtrar por quem aprovou, e a busca de nomes também filtra a lista. Usa o histórico de cargos que o banco já guarda (tabela `membership_log`); não precisa rodar SQL.
 - **Histórico no clã:** no perfil de cada membro aparecem todas as mudanças de cargo (entrou, aprovado, promovido, removido, voltou), com data, quem fez e o motivo.
 - **Histórico:** cada mudança de nome do personagem, nome da conta Google, classe ou atributos fica registrada com a data. O botão 🕘 ao lado do membro mostra o histórico, com a diferença de cada atributo (ex.: Potência 4.692 → 5.332, +640).
 - **✎ Nick:** o botão ao lado do membro (ou **✎ Editar nick** no perfil dele) troca o nome do personagem que aparece no site.

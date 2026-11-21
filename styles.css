@@ -522,6 +522,8 @@ h1 { background: linear-gradient(180deg, #fff1da, #e3b878); -webkit-background-c
 .former-box summary::before { content: "▸ "; color: var(--gold); }
 .former-box[open] summary::before { content: "▾ "; }
 .former-box .card { margin-top: 8px; opacity: .85; }
+.join-box .card { opacity: 1; }
+.join-row .pilot-tag { margin-left: 6px; }
 .left-info { text-align: right; max-width: 260px; line-height: 1.35; }
 .former-badge { background: #3a2a2a; color: #d9b3ac; border: 1px solid #6b3b35; font-family: "Inter", sans-serif; vertical-align: middle; }
 .member-log { margin-top: 12px; }

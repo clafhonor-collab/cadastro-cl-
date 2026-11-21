@@ -595,10 +595,10 @@
     db.mlog = [];
     const addLog = (user_id, from_role, to_role, at, changed_by = null, reason = null) =>
       db.mlog.push({ id: db.mlog.length + 1, user_id, from_role, to_role, changed_by, reason, changed_at: at });
-    db.profiles.forEach((p) => {
+    db.profiles.forEach((p, i) => {
       const t0 = Date.parse(p.created_at);
       addLog(p.id, null, 'pending', new Date(t0).toISOString(), null, 'Primeiro acesso ao site');
-      if (p.role !== 'pending') addLog(p.id, 'pending', 'member', new Date(t0 + 3600e3).toISOString(), p.id === 'u0' ? null : 'u0');
+      if (p.role !== 'pending') addLog(p.id, 'pending', 'member', new Date(t0 + 3600e3).toISOString(), p.id === 'u0' ? null : ['u0', 'u1'][i % 2]);
     });
     addLog('u0', 'member', 'leader', new Date(Date.parse(longAgo) + 7200e3).toISOString(), null, null);
     addLog('u1', 'member', 'officer', day(-90, 20), 'u0');
@@ -7689,7 +7689,7 @@
 
   // ---------- Membros ----------
 
-  const M = { q: '', tab: 'members' };
+  const M = { q: '', tab: 'members', joinOpen: false, joinBy: '*' };
 
   async function viewMembers() {
     loading();
@@ -7729,8 +7729,23 @@
     const former = sorted.filter((m) => m.role === 'former');
     const amLeader = state.me.role === 'leader';
     // Quando e por que cada ex-membro saiu
-    const mlog = isOfficer() && former.length ? await api.membershipLog() : [];
+    const mlog = isOfficer() ? await api.membershipLog().catch(() => []) : [];
     const byIdAll = Object.fromEntries(state.members.map((m) => [m.id, m]));
+    // Quem aprovou cada entrada no clã (aguardando → membro) e cada readmissão (ex-membro → membro)
+    const approvals = mlog.filter((h) => ['pending', 'former'].includes(h.from_role) && ACTIVE_ROLES.includes(h.to_role))
+      .sort((a, b) => Date.parse(b.changed_at) - Date.parse(a.changed_at));
+    const approvers = [...new Set(approvals.map((h) => h.changed_by || ''))]
+      .map((id) => ({ id, name: id ? (byIdAll[id] ? displayName(byIdAll[id]) : 'Perfil apagado') : 'Não registrado' }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+    const approvalRow = (h) => {
+      const m = byIdAll[h.user_id]; const by = byIdAll[h.changed_by];
+      const name = m ? displayName(m) : 'Perfil apagado';
+      return `<div class="pilot-row join-row" data-by="${esc(h.changed_by || '')}" data-search="${esc([name, m?.google_name, ...(m ? oldNames(m.id) : [])].join(' ').toLowerCase())}">
+        ${m ? avatar(m) : ''}<div class="spacer">${m ? `<a class="member-link" href="#/membro/${encodeURIComponent(m.id)}"><b>${esc(name)}</b></a>` : `<b>${esc(name)}</b>`}
+          ${h.from_role === 'former' ? '<span class="pilot-tag">readmitido</span>' : ''}${m && isPilotOnly(m) ? '<span class="pilot-tag">membro piloto</span>' : ''}${m?.managed ? '<span class="pilot-tag">conta sem login</span>' : ''}${m?.role === 'former' ? '<span class="pilot-tag warn">hoje ex-membro</span>' : ''}
+          <div class="muted small">${h.from_role === 'former' ? 'Readmitido' : 'Aprovado'} por ${by ? `<b class="role-tag ${by.role}">${esc(displayName(by))}</b> (${esc(ROLE_LABEL[by.role] || '')})` : h.changed_by ? 'perfil apagado' : 'aprovador não registrado'}
+            em ${new Date(h.changed_at).toLocaleDateString('pt-BR')} · ${fmtTime(h.changed_at)}</div></div></div>`;
+    };
     const leftInfo = (m) => {
       const h = mlog.find((x) => x.user_id === m.id && x.to_role === 'former');
       if (!h) return '<span class="muted small">Ex-membro</span>';
@@ -7824,6 +7839,14 @@
         <summary>Ex-membros (${former.length}) <span class="muted small">· saíram ou foram removidos; o histórico é mantido</span></summary>
         <div class="card">${former.map((m) => row(m, `${leftInfo(m)}${amLeader ? `<button class="btn small" data-readmit="${esc(m.id)}">Readmitir</button>` : ''}`)).join('')}</div>
       </details>` : ''}
+      ${isOfficer() ? `<details class="former-box join-box" id="join-box"${M.joinOpen ? ' open' : ''}>
+        <summary>🛡 Histórico de aprovações (${approvals.length}) <span class="muted small">· quem aprovou cada membro novo · só oficiais e líder veem</span></summary>
+        <div class="card">${approvals.length ? `<div class="row" style="gap:8px;margin-bottom:8px;flex-wrap:wrap">
+            <label class="muted small" for="join-by">Aprovado por</label>
+            <select id="join-by" class="inline"><option value="*">Todos</option>${approvers.map((a) => `<option value="${esc(a.id)}"${M.joinBy === a.id ? ' selected' : ''}>${esc(a.name)} (${approvals.filter((h) => (h.changed_by || '') === a.id).length})</option>`).join('')}</select>
+          </div>${approvals.map(approvalRow).join('')}<p class="muted small join-empty" hidden>Nenhuma aprovação com esse filtro.</p>`
+          : '<p class="muted">Nenhuma aprovação registrada ainda.</p>'}</div>
+      </details>` : ''}
       ${isOfficer() ? '<p class="muted small">Novos membros aparecem aqui depois do primeiro login com o Google. Só o líder pode promover oficiais. Telefones são visíveis apenas para oficiais e líder.</p>' : ''}`;
     renderHeader('members'); // atualiza o seletor "Respondendo como" (ex.: conta pilotada recém-aprovada)
 
@@ -7834,9 +7857,16 @@
       const q = M.q.trim().toLowerCase();
       main.querySelectorAll('.member[data-search]').forEach((r) => { r.hidden = !!q && !r.dataset.search.includes(q); });
       // Se a busca encontrar algum ex-membro, abre a lista deles
-      const fb = main.querySelector('.former-box');
+      const fb = main.querySelector('.former-box:not(.join-box)');
       if (fb && q) fb.open = [...fb.querySelectorAll('.member')].some((r) => !r.hidden);
+      // Histórico de aprovações: filtra pela busca e por quem aprovou
+      const rows = [...main.querySelectorAll('.join-row')];
+      rows.forEach((r) => { r.hidden = (!!q && !r.dataset.search.includes(q)) || (M.joinBy !== '*' && r.dataset.by !== M.joinBy); });
+      const empty = main.querySelector('.join-empty');
+      if (empty) empty.hidden = rows.some((r) => !r.hidden);
     };
+    $('#join-box')?.addEventListener('toggle', (e) => { M.joinOpen = e.target.open; });
+    $('#join-by')?.addEventListener('change', (e) => { M.joinBy = e.target.value; applySearch(); });
     $('#m-search')?.addEventListener('input', (e) => { M.q = e.target.value; applySearch(); });
     main.querySelectorAll('[data-mtab]').forEach((b) => b.addEventListener('click', () => {
       M.tab = b.dataset.mtab;
