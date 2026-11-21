@@ -358,6 +358,16 @@
       async setRole(userId, role) { ok(await sb.rpc('set_member_role', { target: userId, new_role: role })); },
       async removeMember(userId, reason, withManaged) { ok(await sb.rpc('remove_member', { target: userId, reason: reason || '', with_managed: !!withManaged })); },
       async renameMember(userId, name) { ok(await sb.rpc('set_member_name', { p_user: userId, p_name: name })); },
+      // Só o líder: altera classe e atributos de outra conta (o dono recebe um aviso)
+      async leaderSetBuild(userId, b) {
+        ok(await sb.rpc('leader_set_build', { p_user: userId, p_char_class: b.char_class, p_armor: b.armor, p_armor_pen: b.armor_pen,
+          p_potency: b.potency, p_resistance: b.resistance, p_resonance: b.resonance }));
+      },
+      async myNotices(ids) {
+        if (!ids.length) return [];
+        return ok(await sb.from('member_notices').select('*').is('seen_at', null).in('user_id', ids).order('created_at', { ascending: false }));
+      },
+      async ackNotices(ids) { ok(await sb.rpc('ack_member_notices', { p_ids: ids })); },
       async requestRejoin() { ok(await sb.rpc('request_rejoin')); },
       // ----- Malah News (imagens no bucket privado "news") -----
       async news() {
@@ -749,6 +759,8 @@
     // Tickets de exemplo
     const bugSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360"><rect width="640" height="360" fill="#1a0f0b"/><rect x="40" y="40" width="560" height="280" rx="12" fill="#2a1a14" stroke="#e0524a" stroke-width="3"/><text x="320" y="170" font-family="Arial" font-size="28" fill="#ffc9c0" text-anchor="middle">Erro ao confirmar presença</text><text x="320" y="215" font-family="Arial" font-size="18" fill="#cdbdb2" text-anchor="middle">(print de exemplo)</text></svg>`;
     const bugImg = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(bugSvg)}`;
+    // Aviso: a liderança alterou seus atributos
+    db.notices = [{ id: 1, user_id: 'u0', kind: 'build_changed', changes: { resonance: [3520, 3397], potency: [3400, 3342] }, created_by: 'u1', created_at: day(-1, 18), seen_at: null }];
     db.tickets = [
       { id: 800, title: 'Evento de treino PvP às quartas', category: 'suggestion', anonymous: false, author_id: 'u4', status: 'open', assigned_to: null, created_at: day(-1, 21) },
       { id: 801, title: 'Botão de confirmar presença travou', category: 'site', anonymous: true, author_id: 'u0', status: 'progress', assigned_to: 'u1', created_at: day(-3, 22) },
@@ -1469,6 +1481,21 @@
         db.mlog.push({ id: db.mlog.length + 1, user_id: userId, from_role: p.role, to_role: role, changed_by: state.user.id, reason: null, changed_at: new Date().toISOString() });
         p.role = role;
       },
+      async leaderSetBuild(userId, b) {
+        if (profile(state.user.id).role !== 'leader') throw new Error('Só o líder pode alterar os atributos de outras contas');
+        const p = profile(userId);
+        if (!p) throw new Error('Conta não encontrada');
+        if (p.pilot_only) throw new Error('Membro piloto não tem atributos próprios');
+        const changes = {};
+        BUILD_KEYS.forEach((k) => { if ((p[k] ?? null) !== (b[k] ?? null)) changes[k] = [p[k] ?? null, b[k] ?? null]; });
+        if (!Object.keys(changes).length) return;
+        const now = new Date().toISOString();
+        db.history.push({ id: db.history.length + 1, user_id: p.id, changed_by: state.user.id, changed_at: now, changes });
+        Object.assign(p, pick(b, BUILD_KEYS));
+        if (p.id !== state.user.id) db.notices.push({ id: db.notices.length + 1, user_id: p.id, kind: 'build_changed', changes, created_by: state.user.id, created_at: now, seen_at: null });
+      },
+      async myNotices(ids) { return db.notices.filter((n) => !n.seen_at && ids.includes(n.user_id)).map((n) => ({ ...n })); },
+      async ackNotices(ids) { db.notices.filter((n) => ids.includes(n.id) && canActAsDemo(n.user_id)).forEach((n) => { n.seen_at = new Date().toISOString(); }); },
       // Oficiais e líder trocam o nick (nome do personagem); vai para o histórico com quem trocou
       async renameMember(userId, name) {
         const p = profile(userId);
@@ -2172,6 +2199,40 @@
   }
 
   // Campos de classe e atributos (usados no perfil e na confirmação de presença)
+  // Só o líder altera classe e atributos de outras contas (o dono da conta é avisado)
+  const canLeaderBuild = (m) => state.me?.role === 'leader' && !!m && m.id !== state.user.id && !isPilotOnly(m) && m.role !== 'former';
+  function openLeaderBuild(m, after) {
+    const name = esc(displayName(m));
+    openDialog(`
+      <form id="lb-form" class="stack">
+        <h2>Editar perfil · ${name}</h2>
+        <p class="small" style="margin:0">Alterar a classe e os atributos desta conta. Só o líder pode fazer isso.</p>
+        ${buildFields(pick(m, BUILD_KEYS), true)}
+        <p class="lb-warn small" style="margin:0">⚠️ ${m.managed ? 'Quem pilota esta conta' : `<b>${name}</b>`} vai receber o aviso: “Seus atributos foram alterados pela liderança, entrar em contato com a staff.” A alteração fica no histórico do perfil.</p>
+        <div class="row end">
+          <button type="button" class="btn ghost" data-close>Cancelar</button>
+          <button type="submit" class="btn primary">Salvar e avisar</button>
+        </div>
+      </form>`, (d) => {
+      $('#lb-form', d).addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const submit = $('button[type=submit]', d);
+        const b = readBuild(d);
+        if (BUILD_KEYS.every((k) => (m[k] ?? null) === (b[k] ?? null))) { toast('Nada foi alterado'); return; }
+        submit.disabled = true;
+        try {
+          await api.leaderSetBuild(m.id, b);
+          const mm = memberById(m.id);
+          if (mm) Object.assign(mm, b);
+          Object.assign(m, b);
+          dlg.close();
+          toast(`Atributos de ${displayName(m)} alterados. ${m.managed ? 'Quem pilota a conta' : 'O membro'} foi avisado.`);
+          await after();
+        } catch (err) { fail(err); submit.disabled = false; }
+      });
+    });
+  }
+
   function buildFields(b, required) {
     const req = required ? 'required' : '';
     return `
@@ -4503,6 +4564,43 @@
   // Aviso ao entrar no site (e enquanto ele está aberto) quando a staff responde ou resolve um ticket meu,
   // com atalho direto para o ticket. Some ao abrir o ticket ou ao fechar o aviso (✕).
   const tkToastKey = () => `tk-notice-${state.user?.id}`;
+  // ---------- Avisos da liderança (ex.: atributos alterados pelo líder) ----------
+  async function loadNotices() {
+    state.notices = await api.myNotices(myAccounts().map((a) => a.id)).catch(() => []); // banco sem a tabela: sem avisos
+  }
+  const noticeWho = (n) => (n.user_id === state.user.id ? null : displayName(memberById(n.user_id) || { game_name: 'conta pilotada' }));
+  const noticeTitle = (n) => (noticeWho(n) ? `Os atributos de ${noticeWho(n)} foram alterados pela liderança` : 'Seus atributos foram alterados pela liderança');
+  const noticeChanges = (n) => Object.entries(n.changes || {}).map(([k, [a, b]]) => (k === 'char_class'
+    ? `Classe: ${CLASS[a]?.label || '—'} → ${CLASS[b]?.label || '—'}`
+    : `${ATTRS.find((x) => x.key === k)?.label || k}: ${fmtNum(a)} → ${fmtNum(b)}`));
+  function notifyNotices() {
+    const old = $('#bn-notice');
+    const items = state.user && isMember() ? state.notices || [] : [];
+    if (!items.length) { old?.remove(); return; }
+    const box = old || document.createElement('div');
+    box.id = 'bn-notice';
+    box.className = 'bn-notice';
+    box.setAttribute('role', 'alert');
+    box.innerHTML = `<div class="bn-notice-head">⚠️ <b>Aviso da liderança</b></div>
+      ${items.slice(0, 3).map((n) => `<div class="bn-notice-item">
+        <b>${esc(noticeTitle(n))}, entrar em contato com a staff.</b>
+        <ul>${noticeChanges(n).map((c) => `<li>${esc(c)}</li>`).join('')}</ul>
+        <small class="muted">${esc(fmtWhenShort(n.created_at))}</small>
+      </div>`).join('')}
+      <div class="row end"><button type="button" class="btn small primary" id="bn-ok">Entendi</button></div>`;
+    if (!old) document.body.appendChild(box);
+    $('#bn-ok', box).addEventListener('click', async (e) => {
+      e.currentTarget.disabled = true;
+      try {
+        await api.ackNotices(items.map((n) => n.id));
+        const done = new Set(items.map((n) => n.id));
+        state.notices = (state.notices || []).filter((n) => !done.has(n.id));
+        box.remove();
+        renderBell();
+      } catch (err) { fail(err); e.currentTarget.disabled = false; }
+    });
+  }
+
   function notifyTicketReplies() {
     const old = $('#tk-notice');
     if (!TICKETS_ON || !state.user || !isMember()) { old?.remove(); return; }
@@ -5361,7 +5459,7 @@
             ${!po && me.is_pilot ? '<div class="muted small">🧑‍✈️ Também é piloto</div>' : ''}
           </div>
           ${self ? `<div class="row me-actions"><button class="btn small" id="btn-photo-pf">📷 ${me.custom_avatar_url ? 'Trocar foto' : 'Enviar foto'}</button><button class="btn small" id="btn-edit-pf">✎ Editar perfil</button></div>`
-            : canRename(me) || canChangeKind(me) ? `<div class="row me-actions">${canRename(me) ? '<button class="btn small" id="btn-rename">✎ Editar nick</button>' : ''}${canChangeKind(me) ? `<button class="btn small" id="btn-kind">${po ? '🎮 Tornar jogador' : '🧑‍✈️ Tornar membro piloto'}</button>` : ''}</div>` : ''}
+            : canRename(me) || canChangeKind(me) || canLeaderBuild(me) ? `<div class="row me-actions">${canLeaderBuild(me) ? '<button class="btn small" id="btn-lead-build" title="Só o líder: alterar classe e atributos desta conta">✎ Editar perfil</button>' : ''}${canRename(me) ? '<button class="btn small" id="btn-rename">✎ Editar nick</button>' : ''}${canChangeKind(me) ? `<button class="btn small" id="btn-kind">${po ? '🎮 Tornar jogador' : '🧑‍✈️ Tornar membro piloto'}</button>` : ''}</div>` : ''}
         </div>
       </div>
 
@@ -5418,6 +5516,7 @@
       });
     });
     $('#btn-rename')?.addEventListener('click', () => openRenameDialog(me, () => viewMyPanel(userId)));
+    $('#btn-lead-build')?.addEventListener('click', () => openLeaderBuild(me, () => viewMyPanel(userId)));
     $('#btn-kind')?.addEventListener('click', () => openKindDialog(me, () => viewMyPanel(userId)));
     $('#btn-pr-fill')?.addEventListener('click', () => openProfile());
     $('#btn-pr-info')?.addEventListener('click', () => openPowerInfo(me, pw));
@@ -8397,7 +8496,7 @@
       can('attendance') ? api.events(true).catch(() => []) : [],
     ]);
     state.bellUp = up || []; state.bellPast = past || [];
-    await loadPilotage();
+    await Promise.all([loadPilotage(), loadNotices()]);
   }
   let bellTimer = null;
   function refreshBellSoon() {
@@ -8446,6 +8545,9 @@
       mine.push({ icon: '🧑‍✈️', text: `<b>${esc(r.account_name)}</b> pediu seus serviços de pilotagem`, sub: r.message ? `“${esc(r.message)}”` : 'Aceite ou recuse na Pilotagem', href: '#/pilotagem' });
     });
     if (hasUnreadNews()) mine.push({ icon: '📰', text: 'Edição nova do <b>Malah News</b>', href: '#/news' });
+    (state.notices || []).forEach((n) => {
+      mine.push({ icon: '⚠️', text: `<b>${esc(noticeTitle(n))}</b>`, sub: 'Entre em contato com a staff', href: '#/perfil' });
+    });
 
     // --- Liderança (conforme as Configurações do líder) ---
     if (isOfficer()) {
@@ -8561,6 +8663,7 @@
     if (!isMember()) return state.me?.role === 'former' ? viewFormer() : viewPending();
     if (myLeave()) return viewLeaving();
     notifyTicketReplies();
+    notifyNotices();
     try {
       if (key === 'past') await viewEvents(true);
       else if (key === 'news') await viewNews();

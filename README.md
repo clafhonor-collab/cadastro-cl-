@@ -241,6 +241,9 @@ O menu mostra um ponto vermelho quando há uma edição nova que você ainda nã
   Presenças passadas, alterações e anotações ficam guardadas. Somente as respostas e vagas em times de eventos futuros são apagadas, e o telefone é descartado.
 - **Recusar:** em "Aguardando aprovação", o botão **Recusar** move a pessoa direto para Ex-membros.
 - **Voltar ao clã:** se um ex-membro entrar de novo no site, ele vê "Você não faz mais parte do clã" e pode clicar em **Pedir para voltar**. O pedido aparece em "Aguardando aprovação". O líder também pode clicar em **Readmitir** na lista de ex-membros.
+- **Líder altera atributos:** no perfil de qualquer conta (membro, oficial ou conta sem login), só o líder vê o botão **✎ Editar perfil**, que altera a classe e os atributos. A troca entra no histórico do perfil com quem alterou.
+  O dono da conta (e quem pilota a conta) recebe o aviso "Seus atributos foram alterados pela liderança, entrar em contato com a staff.", com o que mudou. O aviso aparece ao entrar no site e no 🔔 até a pessoa clicar em **Entendi**.
+  Ative com o [`supabase/lider_atributos.sql`](supabase/lider_atributos.sql).
 - **Histórico de aprovações:** lista recolhida no fim da página Membros, só para oficiais e líder. Mostra quem aprovou cada membro novo (e cada readmissão), com cargo, data e hora, do mais recente para o mais antigo.
   Dá para filtrar por quem aprovou, e a busca de nomes também filtra a lista. Usa o histórico de cargos que o banco já guarda (tabela `membership_log`); não precisa rodar SQL.
 - **Histórico no clã:** no perfil de cada membro aparecem todas as mudanças de cargo (entrou, aprovado, promovido, removido, voltou), com data, quem fez e o motivo.
