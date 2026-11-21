@@ -4,6 +4,9 @@
   const CFG = window.CLAN_CONFIG || {};
   // "?demo" no endereço força o modo demonstração (dados fictícios), útil para testar sem mexer no banco real
   const DEMO = new URLSearchParams(location.search).has('demo') || !CFG.supabaseUrl || !CFG.supabaseAnonKey;
+  // Clãs rivais compartilhados com o INFERNUM: ficam no Supabase de lá (função rivals-share; chave pública)
+  const RIVALS_HUB = 'https://xvqxggkmrurvcbaxyifh.supabase.co/functions/v1/rivals-share';
+  const RIVALS_HUB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh2cXhnZ2ttcnVydmNiYXh5aWZoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQ4NTk5MTEsImV4cCI6MjExMDQzNTkxMX0.BcXvqavfY-x5mTB4ETHccVnv41PqC500axBBOO6E99E';
 
   const ROLE_LABEL = { pending: 'Aguardando aprovação', member: 'Membro', officer: 'Oficial', leader: 'Líder', former: 'Ex-membro' };
   const ROLE_ORDER = { leader: 0, officer: 1, member: 2, pending: 3, former: 4 };
@@ -174,8 +177,30 @@
       rows.forEach((t) => (t.messages || []).forEach((m) => { m.images = (m.images || []).map((p) => urls[p]).filter(Boolean); }));
       return rows;
     }
+    // Clãs rivais: chamada à função compartilhada, com o login deste site
+    async function rivalsHub(action, payload = {}) {
+      const { data } = await sb.auth.getSession();
+      const r = await fetch(RIVALS_HUB, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${data.session?.access_token || ''}`, apikey: RIVALS_HUB_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, ...payload }),
+      });
+      const out = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(out.error || `Banco compartilhado indisponível (${r.status})`);
+      return out;
+    }
     return {
       async currentUser() { const { data } = await sb.auth.getSession(); return data.session?.user ?? null; },
+      async rivals() { try { return await rivalsHub('list'); } catch (e) { console.warn('rivals', e); return null; } },
+      async importRivalScan(o) { return (await rivalsHub('import', o)).id; },
+      async deleteRivalScan(id) { await rivalsHub('delete', { id }); },
+      // Ciclos do jogo (Sombras / Imortal), cadastrados pela liderança
+      async cycles() {
+        const r = await sb.from('clan_cycles').select('*').order('starts_on');
+        return r.error ? [] : r.data; // SQL dos ciclos ainda não rodado
+      },
+      async saveCycle(o) { ok(await sb.rpc('save_cycle', { p_id: o.id ?? null, p_starts_on: o.starts_on, p_side: o.side })); },
+      async deleteCycle(id) { ok(await sb.rpc('delete_cycle', { p_id: id })); },
       onAuthChange(cb) { sb.auth.onAuthStateChange((evt, s) => { if (evt === 'SIGNED_IN' || evt === 'SIGNED_OUT') cb(s?.user ?? null); }); },
       signIn() { return sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: location.origin + location.pathname } }); },
       // Login pelo botão do Google no próprio site: a janela do Google mostra o domínio do site, não o do Supabase
@@ -641,6 +666,33 @@
       });
     }
 
+    // Guerras semanais dos últimos ciclos (painel da liderança), com presença e resultado
+    const RIVALS = ['Legião Sombria', 'Os Imortais', 'Filhos de Lilith', 'Horda Rubra', 'Clã do Dragão'];
+    for (let w = 0; w < 19; w++) {
+      const id = 40 + w;
+      const starts = day(-7 * w - 5, 20, 30);
+      db.events.push({ id, title: 'Guerra de Clãs', description: '', starts_at: starts, team_format: null, team_count: 10 });
+      let present = 0, total = 0;
+      db.profiles.filter((p) => p.role !== 'pending' && Date.parse(p.created_at) < Date.parse(starts)).forEach((p) => {
+        const rel = reliability[p.id];
+        const x = rnd();
+        const going = x < rel ? true : x < rel + 0.15 ? false : null;
+        if (going !== null) answer(id, p.id, going);
+        const was = going === true ? rnd() < 0.5 + rel / 2 : going === false ? rnd() < 0.05 : rnd() < rel / 3;
+        db.attendance.push({ event_id: id, user_id: p.id, present: was });
+        total++; if (was) present++;
+      });
+      const win = rnd() < 0.15 + present / Math.max(1, total);
+      const us = win ? 4 + Math.floor(rnd() * 4) : Math.floor(rnd() * 4);
+      const them = win ? Math.floor(rnd() * us) : us + 1 + Math.floor(rnd() * 4);
+      db.results.push({ event_id: id, outcome: win ? 'win' : 'loss', opponent: RIVALS[Math.floor(rnd() * RIVALS.length)], score_us: us, score_them: them, updated_by: 'u0', updated_at: starts });
+    }
+    // Ciclos cadastrados pela liderança (o jogo alterna Sombras e Imortal)
+    const ymd = (d) => { const x = new Date(Date.now() + d * 86400000); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return localDay(x); }; // segunda-feira daquela semana
+    db.cycles = [
+      { id: 600, starts_on: ymd(-135), side: 'immortal' }, { id: 601, starts_on: ymd(-96), side: 'shadows' },
+      { id: 602, starts_on: ymd(-54), side: 'immortal' }, { id: 603, starts_on: ymd(-19), side: 'shadows' },
+    ];
     // Resultados de duas Guerras passadas (as observações só a liderança vê)
     db.results.push(
       { event_id: 14, outcome: 'win', opponent: 'Legião Sombria', score_us: 5, score_them: 3, updated_by: 'u1', updated_at: day(-8, 23) },
@@ -887,10 +939,77 @@
       const a = { id: db.nextId++, user_id: 'u5', starts_on: localDay(new Date(Date.now() - 2 * 86400000)), ends_on: localDay(new Date(Date.now() + 9 * 86400000)), reason: 'Viagem a trabalho, sem internet boa', created_by: 'u5', created_at: new Date().toISOString() };
       db.absences.push(a); applyAbsenceDemo(a);
     }
+    // Clãs rivais (na demo, só aqui; no site real ficam no banco compartilhado com o INFERNUM)
+    db.rivalScans = []; db.rivalPlayers = []; db.rivalLog = [];
+    {
+      const SYL = ['ka', 'zor', 'mi', 'rax', 'el', 'dun', 'vy', 'tho', 'ga', 'lis', 'mor', 'qu', 'ne', 'ash', 'ty'];
+      const rivalName = () => { let n = ''; const k = 2 + Math.floor(rnd() * 2); for (let i = 0; i < k; i++) n += SYL[Math.floor(rnd() * SYL.length)]; return n[0].toUpperCase() + n.slice(1); };
+      const scanDay = (d) => localDay(new Date(Date.now() + d * 86400000));
+      [['Legião Sombria', 1018267, 0.8, 92], ['Os Imortais', 1028931, 0.7, 96], ['Filhos de Lilith', 1033505, 0.6, 85]].forEach(([clan, num, f, n], ci) => {
+        const roster = Array.from({ length: n }, () => {
+          const tank = rnd() < 0.25; const b = 0.75 + rnd() * 0.6;
+          return { name: rivalName(), armor: Math.round((tank ? 8200 : 5000) * b * f), armor_pen: Math.round((tank ? 4800 : 6900) * b * f),
+            potency: Math.round((tank ? 3900 : 5200) * b * f), resistance: Math.round((tank ? 7400 : 4900) * b * f), resonance: Math.round(3900 * b * f) };
+        });
+        const reads = ci === 0 ? [-40, -6] : [-6];
+        reads.forEach((d, ri) => {
+          const id = 700 + ci * 10 + ri;
+          db.rivalScans.push({ id, clan_name: clan, clan_number: num, scanned_on: scanDay(d), source: `scout ${scanDay(d)}.mkv`, created_by: null,
+            created_at: day(d, 20), imported_by: ci === 0 && ri === 0 ? (CFG.clanName || 'FOR HONOR') : 'INFERNUM', imported_by_name: ci === 0 && ri === 0 ? 'Valkyria' : 'Sangrento' });
+          db.rivalLog.push({ id: 900 + id, scan_id: id, action: 'import', clan_name: clan, scanned_on: scanDay(d), players: n,
+            actor_clan: ci === 0 && ri === 0 ? (CFG.clanName || 'FOR HONOR') : 'INFERNUM', actor_name: ci === 0 && ri === 0 ? 'Valkyria' : 'Sangrento', created_at: day(d, 20) });
+          const grow = reads.length > 1 && ri === 0 ? 0.93 : 1;
+          roster.forEach((r, i) => db.rivalPlayers.push({ id: 7000 + id * 200 + i, scan_id: id, ...r,
+            ...Object.fromEntries(ATTRS.map((a) => [a.key, Math.round(r[a.key] * grow)])), note: i === 3 ? 'conferir: Armadura' : null }));
+        });
+      });
+    }
     let user = null;
     let listener = () => {};
     return {
       async currentUser() { return user; },
+      async cycles() { return isOfficer() ? db.cycles.map((c) => ({ ...c })).sort((a, b) => a.starts_on.localeCompare(b.starts_on)) : []; },
+      async saveCycle(o) {
+        if (!isOfficer()) throw new Error('Só oficiais e o líder gerenciam os ciclos');
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(o.starts_on || '')) throw new Error('Informe a data de início do ciclo');
+        if (!['shadows', 'immortal'].includes(o.side)) throw new Error('Escolha o lado do ciclo');
+        if (o.starts_on > localDay()) throw new Error('O ciclo não pode começar no futuro');
+        if (new Date(`${o.starts_on}T12:00:00`).getDay() !== 1) throw new Error('O ciclo sempre começa numa segunda-feira');
+        if (db.cycles.some((c) => c.starts_on === o.starts_on && c.id !== o.id)) throw new Error('Já existe um ciclo começando nesta data');
+        const c = o.id ? db.cycles.find((x) => x.id === o.id) : null;
+        if (c) Object.assign(c, { starts_on: o.starts_on, side: o.side });
+        else db.cycles.push({ id: db.nextId++, starts_on: o.starts_on, side: o.side, created_by: state.user.id, created_at: new Date().toISOString() });
+      },
+      async deleteCycle(id) {
+        if (!isOfficer()) throw new Error('Só oficiais e o líder gerenciam os ciclos');
+        db.cycles = db.cycles.filter((c) => c.id !== id);
+      },
+      async rivals() {
+        if (!isOfficer()) return { scans: [], players: [] };
+        return { scans: db.rivalScans.map((x) => ({ ...x })), players: db.rivalPlayers.map((x) => ({ ...x })),
+          log: db.rivalLog.slice().sort((a, b) => b.created_at.localeCompare(a.created_at)).map((x) => ({ ...x })) };
+      },
+      async importRivalScan(o) {
+        if (!isOfficer()) throw new Error('Só oficiais e o líder importam clãs rivais');
+        if (!String(o.clan_name || '').trim()) throw new Error('Informe o nome do clã');
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(o.scanned_on || '') || o.scanned_on > localDay()) throw new Error('Data da leitura inválida');
+        if (!o.players?.length || o.players.length > 150) throw new Error('A leitura precisa ter de 1 a 150 jogadores');
+        const id = db.nextId++;
+        db.rivalScans.push({ id, clan_name: String(o.clan_name).trim().slice(0, 60), clan_number: o.clan_number ?? null, scanned_on: o.scanned_on,
+          source: o.source || null, created_by: null, created_at: new Date().toISOString(), imported_by: (CFG.clanName || 'FOR HONOR'), imported_by_name: displayName(state.me) });
+        o.players.forEach((pl) => db.rivalPlayers.push({ id: db.nextId++, scan_id: id, ...pl }));
+        db.rivalLog.push({ id: db.nextId++, scan_id: id, action: 'import', clan_name: String(o.clan_name).trim(), scanned_on: o.scanned_on,
+          players: o.players.length, actor_clan: (CFG.clanName || 'FOR HONOR'), actor_name: displayName(state.me), created_at: new Date().toISOString() });
+        return id;
+      },
+      async deleteRivalScan(id) {
+        if (!isOfficer()) throw new Error('Só oficiais e o líder apagam leituras');
+        const sc = db.rivalScans.find((x) => x.id === id);
+        if (sc) db.rivalLog.push({ id: db.nextId++, scan_id: id, action: 'delete', clan_name: sc.clan_name, scanned_on: sc.scanned_on,
+          players: db.rivalPlayers.filter((x) => x.scan_id === id).length, actor_clan: (CFG.clanName || 'FOR HONOR'), actor_name: displayName(state.me), created_at: new Date().toISOString() });
+        db.rivalScans = db.rivalScans.filter((x) => x.id !== id);
+        db.rivalPlayers = db.rivalPlayers.filter((x) => x.scan_id !== id);
+      },
       onAuthChange(cb) { listener = cb; },
       async signIn() { user = { id: 'u0' }; listener(user); },
       async signOut() { user = null; listener(null); },
@@ -1683,6 +1802,14 @@
       { key: 'csv', label: 'Exportar lista em CSV', desc: 'Só esconde na tela' },
       { key: 'freq_view', label: 'Ver o painel de Frequência', desc: 'Só esconde na tela' },
     ] },
+    { group: 'Estatísticas', items: [
+      { key: 'panel_view', label: 'Ver o menu Estatísticas', desc: 'Ícone 📊 ao lado do sininho, com os indicadores por ciclo (só esconde na tela)' },
+      { key: 'cycles', label: 'Gerenciar ciclos', desc: 'Cadastrar, editar e apagar os ciclos (Sombras / Imortal)', approval: true },
+    ] },
+    { group: 'Clãs rivais', items: [
+      { key: 'rivals_view', label: 'Ver os clãs rivais', desc: 'Estatísticas dos outros clãs, compartilhadas com o INFERNUM, no menu 📊 (só esconde na tela)' },
+      { key: 'rivals_import', label: 'Importar e apagar leituras', desc: 'Enviar a planilha de mapeamento (Scout) e apagar leituras (vale para os dois clãs)' },
+    ] },
     { group: 'Malah News', items: [
       { key: 'news_publish', label: 'Publicar e editar edições', approval: true },
       { key: 'news_delete', label: 'Apagar edições', approval: true },
@@ -1754,6 +1881,10 @@
     resolveWithdrawal: () => ['withdraw_decide'],
     setRole: (raw, id, role) => (role === 'member' && memberById(id)?.role === 'pending' ? ['member_approve', `Aprovar ${nameOf(id)} como membro do clã`] : null),
     removeMember: (raw, id, reason) => ['member_remove', `${memberById(id)?.role === 'pending' ? 'Recusar a entrada de' : 'Remover do clã'} ${nameOf(id)}${reason ? ` · motivo: “${reason}”` : ''}`],
+    saveCycle: (raw, o) => ['cycles', `${o?.id ? 'Editar o' : 'Cadastrar um'} ciclo ${o?.side === 'immortal' ? 'Imortal' : 'das Sombras'} começando em ${String(o?.starts_on || '').split('-').reverse().join('/')}`],
+    deleteCycle: () => ['cycles', 'Apagar um ciclo'],
+    importRivalScan: (raw, o) => ['rivals_import', `Importar a leitura do clã ${o?.clan_name || ''}`],
+    deleteRivalScan: () => ['rivals_import', 'Apagar uma leitura de clã rival'],
     renameMember: (raw, id, name) => (id === state.user.id ? null : ['member_rename', `Trocar o nick de ${nameOf(id)} para “${String(name || '').trim()}”`]),
     addNote: () => ['notes'],
     addPilot: () => ['pilots'],
@@ -1819,6 +1950,8 @@
     saveResult: ([id, o]) => [Number(id), cleanResult(o)],
     decideLeave: ([id, approve, note]) => [Number(id), !!approve, note ? String(note).slice(0, 300) : null],
     deleteResult: ([id]) => [Number(id)],
+    saveCycle: ([o]) => [{ id: o?.id ? Number(o.id) : null, starts_on: String(o?.starts_on || '').slice(0, 10), side: o?.side === 'immortal' ? 'immortal' : 'shadows' }],
+    deleteCycle: ([id]) => [Number(id)],
   };
   let RAW = null; // operações sem a checagem de permissão (o líder usa ao aprovar)
   function withPermissions(raw) {
@@ -2098,6 +2231,7 @@
           <select id="acting-select" class="inline">${accounts.map((a) => `<option value="${esc(a.id)}" ${a.id === actingId() ? 'selected' : ''}>${esc(displayName(a))}${a.id === state.user.id ? ' (você)' : ' 🧑‍✈️'}</option>`).join('')}</select>
         </label>` : ''}
         ${memberUI() ? '<div class="bell-wrap" id="bell-wrap"></div>' : ''}
+        ${memberUI() && (can('panel_view') || can('rivals_view')) ? `<a class="gear${currentKey === 'panel' || currentKey === 'rivals' ? ' active' : ''}" href="${can('panel_view') ? '#/estatisticas' : '#/rivais'}" title="Estatísticas" aria-label="Estatísticas"><span aria-hidden="true">📊</span></a>` : ''}
         ${isLeader() ? `<a class="gear${currentKey === 'config' ? ' active' : ''}" href="#/config" title="Configurações" aria-label="Configurações"><span aria-hidden="true">⚙️</span></a>` : ''}
         <button class="who" id="btn-profile" title="Meu perfil">${avatar(state.me)}<span class="label">${esc(displayName(state.me))}</span></button>
         <button class="btn ghost small" id="btn-logout">Sair</button>`;
@@ -6280,6 +6414,849 @@
         : '<p class="muted small" style="margin:0">Tudo permitido para oficiais.</p>'}</div>`;
   }
 
+  const ymdOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  // ---------- Estatísticas do clã (por ciclo do jogo; ícone 📊 ao lado do sininho) ----------
+  const PANEL = { sel: 'cur', inactiveN: 3, type: '', attr: 'resonance' };
+  const SIDE = { shadows: { icon: '🌑', label: 'das Sombras' }, immortal: { icon: '👑', label: 'Imortal' } };
+  const DAY_MS = 86400000;
+  const dmy = (t) => new Date(t).toLocaleDateString('pt-BR');
+  const cycleName = (c) => `${SIDE[c.side]?.icon || ''} Ciclo ${SIDE[c.side]?.label || ''}`;
+  // Ordena e calcula o fim de cada ciclo (termina quando o próximo começa)
+  function cycleSpans(rows) {
+    const list = rows.slice().sort((a, b) => a.starts_on.localeCompare(b.starts_on));
+    return list.map((c, i) => ({ ...c, from: Date.parse(`${c.starts_on}T00:00:00`),
+      to: i < list.length - 1 ? Date.parse(`${list[i + 1].starts_on}T00:00:00`) : Infinity }));
+  }
+  const spanText = (p) => `${dmy(p.from)} → ${p.to === Infinity || p.to > Date.now() ? 'hoje' : dmy(p.to - 1)}`;
+  // Variação em relação ao período anterior
+  function deltaHtml(cur, prev, { fmt = intFmt, pct = false, invert = false } = {}) {
+    if (cur == null || prev == null) return '';
+    const d = cur - prev;
+    if (Math.abs(d) < (pct ? 0.005 : 0.5)) return '<span class="kpi-delta muted">= ciclo anterior</span>';
+    const good = invert ? d < 0 : d > 0;
+    const txt = pct ? `${d > 0 ? '+' : ''}${Math.round(d * 100)} p.p.` : `${d > 0 ? '+' : ''}${fmt(d)}`;
+    return `<span class="kpi-delta ${good ? 'c-yes' : 'c-no'}">${d > 0 ? '▲' : '▼'} ${txt} <span class="muted">vs. anterior</span></span>`;
+  }
+  const kpi = (icon, label, value, sub = '', delta = '') => `<div class="card kpi"><div class="kpi-label">${icon} ${label}</div>
+    <div class="kpi-value">${value}</div>${sub ? `<div class="kpi-sub muted small">${sub}</div>` : ''}${delta}</div>`;
+  const fmtHours = (h) => (h == null ? '—' : h < 1 ? `${Math.max(1, Math.round(h * 60))} min` : h < 48 ? `${Math.round(h)} h` : `${Math.round(h / 24)} dias`);
+
+  async function viewPanel() {
+    if (!can('panel_view')) { location.hash = '#/'; return; }
+    loading();
+    const [cyclesRaw, past, histAll, mlog, upcoming] = await Promise.all([
+      api.cycles().catch(() => []), api.history(null), api.profileHistory().catch(() => []), api.membershipLog().catch(() => []),
+      api.events(false).catch(() => []),
+    ]);
+    const results = await api.eventResults(past.map((e) => e.id)).catch(() => []);
+    const resBy = Object.fromEntries(results.map((r) => [r.event_id, r]));
+    const now = Date.now();
+    const cycles = cycleSpans(cyclesRaw);
+    const members = activeMembers();
+    const link = (m) => (m ? `<a class="member-link" href="#/membro/${encodeURIComponent(m.id)}">${esc(displayName(m))}</a>` : '—');
+    const empty = (msg) => `<div class="muted small chart-empty">${msg}</div>`;
+
+    // ----- Período escolhido (ciclo atual, outro ciclo ou todos) -----
+    let per; let prev = null;
+    if (PANEL.sel === 'all') {
+      const first = Math.min(now, ...past.map((e) => Date.parse(e.starts_at)), ...cycles.map((c) => c.from));
+      per = { label: 'Todos os ciclos', from: first, to: now };
+    } else if (cycles.length) {
+      let i = PANEL.sel === 'cur' ? cycles.length - 1 : cycles.findIndex((c) => String(c.id) === String(PANEL.sel));
+      if (i < 0) i = cycles.length - 1;
+      const c = cycles[i];
+      per = { label: cycleName(c), from: c.from, to: Math.min(c.to, now), cycle: c, cur: i === cycles.length - 1 };
+      if (i > 0) prev = { from: cycles[i - 1].from, to: cycles[i - 1].to };
+    } else {
+      per = { label: 'Últimos 45 dias', from: now - 45 * DAY_MS, to: now };
+      prev = { from: now - 90 * DAY_MS, to: now - 45 * DAY_MS };
+    }
+    const inSpan = (t, p) => t >= p.from && t < p.to;
+
+    // ----- Indicadores de um período -----
+    const histBy = {};
+    histAll.slice().sort((a, b) => Date.parse(b.changed_at) - Date.parse(a.changed_at)).forEach((h) => { (histBy[h.user_id] ||= []).push(h); });
+    function metrics(p) {
+      const evs = past.filter((e) => inSpan(Date.parse(e.starts_at), p));
+      const wars = evs.filter((e) => resBy[e.id]).sort((a, b) => Date.parse(a.starts_at) - Date.parse(b.starts_at));
+      const wins = wars.filter((e) => resBy[e.id].outcome === 'win').length;
+      const att = evs.filter((e) => e.attendance.length);
+      const rate = att.length ? att.reduce((s, e) => s + e.attendance.filter((a) => a.present).length / e.attendance.length, 0) / att.length : null;
+      const joins = mlog.filter((l) => l.to_role === 'member' && ['pending', 'former'].includes(l.from_role) && inSpan(Date.parse(l.changed_at), p));
+      const exits = mlog.filter((l) => l.to_role === 'former' && ACTIVE_ROLES.includes(l.from_role) && inSpan(Date.parse(l.changed_at), p));
+      const tEnd = Math.min(p.to, now) - 1;
+      const resAt = (t) => { const v = members.map((m) => valueAt(m, 'resonance', t, histBy[m.id] || [])).filter((x) => x != null); return v.length ? v.reduce((s, x) => s + x, 0) / v.length : null; };
+      const tks = (state.tickets || []).filter((t) => inSpan(Date.parse(t.created_at), p));
+      const firstReply = tks.map((t) => {
+        const m = (t.messages || []).find((x) => !x.internal && !x.from_author);
+        return m ? (Date.parse(m.created_at) - Date.parse(t.created_at)) / 3600000 : null;
+      }).filter((h) => h != null);
+      return { evs, wars, wins, losses: wars.length - wins, winPct: wars.length ? wins / wars.length : null, att, rate,
+        joins, exits, resStart: resAt(p.from), resEnd: resAt(tEnd), tks,
+        firstReply: firstReply.length ? firstReply.reduce((s, h) => s + h, 0) / firstReply.length : null };
+    }
+    const M = metrics(per);
+    const P = prev ? metrics(prev) : null;
+
+    // Sequência atual (todas as Guerras até o fim do período)
+    const allWars = past.filter((e) => resBy[e.id] && Date.parse(e.starts_at) < per.to).sort((a, b) => Date.parse(b.starts_at) - Date.parse(a.starts_at));
+    let streak = 0;
+    const streakKind = allWars[0] ? resBy[allWars[0].id].outcome : null;
+    for (const e of allWars) { if (resBy[e.id].outcome === streakKind) streak++; else break; }
+
+    const logAsc = mlog.slice().sort((a, b) => Date.parse(a.changed_at) - Date.parse(b.changed_at));
+    const activeAt = (t) => {
+      const last = {};
+      for (const l of logAsc) { if (Date.parse(l.changed_at) > t) break; last[l.user_id] = l.to_role; }
+      return Object.values(last).filter((r) => ACTIVE_ROLES.includes(r)).length;
+    };
+    // ----- KPIs -----
+    const activeEnd = per.to >= now - DAY_MS ? members.length : activeAt(per.to - 1);
+    const kpis = `<div class="kpi-grid">
+      ${kpi('⚔️', 'Guerras', M.wars.length ? `<span class="c-yes">${M.wins}V</span> · <span class="c-no">${M.losses}D</span>` : '—',
+        M.wars.length ? `${pctFmt(M.winPct)} de vitórias${streak >= 2 ? ` · ${streak} ${streakKind === 'win' ? 'vitórias' : 'derrotas'} seguidas` : ''}` : 'Nenhum resultado registrado',
+        deltaHtml(M.winPct, P?.winPct, { pct: true }))}
+      ${kpi('📋', 'Presença média', M.rate == null ? '—' : pctFmt(M.rate), `${M.att.length} evento(s) com presença registrada`, deltaHtml(M.rate, P?.rate, { pct: true }))}
+      ${kpi('👥', per.to >= now - DAY_MS ? 'Membros ativos' : 'Membros ativos no fim do ciclo', activeEnd, `<span class="c-yes">+${M.joins.length} entraram</span> · <span class="c-no">−${M.exits.length} saíram</span>`,
+        P ? deltaHtml(M.joins.length - M.exits.length, P.joins.length - P.exits.length) : '')}
+      ${kpi('💎', 'Ressonância média', M.resEnd == null ? '—' : intFmt(M.resEnd),
+        M.resStart != null && M.resEnd != null ? `${M.resEnd - M.resStart >= 0 ? '+' : ''}${intFmt(M.resEnd - M.resStart)} no período` : '',
+        P && M.resStart != null && P.resStart != null ? deltaHtml(M.resEnd - M.resStart, P.resEnd - P.resStart) : '')}
+      ${supportOn() ? kpi('🎫', 'Tickets', M.tks.length, `1ª resposta em ${fmtHours(M.firstReply)} (média)`, deltaHtml(M.firstReply, P?.firstReply, { fmt: (h) => fmtHours(Math.abs(h)), invert: true })) : ''}
+    </div>`;
+
+    // ----- Guerras -----
+    const warRow = (e) => { const r = resBy[e.id]; return `<a class="war-chip ${r.outcome}" href="#/evento/${e.id}" title="${esc(`${fmtShortDate(e.starts_at)} · ${r.outcome === 'win' ? 'Vitória' : 'Derrota'}${r.opponent ? ` contra ${r.opponent}` : ''}${scoreText(r) ? ` · ${scoreText(r)}` : ''}`)}">${r.outcome === 'win' ? 'V' : 'D'}</a>`; };
+    const seq = M.wars.length ? `<div class="war-seq">${M.wars.map(warRow).join('')}</div><div class="muted small">Da mais antiga para a mais recente. Passe o mouse para ver o adversário e o placar.</div>` : empty('Nenhuma Guerra com resultado registrado neste período.');
+    const cycleBars = cycles.length >= 2 ? vcols(cycles.slice(-6).map((c) => {
+      const m = metrics({ from: c.from, to: Math.min(c.to, now) });
+      return { label: `${SIDE[c.side].icon} ${fmtShortDate(new Date(c.from).toISOString())}`, title: `${cycleName(c)} (${spanText(c)}): ${m.wins} vitória(s), ${m.losses} derrota(s)`,
+        bars: [{ v: m.wins, cls: 'win' }, { v: m.losses, cls: 'loss' }] };
+    })) + '<div class="chart-legend"><span class="lg win"></span> vitórias <span class="lg loss"></span> derrotas</div>' : '';
+
+    const opp = {};
+    M.wars.forEach((e) => { const r = resBy[e.id]; const k = r.opponent || 'Não informado'; const o = (opp[k] ||= { name: k, n: 0, w: 0, us: 0, them: 0, scored: 0 });
+      o.n++; if (r.outcome === 'win') o.w++; if (r.score_us != null && r.score_them != null) { o.us += r.score_us; o.them += r.score_them; o.scored++; } });
+    const oppRows = Object.values(opp).sort((a, b) => b.n - a.n || b.w - a.w || a.name.localeCompare(b.name, 'pt-BR'));
+    const oppTable = oppRows.length ? `<table class="mini-table"><thead><tr><th>Clã</th><th>Jogos</th><th>V–D</th><th>Placar total</th></tr></thead><tbody>
+      ${oppRows.map((o) => `<tr><td>${esc(o.name)}</td><td>${o.n}</td><td><span class="c-yes">${o.w}</span>–<span class="c-no">${o.n - o.w}</span></td>
+        <td>${o.scored ? `${o.us} × ${o.them}` : '—'}</td></tr>`).join('')}</tbody></table>` : empty('Sem adversários registrados no período.');
+
+    const scored = M.wars.filter((e) => resBy[e.id].score_us != null && resBy[e.id].score_them != null);
+    const avg = (arr, f) => (arr.length ? arr.reduce((s, x) => s + f(x), 0) / arr.length : null);
+    const margin = (e) => resBy[e.id].score_us - resBy[e.id].score_them;
+    const bigWin = scored.filter((e) => margin(e) > 0).sort((a, b) => margin(b) - margin(a))[0];
+    const bigLoss = scored.filter((e) => margin(e) < 0).sort((a, b) => margin(a) - margin(b))[0];
+    const evLine = (e) => `<a href="#/evento/${e.id}">${fmtShortDate(e.starts_at)}</a> ${resBy[e.id].opponent ? `contra <b>${esc(resBy[e.id].opponent)}</b>` : ''} · ${esc(scoreText(resBy[e.id]))}`;
+    const dec = (n) => n.toFixed(1).replace('.', ',');
+    const scoreBox = scored.length ? `<div class="score-big">${dec(avg(scored, (e) => resBy[e.id].score_us))} <span class="muted">×</span> ${dec(avg(scored, (e) => resBy[e.id].score_them))}</div>
+      <div class="muted small" style="text-align:center">placar médio (nós × eles) em ${scored.length} Guerra(s)</div>
+      <ul class="plain-list">${bigWin ? `<li>🏆 Maior vitória: ${evLine(bigWin)}</li>` : ''}${bigLoss ? `<li>💀 Maior derrota: ${evLine(bigLoss)}</li>` : ''}</ul>`
+      : empty('Nenhuma Guerra com placar registrado no período.');
+
+    const presOf = (e) => e.attendance.filter((a) => a.present).length;
+    const confOf = (e) => e.rsvps.filter((r) => r.going).length;
+    const warsAtt = M.wars.filter((e) => e.attendance.length);
+    const byOut = (o) => warsAtt.filter((e) => resBy[e.id].outcome === o);
+    const wA = byOut('win'); const lA = byOut('loss');
+    const presBox = warsAtt.length ? hbars([
+      { label: 'Vitórias', labelHtml: '<span class="c-yes">Vitórias</span>', value: avg(wA, presOf) || 0, color: 'var(--yes)',
+        valHtml: wA.length ? `<b>${intFmt(avg(wA, presOf))}</b> <span class="muted">presentes · ${intFmt(avg(wA, confOf))} confirmaram</span>` : '—' },
+      { label: 'Derrotas', labelHtml: '<span class="c-no">Derrotas</span>', value: avg(lA, presOf) || 0, color: 'var(--no)',
+        valHtml: lA.length ? `<b>${intFmt(avg(lA, presOf))}</b> <span class="muted">presentes · ${intFmt(avg(lA, confOf))} confirmaram</span>` : '—' },
+    ]) + '<div class="muted small">Média de membros presentes por Guerra (só as Guerras com presença registrada).</div>'
+      : empty('Registre a presença das Guerras para comparar com o resultado.');
+
+    // ----- Engajamento no período (filtrável por tipo) -----
+    const typeOk = (e) => !PANEL.type || (PANEL.type === 'none' ? !e.type_id : e.type_id === Number(PANEL.type));
+    const evsT = M.evs.filter(typeOk);
+    const withAtt = evsT.filter((e) => e.attendance.length).sort((a, b) => Date.parse(a.starts_at) - Date.parse(b.starts_at)).slice(-14);
+    const presenceChart = withAtt.length ? vcols(withAtt.map((e) => ({ label: fmtShortDate(e.starts_at),
+      title: `${e.title} ${fmtShortDate(e.starts_at)}: ${confOf(e)} confirmaram, ${presOf(e)} estiveram presentes`,
+      bars: [{ v: confOf(e), cls: 'conf' }, { v: presOf(e), cls: 'pres' }] })))
+      + '<div class="chart-legend"><span class="lg conf"></span> confirmaram <span class="lg pres"></span> estiveram presentes</div>'
+      : empty('Nenhum evento com presença registrada no período.');
+    const freq = computeFrequency(evsT, members).filter((r) => r.total);
+    const maxTotal = Math.max(0, ...freq.map((r) => r.total));
+    const ranked = freq.filter((r) => r.total >= Math.min(3, maxTotal));
+    const byPct = (dir) => (a, b) => dir * (a.pct - b.pct) || dir * (a.present - b.present) || byName(a.m, b.m);
+    const best = ranked.slice().sort(byPct(-1)).slice(0, 8);
+    const worst = ranked.slice().sort(byPct(1)).filter((r) => !best.includes(r)).slice(0, 8);
+    const rankBars = (rows) => hbars(rows.map((r) => ({ label: displayName(r.m), labelHtml: link(r.m), value: r.pct, color: pctColor(r.pct),
+      valHtml: `${pctFmt(r.pct)} <span class="muted">${r.present}/${r.total}</span>`, title: `${displayName(r.m)}: ${r.present} de ${r.total} eventos` })), { max: 1, fmt: pctFmt });
+
+    // Respostas: últimos eventos do período e, no ciclo atual, os próximos
+    const nextEvs = per.to >= now - DAY_MS ? upcoming.filter(typeOk).slice(0, 3) : [];
+    const respEvents = [
+      ...evsT.slice().sort((a, b) => Date.parse(a.starts_at) - Date.parse(b.starts_at)).slice(-6).map((e) => ({ e, soon: false })),
+      ...nextEvs.map((e) => ({ e, soon: true })),
+    ];
+    const respChart = respEvents.length ? stackRows(respEvents.map(({ e, soon }) => {
+      const t = Date.parse(e.starts_at);
+      const elig = members.filter((m) => soon || (Date.parse(m.created_at || 0) || 0) < t);
+      const eligIds = new Set(elig.map((m) => m.id));
+      const rs = e.rsvps.filter((r) => eligIds.has(r.user_id));
+      const yes = rs.filter((r) => r.going).length;
+      return { total: elig.length, yes, no: rs.length - yes, none: elig.length - rs.length, title: `${e.title} · ${fmtShortDate(e.starts_at)}`,
+        labelHtml: `${soon ? '<span class="soon-tag">próximo</span> ' : ''}<b>${fmtShortDate(e.starts_at)}</b> <span class="muted">${esc(e.title)}</span>` };
+    })) + '<div class="chart-legend"><span class="lg yes"></span> vão <span class="lg no"></span> não vão <span class="lg none"></span> sem resposta</div>'
+      : empty('Nenhum evento no período.');
+    const nextEv = nextEvs[0];
+    const pendingNames = nextEv ? members.filter((m) => !nextEv.rsvps.some((r) => r.user_id === m.id)).sort(byName) : [];
+    const pendingBox = nextEv ? `<div class="pending-answer">
+        <b>Ainda não responderam a <a href="#/evento/${nextEv.id}">${esc(nextEv.title)} ${fmtShortDate(nextEv.starts_at)}</a> (${pendingNames.length}):</b>
+        ${pendingNames.length ? `<div><button class="btn small" id="pn-copy-pending">📋 Copiar lista de membros sem resposta</button></div>` : '<span class="c-yes"> todos responderam! 🎉</span>'}
+      </div>` : '';
+    const hasUntyped = past.some((e) => !e.type_id);
+
+    // ----- Composição (hoje) -----
+    const counts = CLASSES.map((c) => ({ c, n: members.filter((m) => m.char_class === c.key).length }))
+      .sort((a, b) => b.n - a.n || a.c.label.localeCompare(b.c.label, 'pt-BR'));
+    const noClass = members.filter((m) => !CLASS[m.char_class]).length;
+    const classChart = hbars(counts.map(({ c, n }) => ({ label: c.label, labelHtml: `${classTag(c.key)} ${esc(c.label)}`, value: n, color: c.color, title: `${c.label}: ${n} membro(s)` })));
+    const res = members.map((m) => Number(m.resonance)).filter((v) => Number.isFinite(v) && v > 0).sort((a, b) => a - b);
+    let resChart = empty('Ninguém informou a Ressonância ainda.');
+    let resSummary = '';
+    if (res.length) {
+      const lo = res[0]; const hi = res[res.length - 1];
+      const step = [100, 250, 500, 1000, 2000, 5000].find((s) => Math.floor(hi / s) - Math.floor(lo / s) + 1 <= 8) || 10000;
+      const bins = [];
+      for (let b = Math.floor(lo / step) * step; b <= hi; b += step) bins.push({ from: b, to: b + step - 1, n: res.filter((v) => v >= b && v < b + step).length });
+      resChart = vcols(bins.map((b) => ({ label: intFmt(b.from), title: `${intFmt(b.from)} a ${intFmt(b.to)}: ${b.n} membro(s)`, bars: [{ v: b.n, cls: 'pres' }] })));
+      const median = res.length % 2 ? res[(res.length - 1) / 2] : (res[res.length / 2 - 1] + res[res.length / 2]) / 2;
+      resSummary = `<div class="chart-foot">Média <b>${intFmt(res.reduce((s, v) => s + v, 0) / res.length)}</b> · Mediana <b>${intFmt(median)}</b> · Menor <b>${intFmt(lo)}</b> · Maior <b>${intFmt(hi)}</b></div>`;
+    }
+
+    // ----- Evolução da Ressonância no período -----
+    const tEndEvo = Math.min(per.to, now) - 1;
+    const evoStart = Math.max(per.from, Math.min(now, ...members.map((m) => Date.parse(m.created_at || 0) || now)));
+    const evoPts = [];
+    for (let k = 0; k <= 11; k++) {
+      const t = evoStart + ((tEndEvo - evoStart) * k) / 11;
+      const vals = members.map((m) => valueAt(m, 'resonance', t, histBy[m.id] || [])).filter((v) => v != null);
+      if (vals.length) evoPts.push({ t, label: fmtShortDate(new Date(t).toISOString()), v: vals.reduce((s, v) => s + v, 0) / vals.length, n: vals.length });
+    }
+    let evoChart = empty('Ainda não há histórico suficiente. O gráfico ganha forma conforme os membros atualizam a Ressonância.');
+    if (evoPts.length >= 2) {
+      const diff = evoPts[evoPts.length - 1].v - evoPts[0].v;
+      evoChart = lineChart(evoPts, { time: true }) + `<div class="chart-foot">Desde ${evoPts[0].label}: <b class="${diff > 0 ? 'c-yes' : diff < 0 ? 'c-no' : ''}">${diff > 0 ? '+' : ''}${intFmt(diff)}</b> na média do clã</div>`;
+    }
+    // Quem mais evoluiu: atributo escolhido no quadro
+    const gAttr = ATTRS.find((a) => a.key === PANEL.attr) || ATTRS.find((a) => a.key === 'resonance');
+    const gains = members.map((m) => {
+      const h = histBy[m.id] || [];
+      const before = valueAt(m, gAttr.key, per.from, h); const after = valueAt(m, gAttr.key, tEndEvo, h);
+      return { m, before, after, gain: before != null && after != null ? after - before : 0 };
+    }).filter((g) => g.gain > 0).sort((a, b) => b.gain - a.gain || byName(a.m, b.m)).slice(0, 8);
+    const gainChart = gains.length ? hbars(gains.map((g) => ({ label: displayName(g.m), labelHtml: link(g.m), value: g.gain, color: 'var(--ember)',
+      valHtml: `<b class="c-yes">+${intFmt(g.gain)}</b> <span class="muted">${intFmt(g.before)} → ${intFmt(g.after)}</span>`,
+      title: `${displayName(g.m)} · ${gAttr.label}: ${intFmt(g.before)} → ${intFmt(g.after)}` }))) : empty(`Ninguém aumentou ${gAttr.label === 'Perfurar Armadura' ? 'o' : 'a'} ${gAttr.label} no período (ou ainda não atualizou no site).`);
+
+    // ----- Saúde do clã -----
+    const span = Math.max(DAY_MS, Math.min(per.to, now) - per.from);
+    const pts = [];
+    for (let k = 0; k <= 10; k++) { const t = per.from + (span * k) / 10; const v = activeAt(t); pts.push({ t, label: fmtShortDate(new Date(t).toISOString()), v, tip: `${dmy(t)}: ${v} membros ativos` }); }
+    const healthChart = mlog.length ? lineChart(pts, { time: true, aria: 'Membros ativos ao longo do período' }) : empty('Sem histórico de entradas e saídas.');
+    const moveList = (rows, kind) => (rows.length ? `<ul class="plain-list">${rows.slice().sort((a, b) => Date.parse(b.changed_at) - Date.parse(a.changed_at)).map((l) => {
+      const m = memberById(l.user_id);
+      return `<li>${fmtShortDate(l.changed_at)} · ${link(m)}${kind === 'out' && l.reason ? ` <span class="muted small">· ${esc(l.reason)}</span>` : kind === 'in' && l.from_role === 'former' ? ' <span class="muted small">· readmitido</span>' : ''}</li>`;
+    }).join('')}</ul>` : empty(kind === 'in' ? 'Ninguém entrou no período.' : 'Ninguém saiu no período.'));
+
+    // ----- Atendimento -----
+    const openTk = (state.tickets || []).filter((t) => t.status !== 'resolved');
+    const stale = openTk.filter((t) => ticketPending(t) === 'staff' && now - Date.parse(lastActivity(t)) > 48 * 3600000)
+      .sort((a, b) => Date.parse(lastActivity(a)) - Date.parse(lastActivity(b)));
+    const resolvedN = M.tks.filter((t) => t.status === 'resolved').length;
+    const supportBox = supportOn() ? `<section class="stats-section">
+        <h3>🎫 Atendimento <span class="muted small">· ${esc(per.label)}</span></h3>
+        <div class="chart-grid">
+          <div class="card chart"><h4>Tickets no período</h4>
+            <div class="kpi-row"><div><b>${M.tks.length}</b><span class="muted small">abertos</span></div><div><b>${resolvedN}</b><span class="muted small">já resolvidos</span></div>
+              <div><b>${fmtHours(M.firstReply)}</b><span class="muted small">até a 1ª resposta (média)</span></div></div></div>
+          <div class="card chart"><h4>⏳ Parados há mais de 48 h <span class="muted small">(esperando a liderança)</span></h4>
+            ${stale.length ? `<ul class="plain-list">${stale.map((t) => `<li><a href="#/ticket/${t.id}">${esc(t.title)}</a> <span class="muted small">· sem resposta há ${fmtHours((now - Date.parse(lastActivity(t))) / 3600000)}</span></li>`).join('')}</ul>`
+              : empty('Nenhum ticket parado. 🎉')}</div>
+        </div></section>` : '';
+
+    // ----- Perfis incompletos -----
+    const lastAttrUpdate = (m) => {
+      const h = (histBy[m.id] || []).find((x) => ATTRS.some((a) => x.changes && a.key in x.changes));
+      return h ? Date.parse(h.changed_at) : Date.parse(m.created_at || 0) || 0;
+    };
+    const incomplete = members.map((m) => {
+      const miss = [];
+      if (!CLASS[m.char_class]) miss.push('sem classe');
+      const noAttr = ATTRS.filter((a) => !(Number(m[a.key]) > 0));
+      if (noAttr.length) miss.push(noAttr.length === ATTRS.length ? 'sem atributos' : `sem ${noAttr.map((a) => a.label).join(', ')}`);
+      const age = (now - lastAttrUpdate(m)) / DAY_MS;
+      if (!noAttr.length && age > 30) miss.push(`atributos sem atualizar há ${Math.floor(age)} dias`);
+      return { m, miss, age };
+    }).filter((r) => r.miss.length).sort((a, b) => b.miss.length - a.miss.length || b.age - a.age || byName(a.m, b.m));
+
+    // ----- Inativos -----
+    const N = PANEL.inactiveN;
+    const lastN = past.filter((e) => e.attendance.length).sort((a, b) => Date.parse(b.starts_at) - Date.parse(a.starts_at)).slice(0, N);
+    const oldest = lastN.length ? Date.parse(lastN[lastN.length - 1].starts_at) : 0;
+    const lastPresence = (m) => past.filter((e) => e.attendance.some((a) => a.user_id === m.id && a.present)).map((e) => Date.parse(e.starts_at)).sort((a, b) => b - a)[0];
+    const inactive = lastN.length < N ? [] : members.filter((m) => (Date.parse(m.created_at || 0) || 0) < oldest
+      && lastN.every((e) => !e.attendance.some((a) => a.user_id === m.id && a.present)
+        && !e.rsvps.some((r) => r.user_id === m.id && r.absence_id)))
+      .map((m) => ({ m, last: lastPresence(m), answered: lastN.filter((e) => e.rsvps.some((r) => r.user_id === m.id)).length }))
+      .sort((a, b) => (a.last || 0) - (b.last || 0) || byName(a.m, b.m));
+
+    // ----- Tela -----
+    const cycleOpts = cycles.slice().reverse().map((c, i) => `<option value="${i === 0 ? 'cur' : c.id}" ${(i === 0 ? PANEL.sel === 'cur' : String(PANEL.sel) === String(c.id)) ? 'selected' : ''}>${esc(`${cycleName(c)} · ${spanText(c)}${i === 0 ? ' (atual)' : ''}`)}</option>`).join('');
+    const weekN = per.cycle ? Math.floor((Math.min(per.to, now) - per.from) / (7 * DAY_MS)) + 1 : null;
+    main.innerHTML = `
+      <div class="page-head"><h1>Estatísticas do clã</h1>
+        ${can('rivals_view') ? '<a class="btn" href="#/rivais">🛡️ Clãs rivais</a>' : ''}
+        ${can('cycles') ? '<button class="btn" id="pn-cycles">🗓 Ciclos</button>' : ''}</div>
+      <div class="card panel-period">
+        <div class="row" style="gap:10px;flex-wrap:wrap;align-items:center">
+          <label for="pn-sel" class="muted small">Período</label>
+          <select id="pn-sel">${cycleOpts}<option value="all" ${PANEL.sel === 'all' ? 'selected' : ''}>Todos os ciclos</option></select>
+        </div>
+        <div class="panel-cycle">${cycles.length ? `<b>${esc(per.label)}</b> <span class="muted">· ${per.cycle ? spanText(per.cycle) : `${dmy(per.from)} → hoje`}</span>
+          ${per.cur ? ` <span class="badge">Semana ${weekN}</span>` : ''}${prev ? '<div class="muted small">As setas comparam com o ciclo anterior.</div>' : ''}`
+          : `<span class="c-no">Nenhum ciclo cadastrado.</span> <span class="muted small">Mostrando os últimos 45 dias.${can('cycles') ? ' Cadastre o ciclo atual em 🗓 Ciclos.' : ''}</span>`}</div>
+      </div>
+      ${kpis}
+      <section class="stats-section">
+        <h3>⚔️ Guerras <span class="muted small">· ${esc(per.label)}</span></h3>
+        <div class="chart-grid">
+          <div class="card chart"><h4>Resultados</h4>${seq}</div>
+          ${cycleBars ? `<div class="card chart"><h4>Vitórias e derrotas por ciclo</h4>${cycleBars}</div>` : ''}
+          <div class="card chart"><h4>🛡️ Adversários</h4>${oppTable}</div>
+          <div class="card chart"><h4>🎯 Placar</h4>${scoreBox}</div>
+          <div class="card chart"><h4>👥 Presença × resultado</h4>${presBox}</div>
+        </div>
+      </section>
+      <section class="stats-section">
+        <h3>📈 Engajamento <span class="muted small">· ${esc(per.label)}</span>
+          <select class="inline" id="pn-type" aria-label="Tipo de evento">
+            <option value="">Todos os tipos</option>
+            ${state.types.map((t) => `<option value="${t.id}" ${PANEL.type === String(t.id) ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}
+            ${hasUntyped ? `<option value="none" ${PANEL.type === 'none' ? 'selected' : ''}>Sem tipo</option>` : ''}
+          </select></h3>
+        <div class="chart-grid">
+          <div class="card chart"><h4>Presença por evento</h4>${presenceChart}</div>
+          <div class="card chart"><h4>Respostas por evento</h4>${respChart}${pendingBox}</div>
+          <div class="card chart"><h4>🏆 Mais presentes</h4>${best.length ? rankBars(best) : empty('Sem presença registrada no período.')}</div>
+          <div class="card chart"><h4>⚠️ Mais faltam</h4>${worst.length ? rankBars(worst) : empty(best.length ? 'Todos já aparecem no ranking ao lado.' : 'Sem presença registrada no período.')}</div>
+        </div>
+      </section>
+      <section class="stats-section">
+        <h3>🧙 Composição do clã <span class="muted small">· hoje · ${members.length} membros ativos</span></h3>
+        <div class="chart-grid">
+          <div class="card chart"><h4>Membros por classe</h4>${classChart}
+            ${noClass ? `<div class="chart-foot">${noClass} membro(s) ainda sem classe informada</div>` : ''}</div>
+          <div class="card chart"><h4>Distribuição de Ressonância</h4>${resChart}${resSummary}</div>
+        </div>
+      </section>
+      <section class="stats-section">
+        <h3>💪 Evolução <span class="muted small">· ${esc(per.label)}</span></h3>
+        <div class="chart-grid evo">
+          <div class="card chart wide"><h4>Ressonância média do clã</h4>${evoChart}
+            <div class="muted small">Considera os membros ativos de hoje. Antes da primeira atualização de cada um, vale o primeiro valor informado.</div></div>
+          <div class="card chart wide"><h4>🔥 Quem mais evoluiu no período</h4>
+            <div class="evo-tabs" role="tablist">${ATTRS.slice().sort((a, b) => (a.key === 'resonance' ? -1 : b.key === 'resonance' ? 1 : 0))
+              .map((a) => `<button type="button" class="evo-tab" role="tab" data-pn-attr="${a.key}" aria-selected="${a.key === gAttr.key}">${esc(a.label)}</button>`).join('')}</div>
+            ${gainChart}</div>
+        </div>
+      </section>
+      <section class="stats-section">
+        <h3>🫀 Saúde do clã <span class="muted small">· ${esc(per.label)}</span></h3>
+        <div class="chart-grid">
+          <div class="card chart wide"><h4>Membros ativos</h4>${healthChart}</div>
+          <div class="card chart"><h4>✅ Entraram (${M.joins.length})</h4>${moveList(M.joins, 'in')}</div>
+          <div class="card chart"><h4>🚪 Saíram (${M.exits.length})</h4>${moveList(M.exits, 'out')}</div>
+        </div>
+      </section>
+      ${supportBox}
+      <section class="stats-section">
+        <h3>🔎 Atenção</h3>
+        <div class="chart-grid">
+          <div class="card chart"><h4>💤 Inativos
+              <span class="muted small">· faltaram os últimos <input type="number" id="pn-n" min="2" max="15" value="${N}" class="inline-num"> eventos com presença</span></h4>
+            ${lastN.length < N ? empty(`Ainda não há ${N} eventos com presença registrada.`) : inactive.length
+              ? `<ul class="plain-list">${inactive.map((r) => `<li>${link(r.m)} <span class="muted small">· última presença: ${r.last ? dmy(r.last) : 'nunca'}${r.answered ? ` · respondeu ${r.answered} de ${N}` : ' · não respondeu nenhum'}</span></li>`).join('')}</ul>
+                <button class="btn small" id="pn-copy-inactive">📋 Copiar lista</button>`
+              : empty('Ninguém faltou a todos esses eventos. 🎉')}
+            <div class="muted small">Não conta quem tinha ausência programada nem quem entrou depois desses eventos.</div></div>
+          <div class="card chart"><h4>📝 Perfis incompletos ou desatualizados (${incomplete.length})</h4>
+            ${incomplete.length ? `<ul class="plain-list">${incomplete.slice(0, 30).map((r) => `<li>${link(r.m)} <span class="muted small">· ${esc(r.miss.join(' · '))}</span></li>`).join('')}</ul>
+              ${incomplete.length > 30 ? `<div class="muted small">e mais ${incomplete.length - 30}…</div>` : ''}<button class="btn small" id="pn-copy-incomplete">📋 Copiar lista</button>`
+              : empty('Todos os perfis estão completos e atualizados. 🎉')}
+            <div class="muted small">Desatualizado: atributos sem nenhuma alteração há mais de 30 dias.</div></div>
+        </div>
+      </section>`;
+
+    $('#pn-sel').addEventListener('change', (e) => { PANEL.sel = e.target.value; viewPanel().catch(fail); });
+    $('#pn-n')?.addEventListener('change', (e) => { PANEL.inactiveN = Math.min(15, Math.max(2, Number(e.target.value) || 3)); viewPanel().catch(fail); });
+    $('#pn-cycles')?.addEventListener('click', () => openCyclesDialog(cycles, () => viewPanel()));
+    $('#pn-copy-inactive')?.addEventListener('click', () => copy([`**Inativos: faltaram os últimos ${N} eventos**`, ...inactive.map((r) => `• ${displayName(r.m)}`)].join('\n'), 'Lista copiada'));
+    $('#pn-copy-incomplete')?.addEventListener('click', () => copy(['**Perfis para atualizar no site**', ...incomplete.map((r) => `• ${displayName(r.m)} (${r.miss.join(', ')})`)].join('\n'), 'Lista copiada'));
+    $('#pn-type').addEventListener('change', (e) => { PANEL.type = e.target.value; viewPanel().catch(fail); });
+    main.querySelectorAll('[data-pn-attr]').forEach((b) => b.addEventListener('click', () => {
+      if (PANEL.attr === b.dataset.pnAttr) return;
+      PANEL.attr = b.dataset.pnAttr;
+      const y = window.scrollY;
+      viewPanel().then(() => window.scrollTo(0, y)).catch(fail);
+    }));
+    $('#pn-copy-pending')?.addEventListener('click', () => {
+      copy([`**Ainda não responderam: ${nextEv.title} ${fmtShortDate(nextEv.starts_at)}**`, ...pendingNames.map((m) => `• ${displayName(m)}`)].join('\n'), 'Lista copiada');
+    });
+  }
+
+  // Segundas-feiras para o início do ciclo: da desta semana até 1 ano atrás
+  function mondays(keep) {
+    const d = new Date(); d.setHours(12, 0, 0, 0);
+    d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+    const out = [];
+    for (let i = 0; i < 53; i++, d.setDate(d.getDate() - 7)) out.push(ymdOf(d));
+    if (keep && !out.includes(keep)) out.push(keep);
+    return out;
+  }
+  const mondayLabel = (v) => new Date(`${v}T12:00:00`).toLocaleDateString('pt-BR', { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' }).replace('.', '');
+
+
+  // Cadastro dos ciclos (Sombras / Imortal): começa numa segunda e termina no domingo antes do próximo
+  function openCyclesDialog(cycles, after) {
+    const rows = cycles.slice().reverse();
+    const render = (edit) => openDialog(`<form id="cy" class="stack">
+      <h2>🗓 Ciclos</h2>
+      <p class="muted small" style="margin:0">Cadastre a segunda-feira em que cada ciclo começa e o lado do clã. O ciclo termina no domingo antes do próximo.</p>
+      <div class="cy-list">${rows.length ? rows.map((c, i) => `<div class="cy-row"><span><b>${esc(cycleName(c))}</b> <span class="muted small">· ${spanText(c)}${i === 0 ? ' (atual)' : ''}</span></span>
+        <span class="row" style="gap:6px"><button type="button" class="btn small ghost" data-cy-edit="${c.id}">Editar</button><button type="button" class="btn small ghost" data-cy-del="${c.id}">Apagar</button></span></div>`).join('')
+        : '<p class="muted small">Nenhum ciclo cadastrado ainda.</p>'}</div>
+      <h3 style="margin:6px 0 0">${edit ? 'Editar ciclo' : 'Novo ciclo'}</h3>
+      <div class="row" style="gap:10px;flex-wrap:wrap">
+        <div class="field" style="flex:1;min-width:150px"><label for="cy-date">Começou na segunda-feira</label><select id="cy-date" required>${mondays(edit?.starts_on).map((v, i) => `<option value="${v}" ${(edit ? v === edit.starts_on : i === 0) ? 'selected' : ''}>${esc(mondayLabel(v))}</option>`).join('')}</select></div>
+        <div class="field" style="flex:1;min-width:150px"><label for="cy-side">Lado</label><select id="cy-side">
+          <option value="shadows" ${edit?.side !== 'immortal' ? 'selected' : ''}>🌑 Sombras</option><option value="immortal" ${edit?.side === 'immortal' ? 'selected' : ''}>👑 Imortal</option></select></div>
+      </div>
+      <div class="row end">
+        ${edit ? '<button type="button" class="btn ghost" id="cy-new">Cancelar edição</button>' : '<button type="button" class="btn ghost" data-close>Fechar</button>'}
+        <button type="submit" class="btn primary">${edit ? 'Salvar' : 'Cadastrar ciclo'}</button>
+      </div>
+    </form>`, (d) => {
+      $('#cy-new', d)?.addEventListener('click', () => render(null));
+      d.querySelectorAll('[data-cy-edit]').forEach((b) => b.addEventListener('click', () => render(rows.find((c) => String(c.id) === b.dataset.cyEdit))));
+      d.querySelectorAll('[data-cy-del]').forEach((b) => b.addEventListener('click', async () => {
+        const c = rows.find((x) => String(x.id) === b.dataset.cyDel);
+        if (!(await confirmDialog(`Apagar o ${cycleName(c)} que começou em ${dmy(c.from)}? Os eventos e resultados não são apagados.`, 'Apagar'))) { render(edit); return; }
+        try { await api.deleteCycle(c.id); toast('Ciclo apagado'); await after(); } catch (err) { fail(err); }
+      }));
+      $('#cy', d).addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const btn = $('button[type=submit]', d); btn.disabled = true;
+        try {
+          await api.saveCycle({ id: edit?.id ?? null, starts_on: $('#cy-date', d).value, side: $('#cy-side', d).value });
+          dlg.close(); toast(edit ? 'Ciclo atualizado' : 'Ciclo cadastrado'); await after();
+        } catch (err) { fail(err); btn.disabled = false; }
+      });
+    });
+    render(null);
+  }
+
+  // =====================================================================
+  //  Clãs rivais (compartilhados com o INFERNUM)
+  //  As leituras ficam no Supabase do INFERNUM; este site lê e grava pela
+  //  função rivals-share, que confere aqui se a pessoa é líder ou oficial com permissão.
+  // =====================================================================
+  const OUR = CFG.clanName || 'Clã';
+
+  // =====================================================================
+
+  // Lê um .xlsx no navegador (zip + XML), sem biblioteca externa: { nomeDaAba: [[célula, ...], ...] }
+  async function readXlsx(file) {
+    const buf = new Uint8Array(await file.arrayBuffer());
+    const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    let eocd = -1;
+    for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65557); i--) if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+    if (eocd < 0) throw new Error('O arquivo não é uma planilha .xlsx válida');
+    const files = {};
+    let p = dv.getUint32(eocd + 16, true);
+    for (let n = dv.getUint16(eocd + 10, true); n > 0 && dv.getUint32(p, true) === 0x02014b50; n--) {
+      const nlen = dv.getUint16(p + 28, true);
+      files[new TextDecoder().decode(buf.subarray(p + 46, p + 46 + nlen))] = { method: dv.getUint16(p + 10, true), size: dv.getUint32(p + 20, true), off: dv.getUint32(p + 42, true) };
+      p += 46 + nlen + dv.getUint16(p + 30, true) + dv.getUint16(p + 32, true);
+    }
+    const read = async (name) => {
+      const f = files[name];
+      if (!f) return null;
+      const start = f.off + 30 + dv.getUint16(f.off + 26, true) + dv.getUint16(f.off + 28, true);
+      let data = buf.subarray(start, start + f.size);
+      if (f.method === 8) data = new Uint8Array(await new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer());
+      return new DOMParser().parseFromString(new TextDecoder().decode(data), 'application/xml');
+    };
+    const wb = await read('xl/workbook.xml');
+    if (!wb) throw new Error('O arquivo não é uma planilha .xlsx válida');
+    const rels = await read('xl/_rels/workbook.xml.rels');
+    const target = (rid) => {
+      const t = [...(rels?.getElementsByTagName('Relationship') || [])].find((x) => x.getAttribute('Id') === rid)?.getAttribute('Target') || '';
+      return t.startsWith('/') ? t.slice(1) : `xl/${t}`;
+    };
+    const ss = await read('xl/sharedStrings.xml');
+    const shared = ss ? [...ss.getElementsByTagName('si')].map((si) => [...si.getElementsByTagName('t')].map((t) => t.textContent).join('')) : [];
+    const colOf = (ref) => { let n = 0; for (const ch of ref.replace(/[^A-Z]/g, '')) n = n * 26 + ch.charCodeAt(0) - 64; return n - 1; };
+    const out = {};
+    for (const sh of wb.getElementsByTagName('sheet')) {
+      const doc = await read(target(sh.getAttribute('r:id')));
+      if (!doc) continue;
+      const rows = [];
+      for (const r of doc.getElementsByTagName('row')) {
+        const row = [];
+        for (const c of r.getElementsByTagName('c')) {
+          const ref = c.getAttribute('r');
+          const t = c.getAttribute('t');
+          const v = c.getElementsByTagName('v')[0]?.textContent;
+          let val = null;
+          if (t === 's') val = shared[Number(v)] ?? null;
+          else if (t === 'inlineStr') val = [...c.getElementsByTagName('t')].map((x) => x.textContent).join('');
+          else if (t === 'str' || t === 'e') val = v ?? null;
+          else if (v != null && v !== '') val = Number(v);
+          row[ref ? colOf(ref) : row.length] = val;
+        }
+        rows.push(row);
+      }
+      out[sh.getAttribute('name')] = rows;
+    }
+    return out;
+  }
+
+  // Monta as leituras por clã a partir da planilha, tirando os repetidos
+  function parseScout(sheets, fileName) {
+    const COLS = { clan: ['cla'], number: ['n do cla', 'no do cla', 'nº do cla', 'numero do cla'], name: ['personagem', 'nome', 'jogador'],
+      armor: ['armadura'], armor_pen: ['perfurar armadura'], potency: ['potencia'], resistance: ['resistencia'], resonance: ['ressonancia'], note: ['observacao', 'obs'] };
+    let rows = null; let idx = null;
+    for (const r of Object.values(sheets)) {
+      const head = (r[0] || []).map((h) => norm(h));
+      const find = (alts) => head.findIndex((h) => alts.includes(h));
+      if (find(COLS.name) >= 0 && find(COLS.resonance) >= 0) { rows = r.slice(1); idx = Object.fromEntries(Object.entries(COLS).map(([k, alts]) => [k, find(alts)])); break; }
+    }
+    if (!rows) throw new Error('Não encontrei as colunas Personagem e Ressonância na planilha');
+    if (idx.clan < 0) throw new Error('Não encontrei a coluna Clã na planilha');
+    const all = Object.values(sheets).flat().flat().map((v) => String(v ?? ''));
+    const dateSrc = [fileName, ...all].find((v) => /\d{4}-\d{2}-\d{2}/.test(v));
+    const found = dateSrc?.match(/(\d{4}-\d{2}-\d{2})/)?.[1];
+    const scanned_on = found && found <= localDay() ? found : localDay();
+    const video = all.find((v) => /\.(mkv|mp4|mov|avi)$/i.test(v)) || fileName;
+    const num = (v) => { const n = Number(String(v ?? '').replace(/[^\d]/g, '')); return String(v ?? '').trim() !== '' && Number.isFinite(n) ? n : null; };
+    const groups = new Map();
+    rows.forEach((r, i) => {
+      const clan = String(r[idx.clan] ?? '').trim();
+      const hasAttr = ATTRS.some((a) => num(r[idx[a.key]]) != null);
+      if (!clan || (!hasAttr && !String(r[idx.name] ?? '').trim())) return;
+      const k = norm(clan);
+      if (!groups.has(k)) groups.set(k, { clan_name: clan, numbers: {}, rows: [] });
+      const g = groups.get(k);
+      const n = idx.number >= 0 ? num(r[idx.number]) : null;
+      if (n != null) g.numbers[n] = (g.numbers[n] || 0) + 1;
+      let name = String(r[idx.name] ?? '').trim();
+      const notes = [];
+      if (idx.note >= 0 && r[idx.note]) notes.push(String(r[idx.note]).trim());
+      if (!name) { name = '(sem nome)'; notes.push('nome não lido'); } else if (/^#|�/.test(name)) notes.push('nome a conferir');
+      g.rows.push({ line: i + 2, name: name.slice(0, 60), ...Object.fromEntries(ATTRS.map((a) => [a.key, num(r[idx[a.key]])])), note: notes.join(' · ').slice(0, 200) || null });
+    });
+    // Repetido = mesmo clã e os 5 atributos iguais (o nome pode ter sido lido diferente no vídeo)
+    const nameScore = (x) => (x.name === '(sem nome)' ? 0 : /^#|�/.test(x.name) || x.name.length < 3 ? 1 : 2);
+    return [...groups.values()].map((g) => {
+      const byKey = new Map(); const dups = [];
+      g.rows.forEach((x) => {
+        const complete = ATTRS.every((a) => x[a.key] != null);
+        const key = complete ? ATTRS.map((a) => x[a.key]).join('|') : `${norm(x.name)}|${ATTRS.map((a) => x[a.key]).join('|')}`;
+        const prev = byKey.get(key);
+        if (!prev) { byKey.set(key, x); return; }
+        const keep = nameScore(x) > nameScore(prev) ? x : prev;
+        const drop = keep === x ? prev : x;
+        byKey.set(key, keep);
+        dups.push({ keep, drop });
+      });
+      const nums = Object.entries(g.numbers).sort((a, b) => b[1] - a[1]);
+      const players = [...byKey.values()];
+      return { clan_name: g.clan_name, clan_number: nums[0] ? Number(nums[0][0]) : null, otherNumbers: nums.slice(1).map(([n, c]) => `${n} (${c})`),
+        players, dups, missing: players.filter((x) => ATTRS.some((a) => x[a.key] == null)).length,
+        toCheck: players.filter((x) => x.note).length, include: true };
+    }).map((c) => ({ ...c, scanned_on, source: String(video).slice(0, 200) }));
+  }
+
+  function openScoutImport(file, after) {
+    const fail2 = (e) => { fail(e); };
+    readXlsx(file).then((sheets) => {
+      const clans = parseScout(sheets, file.name);
+      if (!clans.length) throw new Error('Nenhum jogador encontrado na planilha');
+      const existing = RIV_DATA?.scans || [];
+      const render = () => openDialog(`<form id="sc" class="stack">
+        <h2>📥 Importar planilha</h2>
+        <p class="muted small" style="margin:0">${esc(file.name)} · confira antes de salvar. Cada clã vira uma nova leitura; as anteriores continuam guardadas.</p>
+        <div class="field"><label for="sc-date">Data da leitura</label><input type="date" id="sc-date" value="${clans[0].scanned_on}" max="${localDay()}" required></div>
+        ${clans.map((c, i) => {
+          const same = existing.some((s) => sameClan(s, c) && s.scanned_on === clans[0].scanned_on);
+          const known = existing.filter((s) => sameClan(s, c) && norm(s.clan_name) !== norm(c.clan_name)).map((s) => s.clan_name);
+          return `<div class="card sc-clan">
+          <label class="sc-top"><input type="checkbox" data-sc-inc="${i}" ${c.include ? 'checked' : ''}>
+            <input type="text" data-sc-name="${i}" value="${esc(c.clan_name)}" maxlength="60" aria-label="Nome do clã"></label>
+          <div class="muted small">Nº ${c.clan_number ?? '—'} · <b>${c.players.length}</b> jogadores${c.dups.length ? ` · ${c.dups.length} repetido${c.dups.length > 1 ? 's' : ''} removido${c.dups.length > 1 ? 's' : ''}` : ''}</div>
+          <ul class="plain-list small">
+            ${c.otherNumbers.length ? `<li>⚠️ Também apareceu com outro nº: ${esc(c.otherNumbers.join(', '))}. Juntei tudo pelo nome do clã.</li>` : ''}
+            ${c.players.length > 100 ? `<li>⚠️ Mais de 100 jogadores: confira se não há alguém repetido com valores diferentes.</li>` : ''}
+            ${c.missing ? `<li>⚠️ ${c.missing} com algum atributo faltando (fica em branco nas contas).</li>` : ''}
+            ${c.toCheck ? `<li>🔎 ${c.toCheck} marcado${c.toCheck > 1 ? 's' : ''} para conferir (observação da planilha ou nome estranho).</li>` : ''}
+            ${same ? '<li>ℹ️ Já existe uma leitura deste clã nesta data. Ela será guardada como outra leitura.</li>' : ''}
+            ${known.length ? `<li>🔗 Parece ser o mesmo clã já mapeado como “${esc(known[known.length - 1])}” (nome e número parecidos): as leituras ficam juntas.</li>` : ''}
+          </ul>
+          ${c.dups.length ? `<details><summary class="small">Ver os repetidos removidos</summary><table class="mini-table"><thead><tr><th>Ficou</th><th>Removido</th><th>Linha</th></tr></thead><tbody>
+            ${c.dups.map((d) => `<tr><td>${esc(d.keep.name)}</td><td class="muted">${esc(d.drop.name)}</td><td class="muted">${d.drop.line}</td></tr>`).join('')}</tbody></table></details>` : ''}
+        </div>`;
+        }).join('')}
+        <div class="row end"><button type="button" class="btn ghost" data-close>Cancelar</button><button class="btn primary" id="sc-go">Importar</button></div>
+      </form>`, (d) => {
+        $('#sc', d).addEventListener('submit', async (e) => {
+          e.preventDefault();
+          const date = $('#sc-date', d).value;
+          clans.forEach((c, i) => { c.include = $(`[data-sc-inc="${i}"]`, d).checked; c.clan_name = $(`[data-sc-name="${i}"]`, d).value.trim() || c.clan_name; });
+          const go = clans.filter((c) => c.include);
+          if (!go.length) { toast('Marque ao menos um clã', true); return; }
+          const btn = $('#sc-go', d); btn.disabled = true; btn.textContent = 'Importando…';
+          try {
+            for (const c of go) {
+              await api.importRivalScan({ clan_name: c.clan_name, clan_number: c.clan_number, scanned_on: date, source: c.source,
+                players: c.players.map(({ line, ...x }) => x) });
+            }
+            dlg.close();
+            toast(`${go.length} clã${go.length > 1 ? 's' : ''} importado${go.length > 1 ? 's' : ''}`);
+            await after();
+          } catch (err) { btn.disabled = false; btn.textContent = 'Importar'; fail(err); }
+        });
+      });
+      render();
+    }).catch(fail2);
+  }
+
+  const RIV = { stat: 'avg', clan: '', attr: 'resonance', q: '' };
+  let RIV_DATA = null;
+  const RIV_STATS = { avg: 'Média', median: 'Mediana', top10: 'Média do Top 10' };
+  const RIV_BANDS = [[0, 4000, 'até 3.999'], [4000, 6000, '4.000–5.999'], [6000, 8000, '6.000–7.999'], [8000, 10000, '8.000–9.999'], [10000, 12000, '10.000–11.999'], [12000, Infinity, '12.000+']];
+
+  // Mesmo clã em importações diferentes: o vídeo às vezes lê o nome ou o número com um erro
+  function editDist(a, b) {
+    if (Math.abs(a.length - b.length) > 3) return 99;
+    let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+    for (let i = 1; i <= a.length; i++) {
+      const cur = [i];
+      for (let j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = cur;
+    }
+    return prev[b.length];
+  }
+  const nearNumber = (x, y) => {
+    if (x == null || y == null) return true; // sem número: decide pelo nome
+    const a = String(x); const b = String(y);
+    return a.length === b.length && [...a].filter((ch, i) => ch !== b[i]).length <= 1;
+  };
+  function sameClan(a, b) {
+    if (a.clan_number != null && a.clan_number === b.clan_number) return true;
+    const na = norm(a.clan_name); const nb = norm(b.clan_name);
+    const similar = na === nb || editDist(na, nb) <= (Math.min(na.length, nb.length) >= 8 ? 2 : 1);
+    return similar && nearNumber(a.clan_number, b.clan_number);
+  }
+  // Agrupa as leituras por clã: [{ key, scans: [...] }]
+  function groupClans(scans) {
+    const groups = [];
+    scans.forEach((sc) => {
+      const g = groups.find((x) => x.scans.some((y) => sameClan(y, sc)));
+      if (g) g.scans.push(sc); else groups.push({ scans: [sc] });
+    });
+    // junta grupos que ficaram ligados por leituras novas
+    for (let i = 0; i < groups.length; i++) {
+      for (let j = i + 1; j < groups.length; j++) {
+        if (groups[i].scans.some((x) => groups[j].scans.some((y) => sameClan(x, y)))) { groups[i].scans.push(...groups[j].scans); groups.splice(j, 1); j = i; }
+      }
+    }
+    return groups.map((g) => ({ ...g, key: `c${Math.min(...g.scans.map((x) => x.id))}` }));
+  }
+
+  function statOf(list, key, mode) {
+    const v = list.map((x) => Number(x[key])).filter((n) => Number.isFinite(n) && n > 0).sort((a, b) => b - a);
+    if (!v.length) return null;
+    if (mode === 'median') return v.length % 2 ? v[(v.length - 1) / 2] : (v[v.length / 2 - 1] + v[v.length / 2]) / 2;
+    const use = mode === 'top10' ? v.slice(0, 10) : v;
+    return use.reduce((s, n) => s + n, 0) / use.length;
+  }
+
+  async function viewRivals(keepScroll) {
+    if (!can('rivals_view')) { location.hash = '#/'; return; }
+    if (!keepScroll || !RIV_DATA) { loading(); RIV_DATA = await api.rivals().catch(() => null); }
+    const y = keepScroll ? scrollY : 0;
+    const data = RIV_DATA;
+    const head = `<div class="page-head"><h1>Clãs rivais</h1>
+      ${can('panel_view') ? '<a class="btn ghost" href="#/estatisticas">📊 Estatísticas do clã</a>' : ''}
+      ${can('rivals_import') ? '<button class="btn primary" id="rv-import">📥 Importar planilha</button><input type="file" id="rv-file" accept=".xlsx" hidden>' : ''}</div>`;
+    const bind = () => {
+      $('#rv-import')?.addEventListener('click', () => $('#rv-file').click());
+      $('#rv-file')?.addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) openScoutImport(f, () => viewRivals()); });
+    };
+    if (!data) { main.innerHTML = `${head}<div class="card empty">Não foi possível carregar os clãs rivais do banco compartilhado com o INFERNUM. Tente de novo em instantes.</div>`; bind(); return; }
+    if (!data.scans.length) {
+      main.innerHTML = `${head}<div class="card empty">Nenhum clã mapeado ainda.${can('rivals_import') ? ' Use <b>📥 Importar planilha</b> para enviar o arquivo .xlsx do Scout (colunas Clã, Nº do clã, Personagem, os 5 atributos e Observação).' : ''}</div>`;
+      bind(); return;
+    }
+    // Clãs: a leitura mais recente de cada um vale para as comparações
+    const playersBy = {};
+    data.players.forEach((x) => { (playersBy[x.scan_id] ||= []).push(x); });
+    const clans = groupClans(data.scans).map((c) => {
+      c.scans.sort((a, b) => a.scanned_on.localeCompare(b.scanned_on) || a.id - b.id);
+      c.last = c.scans[c.scans.length - 1];
+      // Nome: o que mais aparece nas leituras (um erro de leitura isolado não troca o nome); no empate fica o primeiro
+      const freq = {};
+      c.scans.forEach((x) => { freq[x.clan_name] = (freq[x.clan_name] || 0) + 1; });
+      c.name = c.scans.reduce((best, x) => (freq[x.clan_name] > freq[best] ? x.clan_name : best), c.scans[0].clan_name);
+      const nfreq = {};
+      c.scans.forEach((x) => { if (x.clan_number != null) nfreq[x.clan_number] = (nfreq[x.clan_number] || 0) + 1; });
+      c.number = c.scans.reduce((best, x) => (x.clan_number != null && (best == null || nfreq[x.clan_number] > nfreq[best]) ? x.clan_number : best), null);
+      c.players = playersBy[c.last.id] || [];
+      c.names = new Set(c.scans.map((x) => norm(x.clan_name)));
+      c.ids = new Set(c.scans.map((x) => x.id));
+      return c;
+    });
+    const us = { key: '__us', name: OUR, us: true, players: activeMembers() };
+    const statK = RIV.stat in RIV_STATS ? RIV.stat : 'avg';
+    clans.sort((a, b) => (statOf(b.players, 'resonance', statK) || 0) - (statOf(a.players, 'resonance', statK) || 0));
+    const rowsAll = [us, ...clans];
+    const fmt0 = (v) => (v == null ? '—' : fmtNum(Math.round(v)));
+    const dmyS = (ymd) => ymd.split('-').reverse().join('/');
+
+    // ----- Comparativo -----
+    const ourStat = Object.fromEntries(ATTRS.map((a) => [a.key, statOf(us.players, a.key, statK)]));
+    const best = Object.fromEntries(ATTRS.map((a) => [a.key, Math.max(...rowsAll.map((r) => statOf(r.players, a.key, statK) || 0))]));
+    const cmpTable = `<div class="table-scroll"><table class="mini-table rv-cmp"><thead><tr><th>Clã</th><th>Jog.</th>${ATTRS.map((a) => `<th title="${esc(a.label)}">${a.short}</th>`).join('')}<th>Leitura</th></tr></thead><tbody>
+      ${rowsAll.map((r) => `<tr class="${r.us ? 'rv-us' : ''}"><td>${r.us ? `<b>⚔️ ${esc(OUR)}</b>` : `<a href="#" data-rv-clan="${esc(r.key)}">${esc(r.name)}</a>${clans.filter((x) => norm(x.name) === norm(r.name)).length > 1 && r.number ? ` <small class="muted">nº ${r.number}</small>` : ''}`}</td><td>${r.players.length}</td>
+        ${ATTRS.map((a) => {
+          const v = statOf(r.players, a.key, statK);
+          const d = !r.us && v != null && ourStat[a.key] ? (v - ourStat[a.key]) / ourStat[a.key] : null;
+          return `<td class="${v != null && Math.round(v) === Math.round(best[a.key]) ? 'rv-best' : ''}">${fmt0(v)}${d != null && Math.abs(d) >= 0.005
+            ? `<div class="rv-delta ${d > 0 ? 'c-no' : 'c-yes'}">${d > 0 ? '▲' : '▼'} ${Math.abs(Math.round(d * 100))}%</div>` : ''}</td>`;
+        }).join('')}
+        <td class="muted small">${r.us ? 'perfis' : dmyS(r.last.scanned_on)}</td></tr>`).join('')}
+      </tbody></table></div>
+      <div class="muted small">▲ o rival está acima do ${esc(OUR)} · ▼ está abaixo · em dourado, o melhor de cada atributo. Do ${esc(OUR)} contam os membros ativos com o atributo preenchido no perfil.</div>`;
+
+    // ----- Ressonância por faixa -----
+    const bandTable = `<div class="table-scroll"><table class="mini-table"><thead><tr><th>Clã</th>${RIV_BANDS.map((b) => `<th>${b[2]}</th>`).join('')}</tr></thead><tbody>
+      ${rowsAll.map((r) => {
+        const v = r.players.map((x) => Number(x.resonance)).filter((n) => n > 0);
+        return `<tr class="${r.us ? 'rv-us' : ''}"><td>${r.us ? `<b>⚔️ ${esc(OUR)}</b>` : esc(r.name)}</td>${RIV_BANDS.map(([lo, hi]) => {
+          const n = v.filter((x) => x >= lo && x < hi).length;
+          return `<td title="${n} jogador${n === 1 ? '' : 'es'}">${v.length ? `${Math.round((100 * n) / v.length)}%` : '—'}<span class="muted small"> (${n})</span></td>`;
+        }).join('')}</tr>`;
+      }).join('')}</tbody></table></div>`;
+
+    // ----- Clã em detalhe -----
+    const sel = clans.find((c) => c.key === RIV.clan) || clans[0];
+    RIV.clan = sel.key;
+    const attr = ATTRS.find((a) => a.key === RIV.attr) || ATTRS.find((a) => a.key === 'resonance');
+    const sorted = sel.players.slice().sort((a, b) => (Number(b[attr.key]) || 0) - (Number(a[attr.key]) || 0));
+    const top = sorted.filter((x) => Number(x[attr.key]) > 0).slice(0, 10);
+    const ourTop = statOf(us.players, attr.key, 'top10');
+    const history = sel.scans.slice().reverse().map((sc, i, arr) => {
+      const pl = playersBy[sc.id] || [];
+      const prevPl = arr[i + 1] ? playersBy[arr[i + 1].id] || [] : null;
+      return `<tr><td>${dmyS(sc.scanned_on)}</td><td class="small">${esc(sc.imported_by || 'INFERNUM')}${sc.imported_by_name ? `<div class="muted">${esc(sc.imported_by_name)}</div>` : ''}</td><td>${pl.length}</td>${ATTRS.map((a) => {
+        const v = statOf(pl, a.key, 'avg'); const pv = prevPl ? statOf(prevPl, a.key, 'avg') : null;
+        const d = v != null && pv ? (v - pv) / pv : null;
+        return `<td>${fmt0(v)}${d != null && Math.abs(d) >= 0.005 ? `<div class="rv-delta ${d > 0 ? 'c-no' : 'c-yes'}">${d > 0 ? '▲' : '▼'} ${Math.abs(Math.round(d * 100))}%</div>` : ''}</td>`;
+      }).join('')}<td>${can('rivals_import') ? `<button class="btn small ghost" data-rv-del="${sc.id}" title="Apagar esta leitura">🗑</button>` : ''}</td></tr>`;
+    }).join('');
+    const whenTxt = (iso) => new Date(iso).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const clanLog = (data.log || []).filter((l) => sel.ids.has(l.scan_id) || sel.names.has(norm(l.clan_name))).slice(0, 20);
+    const logHtml = clanLog.length ? `<ul class="plain-list small rv-log">${clanLog.map((l) => `<li>${l.action === 'delete' ? '🗑' : '📥'} <b>${esc(l.actor_name || 'Desconhecido')}</b> <span class="muted">(${esc(l.actor_clan)})</span>
+      ${l.action === 'delete' ? '<span class="c-no">apagou</span>' : 'importou'} a leitura de ${l.scanned_on ? dmyS(l.scanned_on) : '—'}${l.players != null ? ` (${l.players} jogadores)` : ''}
+      <span class="muted">· ${whenTxt(l.created_at)}</span></li>`).join('')}</ul>`
+      : '<div class="muted small">Nenhum registro ainda.</div>';
+    const detail = `
+      ${clans.length >= 8 ? `<input type="search" id="rv-clan-q" class="rv-clan-q" placeholder="Buscar clã (${clans.length} mapeados)…" value="${esc(RIV.clanQ || '')}" autocomplete="off">` : ''}
+      <div class="evo-tabs" role="tablist" id="rv-clan-tabs">${clans.slice().sort((a, b) => a.name.localeCompare(b.name, 'pt-BR')).map((c) => `<button type="button" class="evo-tab" role="tab" data-rv-clan="${esc(c.key)}" data-rv-names="${esc([...c.names].join(' '))}" aria-selected="${c.key === sel.key}">${esc(c.name)}${clans.filter((x) => norm(x.name) === norm(c.name)).length > 1 && c.number ? ` <small>· nº ${c.number}</small>` : ''}</button>`).join('')}</div>
+      <div class="kpi-grid">
+        ${kpi('👥', 'Jogadores', sel.players.length, `Nº ${sel.number ?? '—'}`)}
+        ${kpi('💠', 'Ressonância média', fmt0(statOf(sel.players, 'resonance', 'avg')), `${OUR}: ${fmt0(statOf(us.players, 'resonance', 'avg'))}`)}
+        ${kpi('🏅', 'Ressonância Top 10', fmt0(statOf(sel.players, 'resonance', 'top10')), `${OUR}: ${fmt0(statOf(us.players, 'resonance', 'top10'))}`)}
+        ${kpi('📅', 'Última leitura', dmyS(sel.last.scanned_on), `${sel.scans.length} leitura${sel.scans.length > 1 ? 's' : ''}`)}
+      </div>
+      <div class="chart-grid">
+        <div class="card chart wide"><h4>🏆 Top 10 · ${esc(sel.name)}</h4>
+          <div class="evo-tabs" role="tablist">${ATTRS.slice().sort((a, b) => (a.key === 'resonance' ? -1 : b.key === 'resonance' ? 1 : 0))
+            .map((a) => `<button type="button" class="evo-tab" role="tab" data-rv-attr="${a.key}" aria-selected="${a.key === attr.key}">${esc(a.label)}</button>`).join('')}</div>
+          ${top.length ? hbars(top.map((x) => ({ label: x.name, value: Number(x[attr.key]), title: `${x.name}: ${fmtNum(Number(x[attr.key]))}${x.note ? ` · ${x.note}` : ''}` })), { fmt: fmtNum }) : '<div class="muted small">Sem valores.</div>'}
+          <div class="muted small">Média do Top 10: <b>${fmt0(statOf(sel.players, attr.key, 'top10'))}</b> · ${esc(OUR)}: <b>${fmt0(ourTop)}</b></div></div>
+        <div class="card chart wide"><h4>📅 Leituras</h4>
+          <div class="table-scroll"><table class="mini-table"><thead><tr><th>Data</th><th title="Clã que importou a leitura">Por</th><th>Jog.</th>${ATTRS.map((a) => `<th title="Média de ${esc(a.label)}">${a.short}</th>`).join('')}<th></th></tr></thead><tbody>${history}</tbody></table></div>
+          <div class="muted small">Médias de cada leitura · as setas comparam com a leitura anterior · “Por” é o clã e quem importou (as leituras são compartilhadas com o INFERNUM).</div></div>
+        <div class="card chart wide"><h4>📝 Registro · ${esc(sel.name)}</h4>${logHtml}</div>
+        <div class="card chart wide"><details><summary><b>Ver os ${sel.players.length} jogadores</b> <span class="muted small">· ordenados por ${esc(attr.label)}</span></summary>
+          <div class="table-scroll"><table class="mini-table"><thead><tr><th>#</th><th>Jogador</th>${ATTRS.map((a) => `<th>${a.short}</th>`).join('')}</tr></thead><tbody>
+          ${sorted.map((x, i) => `<tr><td class="muted">${i + 1}</td><td>${esc(x.name)}${x.note ? ` <span title="${esc(x.note)}">⚠️</span>` : ''}</td>${ATTRS.map((a) => `<td>${fmt0(x[a.key])}</td>`).join('')}</tr>`).join('')}
+          </tbody></table></div></details></div>
+      </div>`;
+
+    main.innerHTML = `${head}
+      <section class="stats-section">
+        <h3>🛡️ Comparativo <span class="muted small">· última leitura de cada clã</span>
+          <select id="rv-stat" aria-label="Como comparar">${Object.entries(RIV_STATS).map(([k, l]) => `<option value="${k}" ${k === statK ? 'selected' : ''}>${l}</option>`).join('')}</select></h3>
+        <div class="chart-grid">
+          <div class="card chart wide">${cmpTable}</div>
+          <div class="card chart wide"><h4>💠 Ressonância por faixa</h4>${bandTable}</div>
+        </div>
+      </section>
+      <section class="stats-section">
+        <h3>🔍 Clã em detalhe</h3>
+        ${detail}
+      </section>
+      <section class="stats-section">
+        <h3>🔎 Buscar jogador</h3>
+        <div class="card chart">
+          <input type="search" id="rv-q" placeholder="Nome do jogador rival…" value="${esc(RIV.q)}" autocomplete="off">
+          <div id="rv-found"></div>
+        </div>
+      </section>`;
+    bind();
+
+    // Busca: todas as leituras; mostra a mais recente de cada jogador
+    const allRows = data.scans.slice().sort((a, b) => b.scanned_on.localeCompare(a.scanned_on) || b.id - a.id)
+      .flatMap((sc) => (playersBy[sc.id] || []).map((x) => ({ ...x, clan: sc.clan_name, on: sc.scanned_on })));
+    const search = () => {
+      const q = norm(RIV.q);
+      const box = $('#rv-found');
+      if (q.length < 2) { box.innerHTML = '<div class="muted small" style="margin-top:8px">Digite ao menos 2 letras.</div>'; return; }
+      const seen = new Set();
+      const hits = allRows.filter((x) => norm(x.name).includes(q)).filter((x) => { const k = `${norm(x.clan)}|${norm(x.name)}`; if (seen.has(k)) return false; seen.add(k); return true; }).slice(0, 50);
+      box.innerHTML = hits.length ? `<div class="table-scroll"><table class="mini-table" style="margin-top:8px"><thead><tr><th>Jogador</th><th>Clã</th>${ATTRS.map((a) => `<th>${a.short}</th>`).join('')}<th>Leitura</th></tr></thead><tbody>
+        ${hits.map((x) => `<tr><td>${esc(x.name)}${x.note ? ` <span title="${esc(x.note)}">⚠️</span>` : ''}</td><td>${esc(x.clan)}</td>${ATTRS.map((a) => `<td>${fmt0(x[a.key])}</td>`).join('')}<td class="muted small">${dmyS(x.on)}</td></tr>`).join('')}
+        </tbody></table></div>` : '<div class="muted small" style="margin-top:8px">Nenhum jogador encontrado.</div>';
+    };
+    search();
+    $('#rv-q').addEventListener('input', (e) => { RIV.q = e.target.value; search(); });
+    const filterClans = () => {
+      const q = norm(RIV.clanQ || '');
+      main.querySelectorAll('#rv-clan-tabs .evo-tab').forEach((b) => { b.hidden = !!q && !b.dataset.rvNames.includes(q) && b.getAttribute('aria-selected') !== 'true'; });
+    };
+    $('#rv-clan-q')?.addEventListener('input', (e) => { RIV.clanQ = e.target.value; filterClans(); });
+    filterClans();
+    $('#rv-stat').addEventListener('change', (e) => { RIV.stat = e.target.value; viewRivals(true); });
+    main.querySelectorAll('[data-rv-clan]').forEach((b) => b.addEventListener('click', (e) => {
+      e.preventDefault(); RIV.clan = b.dataset.rvClan;
+      viewRivals(true).then(() => { if (b.tagName === 'A') main.querySelector('.evo-tab[aria-selected="true"]')?.scrollIntoView({ block: 'center' }); });
+    }));
+    main.querySelectorAll('[data-rv-attr]').forEach((b) => b.addEventListener('click', () => { RIV.attr = b.dataset.rvAttr; viewRivals(true); }));
+    main.querySelectorAll('[data-rv-del]').forEach((b) => b.addEventListener('click', async () => {
+      const sc = data.scans.find((x) => x.id === Number(b.dataset.rvDel));
+      if (!(await confirmDialog(`Apagar a leitura de ${sc.clan_name} do dia ${dmyS(sc.scanned_on)}? Os jogadores dessa leitura também serão apagados.`, 'Apagar'))) return;
+      try { await api.deleteRivalScan(sc.id); toast('Leitura apagada'); await viewRivals(); } catch (err) { fail(err); }
+    }));
+    if (keepScroll) window.scrollTo(0, y);
+  }
+
+
   function viewUtils() {
     main.innerHTML = `
       <div class="page-head"><h1>Utils</h1><span class="muted">Links úteis para o clã</span></div>
@@ -7454,7 +8431,7 @@
     const rc = RECRUIT_ON ? h.match(/^\/recrutamento\/(\d+)$/) : null;
     const tk = TICKETS_ON ? h.match(/^\/ticket\/(\d+)$/) : null;
     const pg = h.match(/^\/pilotagem\/([\w%-]+)$/); // link de um anúncio de pilotagem
-    const key = h === '/passados' ? 'past' : h === '/frequencia' ? 'freq' : h === '/news' ? 'news' : h === '/utils' ? 'utils' : h === '/pilotagem' || pg ? 'pilotage'
+    const key = h === '/passados' ? 'past' : h === '/frequencia' ? 'freq' : h === '/news' ? 'news' : h === '/utils' ? 'utils' : h === '/estatisticas' ? 'panel' : h === '/rivais' ? 'rivals' : h === '/pilotagem' || pg ? 'pilotage'
       : h === '/config' ? 'config' : h === '/solicitacoes' ? 'requests'
       : RECRUIT_ON && h === '/recrutamentos' ? 'recruits' : rc ? 'recruits'
       : RAFFLE_ON && h === '/sorteio' ? 'raffle'
@@ -7492,6 +8469,8 @@
       else if (key === 'profile') await viewMyPanel();
       else if (key === 'members') await viewMembers();
       else if (key === 'freq') await viewFrequency();
+      else if (key === 'panel') await viewPanel();
+      else if (key === 'rivals') await viewRivals();
       else if (key === 'teams') await viewTeams(Number(tm[1]));
       else if (key === 'event') await viewEvent(Number(ev[1]));
       else await viewEvents(false);
