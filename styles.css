@@ -895,6 +895,9 @@ body.has-fab main { padding-bottom: 90px; }
 .bell-gt { padding: 6px 14px 2px; font-size: .68rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 .bell-item { display: flex; gap: 10px; align-items: flex-start; padding: 8px 14px; color: var(--text); text-decoration: none; }
 .bell-item:hover, .bell-item:focus-visible { background: var(--panel-2); }
+.bell-item.old { opacity: .62; }
+.bell-item.old:hover, .bell-item.old:focus-visible { opacity: 1; }
+.bell-empty + .bell-recent { border-top: 1px solid var(--border); }
 .bell-ic { width: 22px; flex: 0 0 22px; text-align: center; }
 .bell-tx { display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow-wrap: anywhere; font-size: .92rem; }
 .bell-empty { margin: 0; padding: 14px; text-align: center; }

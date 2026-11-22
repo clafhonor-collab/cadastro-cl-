@@ -8750,6 +8750,7 @@
     ]);
     state.bellUp = up || []; state.bellPast = past || [];
     await Promise.all([loadPilotage(), loadNotices()]);
+    state.bellReady = true; // a partir daqui o histórico do sininho pode comparar as pendências
   }
   let bellTimer = null;
   function refreshBellSoon() {
@@ -8860,12 +8861,40 @@
   }
 
   let bellOpen = false;
+  // Histórico do sininho: guarda as últimas 4 notificações que já saíram das pendências
+  // (vistas ou resolvidas), neste navegador; as mais antigas são substituídas pelas novas.
+  const BELL_RECENT_MAX = 4;
+  const bellLogKey = () => `bell-log-${state.user?.id}`;
+  const bellKey = (i) => `${i.icon}|${i.href}|${String(i.text).replace(/<[^>]+>/g, '').replace(/\d+/g, '#')}`;
+  function bellHistory(current) {
+    let log = { active: {}, recent: [] };
+    try { log = { ...log, ...(JSON.parse(localStorage.getItem(bellLogKey()) || '{}') || {}) }; } catch { /* ignora */ }
+    if (!state.bellReady) return log.recent || [];
+    const now = Date.now();
+    const active = {};
+    current.forEach((i) => {
+      const k = bellKey(i);
+      active[k] = { icon: i.icon, text: i.text, sub: i.sub || '', href: i.href, at: log.active?.[k]?.at || now };
+    });
+    // O que estava nas pendências e saiu vai para as últimas notificações
+    let recent = (log.recent || []).filter((r) => !active[r.k]);
+    Object.entries(log.active || {}).forEach(([k, i]) => { if (!active[k]) recent = [{ ...i, k, done: now }, ...recent.filter((r) => r.k !== k)]; });
+    recent = recent.sort((a, b) => b.at - a.at).slice(0, BELL_RECENT_MAX);
+    try { localStorage.setItem(bellLogKey(), JSON.stringify({ active, recent })); } catch { /* ignora */ }
+    return recent;
+  }
+
   function renderBell() {
     updateHelpFab();
     const wrap = $('#bell-wrap');
     if (!wrap) return;
     const { mine, lead } = bellItems();
     const total = mine.length + lead.length;
+    const recent = bellHistory([...mine, ...lead]);
+    const oldRow = (i) => `<a class="bell-item old" href="${esc(i.href)}">
+        <span class="bell-ic" aria-hidden="true">${i.icon}</span>
+        <span class="bell-tx"><span>${i.text}</span><span class="muted small">${i.sub ? `${i.sub} · ` : ''}${esc(fmtWhenShort(new Date(i.at).toISOString()))}</span></span></a>`;
+    const history = recent.length ? `<div class="bell-group bell-recent"><div class="bell-gt">🕘 Últimas notificações</div>${recent.map(oldRow).join('')}</div>` : '';
     const row = (i) => `<a class="bell-item" href="${i.href}"${i.sup ? ` data-sup="${i.sup}"` : ''}>
         <span class="bell-ic" aria-hidden="true">${i.icon}</span>
         <span class="bell-tx"><span>${i.text}</span>${i.sub ? `<span class="muted small">${i.sub}</span>` : ''}</span></a>`;
@@ -8876,6 +8905,7 @@
       <div class="bell-pop" ${bellOpen ? '' : 'hidden'}>
         <div class="bell-head">Pendências ${total ? `<span class="bell-total">${total}</span>` : ''}</div>
         ${total ? group('Para você', mine) + group('Liderança', lead) : '<p class="bell-empty muted">✨ Tudo em dia! Nenhuma pendência.</p>'}
+        ${history}
       </div>`;
     $('#btn-bell').addEventListener('click', (e) => { e.stopPropagation(); bellOpen = !bellOpen; renderBell(); });
     wrap.querySelectorAll('.bell-item').forEach((a) => a.addEventListener('click', () => {

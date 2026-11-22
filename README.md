@@ -331,6 +331,7 @@ Nos tickets, o líder também pode impedir que os oficiais vejam, respondam ou r
 **🔔 Pendências** (sino no topo): reúne o que precisa da sua atenção.
 - **Para você:** eventos sem resposta, respostas novas nos seus tickets, candidatos nos seus recrutamentos, pedidos de piloto e edição nova do Malah News.
 - **Liderança:** membros aguardando aprovação, tickets não iniciados ou pendentes com você e solicitações dos oficiais, conforme as permissões de cada um.
+- **🕘 Últimas notificações:** no fim da lista ficam as 4 últimas notificações que já saíram das pendências (vistas ou resolvidas), com a data em que chegaram. Quando chega uma nova, a mais antiga sai. Fica guardado no navegador de cada aparelho.
 
 **🧰 Utils** (menu do topo, para todos): links úteis que abrem em uma nova aba. O primeiro é o **Discord da Aliança** (https://discord.gg/YncQxQ4bzB), seguido de builds, gemas, ranking PvP, Reddit, patch notes, fórum oficial, calculadora de gemas e o Discord oficial do jogo.
 Para adicionar, trocar ou remover um link, edite a lista `UTIL_LINKS` no [`app.js`](app.js): cada item tem um ícone, um título, uma descrição e o endereço.
