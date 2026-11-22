@@ -330,6 +330,8 @@ Nos tickets, o líder também pode impedir que os oficiais vejam, respondam ou r
 
 **☰ Menu no celular:** em telas de até 760px (celular e tablet em pé), os itens do menu ficam escondidos atrás do botão ☰, ao lado do logo. Ao tocar, abre um painel lateral com os itens (com ícones) e a página atual destacada. Ele fecha ao escolher um item, no ✕, tocando fora do painel ou com Esc. No computador, o menu continua no topo, como antes.
 
+**✔ Confirmar presença:** a janela mostra a classe e os atributos num resumo de uma linha, com o botão **✎ Corrigir** para abrir os campos (se faltar algum dado, os campos já vêm abertos). O Discord é escolhido em dois botões grandes. No celular, os botões **Cancelar** e **Confirmar** ficam sempre visíveis no rodapé da janela (isso vale para todas as janelas). Se faltar algo, o campo fica vermelho com a mensagem logo abaixo, e a janela rola até ele.
+
 **🔔 Pendências** (sino no topo): reúne o que precisa da sua atenção.
 - **Para você:** eventos sem resposta, respostas novas nos seus tickets, candidatos nos seus recrutamentos, pedidos de piloto e edição nova do Malah News.
 - **Liderança:** membros aguardando aprovação, tickets não iniciados ou pendentes com você e solicitações dos oficiais, conforme as permissões de cada um.

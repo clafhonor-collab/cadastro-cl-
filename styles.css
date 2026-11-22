@@ -1325,3 +1325,43 @@ body.has-fab main { padding-bottom: 90px; }
 @media (max-width: 760px) and (prefers-reduced-motion: reduce) {
   .nav, .nav-toggle span { transition: none; }
 }
+
+/* ---------- Erros nos campos (no lugar do balão do navegador) ---------- */
+.field.invalid input, .field.invalid select, .field.invalid textarea, input[aria-invalid="true"], select[aria-invalid="true"] { border-color: #ef4444; box-shadow: 0 0 0 1px #ef4444; }
+fieldset.invalid { border-color: #ef4444; }
+.field-error { margin-top: 5px; color: #fca5a5; font-size: .85rem; font-weight: 600; }
+.field-error::before { content: "⚠ "; }
+
+/* ---------- Confirmar presença ---------- */
+.rsvp-head h2 { margin: 0 0 4px; }
+.rsvp-build { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-2); }
+.rsvp-build-tx { flex: 1; min-width: 0; display: grid; gap: 3px; }
+.rsvp-build-sum { display: flex; align-items: center; gap: 8px; }
+.rsvp-build .btn { flex: none; min-height: 40px; }
+.rsvp-build[hidden] { display: none; }
+.rsvp-fields[hidden] { display: none; }
+.choice-q { padding-bottom: 12px; }
+.choice-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 4px; }
+.choice { display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; cursor: pointer; background: #120d0b; line-height: 1.25; }
+.choice input { width: 20px; height: 20px; flex: none; margin: 0; accent-color: var(--accent-hi); }
+.choice:has(input:checked) { border-color: var(--accent-hi); background: color-mix(in srgb, var(--accent-hi) 12%, #120d0b); }
+.choice:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.p4-q input[type="checkbox"] { width: 22px; height: 22px; margin-top: 1px; accent-color: #dc2626; }
+.p4-q { min-height: 52px; }
+.rsvp-remove { display: flex; justify-content: flex-start; }
+
+/* ---------- Janelas no celular: botões sempre à vista no rodapé ---------- */
+@media (max-width: 760px) {
+  .dialog { padding: 18px 16px 0; width: calc(100vw - 20px); max-height: calc(100dvh - 20px); }
+  .dialog > :last-child { margin-bottom: 18px; }
+  .dialog form > .row.end:last-child, .dialog .dlg-actions {
+    position: sticky; bottom: 0; z-index: 2; margin: 16px -16px 0; padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+    background: var(--panel); border-top: 1px solid var(--border); flex-wrap: nowrap;
+  }
+  .dialog form:has(> .row.end:last-child) { margin-bottom: 0; }
+  .dialog form > .row.end:last-child .btn.primary, .dialog .dlg-actions .btn.primary { flex: 1; min-height: 48px; justify-content: center; }
+  .dialog form > .row.end:last-child .btn, .dialog .dlg-actions .btn { min-height: 48px; white-space: nowrap; }
+  .dialog form > .row.end:last-child .spacer, .dialog .dlg-actions .spacer { flex: 0 0 0; }
+  .dialog form > .row.end:last-child .muted:empty { display: none; }
+  .choice-grid { grid-template-columns: 1fr; }
+}

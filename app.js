@@ -2222,6 +2222,61 @@
   }
 
   const dlg = $('#dlg');
+  // Validação dos formulários: marca o campo em vermelho com a mensagem logo abaixo
+  // (no lugar do balão do navegador, que no celular quase não aparece)
+  function fieldLabel(el) {
+    const lab = el.id && el.form?.querySelector(`label[for="${el.id}"]`);
+    return (lab?.childNodes[0]?.textContent || lab?.textContent || '').trim();
+  }
+  function clearFieldError(el) {
+    const box = el.closest('fieldset') || el.closest('.field') || el.parentElement;
+    box?.classList.remove('invalid');
+    el.removeAttribute('aria-invalid');
+    box?.querySelector(':scope > .field-error')?.remove();
+  }
+  function setFieldError(el, msg) {
+    const box = el.closest('fieldset') || el.closest('.field') || el.parentElement;
+    box.classList.add('invalid');
+    el.setAttribute('aria-invalid', 'true');
+    if (!box.querySelector(':scope > .field-error')) box.insertAdjacentHTML('beforeend', `<div class="field-error" role="alert">${esc(msg)}</div>`);
+  }
+  // Confere os campos obrigatórios; devolve true se estiver tudo certo
+  function validateForm(form) {
+    form.querySelectorAll('.field-error').forEach((x) => x.remove());
+    form.querySelectorAll('.invalid').forEach((x) => x.classList.remove('invalid'));
+    const bad = [];
+    const radiosSeen = new Set();
+    form.querySelectorAll('input, select, textarea').forEach((el) => {
+      if (el.disabled || el.type === 'hidden') return;
+      if (el.type === 'radio') {
+        if (!el.required || radiosSeen.has(el.name)) return;
+        radiosSeen.add(el.name);
+        if (!form.querySelector(`input[name="${el.name}"]:checked`)) { setFieldError(el, 'Escolha uma das opções'); bad.push(el); }
+        return;
+      }
+      const v = String(el.value ?? '').trim();
+      const name = fieldLabel(el);
+      if (el.required && !v) {
+        setFieldError(el, el.id === 'b-class' ? 'Escolha a classe' : el.tagName === 'SELECT' ? 'Escolha uma opção' : name ? `Preencha o campo ${name}` : 'Preencha este campo');
+        bad.push(el);
+      } else if (el.type === 'number' && v && (!Number.isFinite(Number(v)) || (el.min !== '' && Number(v) < Number(el.min)))) {
+        setFieldError(el, 'Use só números (sem pontos ou letras), a partir de 0'); bad.push(el);
+      }
+    });
+    if (bad.length) {
+      bad[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+      bad[0].focus({ preventScroll: true });
+    }
+    return !bad.length;
+  }
+  // Ao corrigir, a marcação vermelha some na hora
+  document.addEventListener('input', (e) => { if (e.target.matches?.('[aria-invalid="true"]')) clearFieldError(e.target); }, true);
+  document.addEventListener('change', (e) => {
+    const t = e.target;
+    if (t.type === 'radio') { const any = t.form?.querySelector(`input[name="${t.name}"][aria-invalid="true"]`); if (any) clearFieldError(any); }
+    else if (t.matches?.('[aria-invalid="true"]')) clearFieldError(t);
+  }, true);
+
   function openDialog(html, onReady) {
     dlg.innerHTML = html;
     if (!dlg.open) dlg.showModal();
@@ -2849,29 +2904,54 @@
     const p4Init = !!mine?.prefer_4pts;
     let dcInit = already ? (mine?.discord ?? null) : null;
     if (dcInit === null) { try { const v = localStorage.getItem('last-discord'); dcInit = v === null ? null : v === '1'; } catch { /* ignora */ } }
+    const complete = hasBuild(initial);
     openDialog(`
-      <form id="rsvp-form" class="stack">
-        <h2>${already ? 'Sua presença está confirmada' : 'Confirmar presença'}</h2>
-        <p class="muted" style="margin:0">${esc(ev.title)} · ${esc(fmtDay(ev.starts_at))} às ${fmtTime(ev.starts_at)}</p>
+      <form id="rsvp-form" class="stack rsvp-form" novalidate>
+        <div class="rsvp-head">
+          <h2>${already ? 'Sua presença está confirmada' : 'Confirmar presença'}</h2>
+          <p class="muted" style="margin:0">${esc(ev.title)} · ${esc(fmtDay(ev.starts_at))} às ${fmtTime(ev.starts_at)}</p>
+        </div>
         ${piloting ? `<p class="piloting-note">🧑‍✈️ Respondendo pela conta <b>${esc(displayName(acct))}</b></p>` : ''}
-        <p class="small" style="margin:0">Confira a classe e os atributos ${piloting ? 'desta conta' : 'sua'} para este evento. Se algo mudou, corrija aqui (o perfil da conta também será atualizado).</p>
-        ${buildFields(initial, true)}
-        <fieldset class="discord-q">
+        ${complete ? `<div class="rsvp-build" id="rsvp-build">
+            <div class="rsvp-build-tx"><span class="muted small">${piloting ? 'Classe e atributos desta conta' : 'Sua classe e seus atributos'}</span>
+              <div class="rsvp-build-sum">${classTag(initial.char_class)} <b>${esc(CLASS[initial.char_class]?.label || '')}</b></div>
+              <div class="chip-stats">${statsLine(initial)}</div></div>
+            <button type="button" class="btn small" id="rsvp-fix" aria-expanded="false" aria-controls="rsvp-fields">✎ Corrigir</button>
+          </div>`
+          : `<p class="small rsvp-need" style="margin:0">Preencha a classe e os atributos ${piloting ? 'desta conta' : 'do seu personagem'} (o perfil da conta também será atualizado).</p>`}
+        <div id="rsvp-fields" class="rsvp-fields"${complete ? ' hidden' : ''}>
+          ${complete ? '<p class="small muted" style="margin:0 0 8px">Corrija o que mudou. O perfil da conta também será atualizado.</p>' : ''}
+          ${buildFields(initial, true)}
+        </div>
+        <fieldset class="discord-q choice-q">
           <legend>Vai usar o Discord neste evento?</legend>
-          <label class="radio"><input type="radio" name="discord" value="1" required ${dcInit === true ? 'checked' : ''}> 🎧 Sim, vou estar no Discord</label>
-          <label class="radio"><input type="radio" name="discord" value="0" ${dcInit === false ? 'checked' : ''}> Não vou usar o Discord</label>
+          <div class="choice-grid">
+            <label class="choice"><input type="radio" name="discord" value="1" required ${dcInit === true ? 'checked' : ''}><span>🎧 Sim, vou estar no Discord</span></label>
+            <label class="choice"><input type="radio" name="discord" value="0" ${dcInit === false ? 'checked' : ''}><span>Não vou usar o Discord</span></label>
+          </div>
         </fieldset>
         ${p4On ? `<label class="check-line p4-q"><input type="checkbox" id="f-4pts" ${p4Init ? 'checked' : ''}>
           <span>🚩 <b>Preferência por partidas de 4 pontos</b><br><span class="muted small">Na montagem automática dos times você não vai para Exaltação, só de Eminência em diante.</span></span></label>` : ''}
-        <div class="row end">
-          ${already ? '<button type="button" class="btn ghost danger" id="btn-unrsvp">Remover presença</button><span class="spacer"></span>' : ''}
+        ${already ? '<div class="rsvp-remove"><button type="button" class="btn small ghost danger" id="btn-unrsvp">Remover minha presença</button></div>' : ''}
+        <div class="row end dlg-actions">
           <button type="button" class="btn ghost" data-close>Cancelar</button>
           <button type="submit" class="btn primary">${already ? 'Salvar' : '✔ Confirmar presença'}</button>
         </div>
       </form>`, (d) => {
+      // "Corrigir": mostra os campos de classe e atributos
+      $('#rsvp-fix', d)?.addEventListener('click', (e) => {
+        // Os campos já mostram os valores: o resumo sai para não repetir
+        e.currentTarget.setAttribute('aria-expanded', 'true');
+        $('#rsvp-build', d).hidden = true;
+        $('#rsvp-fields', d).hidden = false;
+        $('#b-class', d).focus();
+      });
       $('#rsvp-form', d).addEventListener('submit', async (e) => {
         e.preventDefault();
         const submit = $('button[type=submit]', d);
+        // Algum atributo vazio com os campos fechados: abre para mostrar onde está o problema
+        if ($('#rsvp-fields', d).hidden && [...$('#rsvp-fields', d).querySelectorAll('[required]')].some((x) => !String(x.value).trim())) $('#rsvp-fix', d)?.click();
+        if (!validateForm(e.currentTarget)) return;
         const build = readBuild(d);
         const discord = d.querySelector('input[name="discord"]:checked')?.value === '1';
         try { localStorage.setItem('last-discord', discord ? '1' : '0'); } catch { /* ignora */ }
