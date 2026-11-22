@@ -328,6 +328,8 @@ O filtro no topo separa por categoria. O menu mostra um contador com os recrutam
 Os oficiais acompanham os pedidos deles em **Solicitações** (menu do topo), que também lista as regras definidas pelo líder. O botão **Restaurar padrão** volta tudo para "Permitido".
 Nos tickets, o líder também pode impedir que os oficiais vejam, respondam ou resolvam tickets, ou deixar as **denúncias** só com ele.
 
+**☰ Menu no celular:** em telas de até 760px (celular e tablet em pé), os itens do menu ficam escondidos atrás do botão ☰, ao lado do logo. Ao tocar, abre um painel lateral com os itens (com ícones) e a página atual destacada. Ele fecha ao escolher um item, no ✕, tocando fora do painel ou com Esc. No computador, o menu continua no topo, como antes.
+
 **🔔 Pendências** (sino no topo): reúne o que precisa da sua atenção.
 - **Para você:** eventos sem resposta, respostas novas nos seus tickets, candidatos nos seus recrutamentos, pedidos de piloto e edição nova do Malah News.
 - **Liderança:** membros aguardando aprovação, tickets não iniciados ou pendentes com você e solicitações dos oficiais, conforme as permissões de cada um.

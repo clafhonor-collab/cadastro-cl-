@@ -2304,6 +2304,44 @@
   const main = $('#app');
   const loading = () => { main.innerHTML = '<div class="spinner" aria-label="Carregando"></div>'; };
 
+  // ---------- Menu do celular: botão ☰ que abre um painel lateral ----------
+  function setupNavDrawer() {
+    if ($('#nav-toggle')) return;
+    const bar = $('.topbar');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.id = 'nav-toggle';
+    btn.className = 'nav-toggle';
+    btn.setAttribute('aria-label', 'Abrir menu');
+    btn.setAttribute('aria-controls', 'nav');
+    btn.setAttribute('aria-expanded', 'false');
+    btn.innerHTML = '<span></span><span></span><span></span>';
+    bar.insertBefore(btn, bar.firstChild);
+    const shade = document.createElement('div');
+    shade.className = 'nav-backdrop';
+    bar.appendChild(shade);
+    btn.addEventListener('click', () => (document.body.classList.contains('nav-open') ? closeNav(true) : openNav()));
+    shade.addEventListener('click', () => closeNav(true));
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && document.body.classList.contains('nav-open')) closeNav(true); });
+    window.addEventListener('hashchange', () => closeNav());
+    // Voltou para a tela larga (girou o tablet, aumentou a janela): fecha o painel
+    const wide = matchMedia('(min-width: 761px)');
+    if (wide.addEventListener) wide.addEventListener('change', (e) => { if (e.matches) closeNav(); });
+  }
+  function openNav() {
+    document.body.classList.add('nav-open');
+    $('#nav-toggle')?.setAttribute('aria-expanded', 'true');
+    $('#nav-toggle')?.setAttribute('aria-label', 'Fechar menu');
+    ($('#nav a.active') || $('#nav a'))?.focus({ preventScroll: true });
+  }
+  function closeNav(refocus = false) {
+    if (!document.body.classList.contains('nav-open')) return;
+    document.body.classList.remove('nav-open');
+    $('#nav-toggle')?.setAttribute('aria-expanded', 'false');
+    $('#nav-toggle')?.setAttribute('aria-label', 'Abrir menu');
+    if (refocus) $('#nav-toggle')?.focus({ preventScroll: true });
+  }
+
   function renderHeader(currentKey) {
     $('#clan-name').textContent = CFG.clanName || 'Clã';
     document.title = `${CFG.clanName || 'Clã'} · Eventos`;
@@ -2339,17 +2377,26 @@
     document.body.classList.toggle('has-fab', !fab.hidden);
 
     const nav = $('#nav');
+    setupNavDrawer();
     if (memberUI()) {
-      const links = [['#/', 'Próximos', 'upcoming'], ['#/passados', 'Passados', 'past'], ['#/news', 'Malah News', 'news']];
-      if (RECRUIT_ON) links.push(['#/recrutamentos', 'Recrutamentos', 'recruits']);
-      if (RAFFLE_ON) links.push(['#/sorteio', 'Sorteio', 'raffle']);
-      if (isOfficer()) links.push(['#/membros', 'Membros', 'members']);
-      if (can('freq_view')) links.push(['#/frequencia', 'Frequência', 'freq']);
-      links.push(['#/perfil', 'Meu perfil', 'profile'], ['#/utils', 'Utils', 'utils']);
-      if (!isLeader() && isOfficer()) links.push(['#/solicitacoes', 'Solicitações', 'requests']);
-      // Os contadores ficam no sininho (ao lado da foto), não no menu
-      nav.innerHTML = links.map(([href, label, key]) => `<a href="${href}" class="${currentKey === key || (key === 'utils' && currentKey === 'pilotage') ? 'active' : ''}">${label}</a>`).join('');
-    } else nav.innerHTML = '';
+      const links = [['#/', 'Próximos', 'upcoming', '📅'], ['#/passados', 'Passados', 'past', '🕘'], ['#/news', 'Malah News', 'news', '📰']];
+      if (RECRUIT_ON) links.push(['#/recrutamentos', 'Recrutamentos', 'recruits', '📣']);
+      if (RAFFLE_ON) links.push(['#/sorteio', 'Sorteio', 'raffle', '🎟️']);
+      if (isOfficer()) links.push(['#/membros', 'Membros', 'members', '👥']);
+      if (can('freq_view')) links.push(['#/frequencia', 'Frequência', 'freq', '📊']);
+      links.push(['#/perfil', 'Meu perfil', 'profile', '👤'], ['#/utils', 'Utils', 'utils', '🧰']);
+      if (!isLeader() && isOfficer()) links.push(['#/solicitacoes', 'Solicitações', 'requests', '📝']);
+      // Os contadores ficam no sininho (ao lado da foto), não no menu.
+      // No celular o menu vira um painel lateral (☰); o cabeçalho do painel só aparece lá.
+      nav.innerHTML = `<div class="nav-head"><span>Menu</span><button type="button" class="nav-close" aria-label="Fechar menu">✕</button></div>
+        ${links.map(([href, label, key, ic]) => {
+          const on = currentKey === key || (key === 'utils' && currentKey === 'pilotage');
+          return `<a href="${href}" class="${on ? 'active' : ''}"${on ? ' aria-current="page"' : ''}><span class="nav-ic" aria-hidden="true">${ic}</span>${label}</a>`;
+        }).join('')}`;
+      nav.querySelector('.nav-close').addEventListener('click', () => closeNav(true));
+      nav.querySelectorAll('a').forEach((a) => a.addEventListener('click', () => closeNav()));
+    } else { nav.innerHTML = ''; closeNav(); }
+    $('#nav-toggle').hidden = !memberUI();
 
     const box = $('#userbox');
     if (state.me) {

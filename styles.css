@@ -1281,3 +1281,47 @@ body.has-fab main { padding-bottom: 90px; }
 /* Torres: tanques por time */
 .tank-count { color: var(--muted); }
 .tank-count.low { color: #f87171; font-weight: 700; }
+
+/* ---------- Menu do celular (☰ + painel lateral) ---------- */
+.nav-toggle, .nav-head, .nav-backdrop, .nav .nav-ic { display: none; }
+@media (max-width: 760px) {
+  .topbar { gap: 8px; }
+  .nav-toggle {
+    display: inline-flex; flex-direction: column; justify-content: center; gap: 5px; flex: none;
+    width: 44px; height: 44px; padding: 0 11px; margin-left: -6px; border-radius: 10px;
+    background: transparent; border: 1px solid transparent; cursor: pointer;
+  }
+  .nav-toggle[hidden] { display: none; }
+  .nav-toggle span { display: block; height: 2px; border-radius: 2px; background: var(--gold); transition: transform .2s ease, opacity .2s ease; }
+  .nav-toggle:hover, .nav-toggle:focus-visible { background: var(--panel-2); border-color: var(--border); }
+  body.nav-open .nav-toggle span:nth-child(1) { transform: translateY(7px) rotate(45deg); }
+  body.nav-open .nav-toggle span:nth-child(2) { opacity: 0; }
+  body.nav-open .nav-toggle span:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
+
+  /* O painel fica escondido fora da tela até tocar no ☰ */
+  .nav {
+    position: fixed; top: 0; bottom: 0; left: 0; z-index: 2; order: initial; flex-basis: auto;
+    width: min(290px, 82vw); flex-direction: column; flex-wrap: nowrap; gap: 2px;
+    padding: 12px 10px calc(16px + env(safe-area-inset-bottom)); overflow-y: auto; overscroll-behavior: contain;
+    background: var(--panel, #1a100c); border-right: 1px solid var(--border); box-shadow: 12px 0 32px rgba(0, 0, 0, .55);
+    transform: translateX(-105%); visibility: hidden; transition: transform .22s ease, visibility 0s linear .22s;
+  }
+  .nav:empty { display: none; }
+  .nav-head { display: flex; align-items: center; justify-content: space-between; padding: 4px 6px 10px 12px; margin-bottom: 4px;
+    border-bottom: 1px solid var(--border); font-family: "Cinzel", serif; font-weight: 700; color: var(--gold); font-size: 1.05rem; }
+  .nav-close { width: 44px; height: 44px; border-radius: 10px; background: transparent; border: 0; color: var(--muted); font-size: 1.15rem; cursor: pointer; }
+  .nav-close:hover, .nav-close:focus-visible { background: var(--panel-2); color: var(--text); }
+  .nav a { display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 10px 12px; font-size: 1.02rem; border-radius: 10px; }
+  .nav a.active { box-shadow: inset 3px 0 0 var(--accent-hi); }
+  .nav .nav-ic { display: inline-block; width: 24px; text-align: center; font-size: 1.1rem; }
+  .nav-backdrop { position: fixed; inset: 0; z-index: 1; background: rgba(0, 0, 0, .6); }
+
+  body.nav-open { overflow: hidden; }
+  /* Aberto: o topo sobe acima de tudo (sem o desfoque, que prenderia o painel dentro do topo) */
+  body.nav-open .topbar { z-index: 100; backdrop-filter: none; -webkit-backdrop-filter: none; }
+  body.nav-open .nav { transform: none; visibility: visible; transition: transform .22s ease; }
+  body.nav-open .nav-backdrop { display: block; }
+}
+@media (max-width: 760px) and (prefers-reduced-motion: reduce) {
+  .nav, .nav-toggle span { transition: none; }
+}
