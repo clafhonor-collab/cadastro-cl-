@@ -161,6 +161,14 @@
   }
   const scoreText = (r) => (r.score_us == null && r.score_them == null ? '' : `${r.score_us ?? '–'} × ${r.score_them ?? '–'}`);
 
+  // Nome parcial para a tela de login ("Valkyria" → "Va*****a"); igual à função login_lookup do banco
+  const maskName = (s) => String(s || '').split(' ').filter(Boolean).map((w) => {
+    const c = [...w];
+    if (c.length <= 2) return c[0] + '*'.repeat(c.length - 1);
+    if (c.length <= 4) return c[0] + '*'.repeat(c.length - 2) + c[c.length - 1];
+    return c.slice(0, 2).join('') + '*'.repeat(c.length - 3) + c[c.length - 1];
+  }).join(' ');
+
   function supabaseApi() {
     const sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseAnonKey, {
       auth: { flowType: 'pkce', detectSessionInUrl: true, persistSession: true },
@@ -207,6 +215,14 @@
       signIn() { return sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: location.origin + location.pathname } }); },
       // Login pelo botão do Google no próprio site: a janela do Google mostra o domínio do site, não o do Supabase
       async signInWithIdToken(token, nonce) { ok(await sb.auth.signInWithIdToken({ provider: 'google', token, nonce })); },
+      // Segunda opção: código por e-mail. Com o mesmo e-mail da conta Google, entra na mesma conta.
+      // Nome do perfil ligado a este e-mail, só parcial (ou null se não existir conta)
+      async lookupEmail(email) { return ok(await sb.rpc('login_lookup', { p_email: email })) || null; },
+      // create = conta nova (fica aguardando aprovação); name vai para o perfil criado
+      async sendEmailCode(email, create = false, name = null) {
+        ok(await sb.auth.signInWithOtp({ email, options: { shouldCreateUser: !!create, ...(create && name ? { data: { name } } : {}) } }));
+      },
+      async verifyEmailCode(email, token) { ok(await sb.auth.verifyOtp({ email, token, type: 'email' })); },
       signOut() { return sb.auth.signOut(); },
       async myProfile() { return ok(await sb.from('profiles').select('*').eq('id', state.user.id).maybeSingle()); },
       // Perfis.
@@ -991,6 +1007,7 @@
     }
     let user = null;
     let listener = () => {};
+    let demoSignup = null;
     return {
       async currentUser() { return user; },
       async cycles() { return isOfficer() ? db.cycles.map((c) => ({ ...c })).sort((a, b) => a.starts_on.localeCompare(b.starts_on)) : []; },
@@ -1037,6 +1054,21 @@
       },
       onAuthChange(cb) { listener = cb; },
       async signIn() { user = { id: 'u0' }; listener(user); },
+      // Na demonstração, "lider@exemplo.com" é a conta do líder; qualquer outro e-mail é conta nova; o código é 123456
+      async lookupEmail(email) { return email === 'lider@exemplo.com' ? maskName(displayName(profile('u0'))) : null; },
+      async sendEmailCode(email, create = false, name = null) {
+        if (!/@/.test(email)) throw new Error('E-mail inválido');
+        demoSignup = create ? { email, name } : null;
+      },
+      async verifyEmailCode(email, token) {
+        if (token !== '123456') throw new Error('Código inválido ou expirado (na demonstração, use 123456)');
+        if (demoSignup) {
+          const id = `e${db.nextId++}`;
+          db.profiles.push({ id, google_name: demoSignup.name || 'Sem nome', game_name: null, role: 'pending', created_at: new Date().toISOString() });
+          user = { id, email }; demoSignup = null;
+        } else user = { id: 'u0', email };
+        listener(user);
+      },
       async signOut() { user = null; listener(null); },
       async myProfile() { return { ...profile(state.user.id) }; },
       // Mesmas regras do banco: oficiais e líder recebem a lista completa (list_profiles);
@@ -2335,19 +2367,162 @@
   //  Telas
   // =====================================================================
 
+  // Navegador de dentro de outro app (WhatsApp, Instagram, Discord...): o Google bloqueia o login nele
+  const UA = navigator.userAgent || '';
+  const IN_APP = /WhatsApp|FBAN|FBAV|FB_IAB|Instagram|Discord|Telegram|Line\/|; wv\)/i.test(UA);
+  const IS_ANDROID_UA = /Android/i.test(UA);
+  // Voltou do Google mas o login não terminou neste navegador?
+  let loginFailed = false;
+  try {
+    const q = new URLSearchParams(location.search);
+    if (q.has('error') || q.has('error_description')) loginFailed = true;
+  } catch { /* ignora */ }
+  const EMAIL_ERR = (e) => {
+    const m = String(e?.message || e || '');
+    // Liderança ainda não ativou (SQL não rodado, e-mail desligado no Supabase ou sem envio de e-mails configurado)
+    if (/login_lookup|could not find the function|schema cache|email logins? (are )?disabled|provider is disabled|not authorized|error sending|smtp/i.test(m)) return 'O login por e-mail ainda não foi ativado pela liderança. Por enquanto, entre com o Google.';
+    if (/signups? not allowed|user not found|not allowed for otp/i.test(m)) return 'Não foi possível entrar com este e-mail. Confira o endereço ou crie uma conta nova.';
+    if (/rate|seconds|too many|security purposes/i.test(m)) return 'Aguarde um minuto antes de pedir outro código.';
+    if (/expired|invalid|token/i.test(m)) return 'Código inválido ou expirado. Confira ou peça um novo.';
+    return m || 'Não foi possível continuar. Tente de novo.';
+  };
+
   function viewLogin() {
+    // Saiu da conta: os avisos da conta anterior não ficam na tela de login
+    $('#bn-notice')?.remove(); $('#tk-notice')?.remove();
+    // Chegou com ?code= e mesmo assim caiu no login: o Google devolveu para outro navegador
+    try { if (new URLSearchParams(location.search).has('code')) loginFailed = true; } catch { /* ignora */ }
+    if (loginFailed) {
+      try {
+        const q = new URLSearchParams(location.search);
+        ['code', 'error', 'error_code', 'error_description', 'state'].forEach((k) => q.delete(k));
+        const rest = q.toString().replace(/=(&|$)/g, '$1');
+        history.replaceState(null, '', location.pathname + (rest ? `?${rest}` : '') + location.hash);
+      } catch { /* ignora */ }
+    }
+    const here = location.origin + location.pathname;
+    const chrome = `intent://${location.host}${location.pathname}#Intent;scheme=https;package=com.android.chrome;end`;
     main.innerHTML = `<div class="hero">
       <svg class="emblem hero-emblem" viewBox="0 0 64 64" aria-hidden="true"><use href="#emblem"></use></svg>
       <h1 class="wordmark big">${esc(CFG.clanName || 'Clã')}</h1>
       ${CFG.tagline ? `<p class="tagline">${esc(CFG.tagline)}</p>` : ''}
       <div class="divider" aria-hidden="true"></div>
+      ${IN_APP ? `<div class="login-warn">
+        <b>⚠️ Você abriu o site dentro de outro aplicativo</b>
+        <span>O Google não deixa entrar por aqui. Abra o site no navegador do celular${IS_ANDROID_UA ? '' : ' (toque em ⋯ ou no ícone de compartilhar e escolha “Abrir no Safari”)'} ou entre com código por e-mail.</span>
+        <div class="row" style="justify-content:center">
+          ${IS_ANDROID_UA ? `<a class="btn small primary" href="${esc(chrome)}">Abrir no Chrome</a>` : ''}
+          <button class="btn small" id="btn-copy-link" type="button">Copiar link do site</button>
+        </div>
+      </div>` : ''}
+      ${loginFailed ? `<div class="login-warn">
+        <b>⚠️ O login com o Google não terminou</b>
+        <span>Isso acontece quando o Google devolve você para um navegador diferente do que começou. Tente de novo pelo Chrome/Safari ou entre com código por e-mail.</span>
+      </div>` : ''}
       <p>Entre com sua conta Google para ver os eventos da semana e confirmar presença.</p>
       <button class="btn google" id="btn-login"><svg class="g-logo" viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>Entrar com Google</button>
+      <div class="login-alt">
+        <button class="linklike" id="btn-email-login" type="button">Problemas com o Google? <b>Entrar com código por e-mail</b></button>
+        <form class="login-email card" id="login-email" hidden novalidate>
+          <div class="le-step" data-step="email">
+            <label for="le-email">Seu e-mail</label>
+            <input id="le-email" type="email" autocomplete="email" inputmode="email" placeholder="voce@exemplo.com">
+            <button class="btn primary le-wide" id="le-next" type="submit">Continuar</button>
+          </div>
+          <div class="le-step" data-step="found" hidden>
+            <p class="le-who">Você está entrando como<br><b id="le-name"></b></p>
+            <p class="muted small" style="margin:0 0 10px;text-align:center">Vamos enviar um código para <b class="le-to"></b>.</p>
+            <div class="row" style="justify-content:center">
+              <button class="btn primary" id="le-confirm" type="button">Sim, enviar código</button>
+              <button class="btn ghost small" data-le-back type="button">Não sou eu</button>
+            </div>
+          </div>
+          <div class="le-step" data-step="new" hidden>
+            <div class="le-info">O e-mail <b class="le-to"></b> não está associado a nenhuma conta do clã.<br>Quer criar uma conta nova? Preencha seu perfil:</div>
+            <div class="field">
+              <label for="f-game">Nome do personagem</label>
+              <input id="f-game" maxlength="40" placeholder="Seu nome no jogo" autocomplete="nickname">
+            </div>
+            <div class="field">
+              <label for="f-phone">Telefone <span class="muted small">(opcional, só oficiais e o líder veem)</span></label>
+              <input id="f-phone" type="tel" inputmode="tel" maxlength="30" autocomplete="tel" placeholder="(11) 91234-5678">
+            </div>
+            ${buildFields(null, false)}
+            <p class="muted small" style="margin:4px 0 10px">Sua conta vai aguardar a aprovação de um oficial ou do líder. Você pode completar ou mudar o perfil depois.</p>
+            <div class="row" style="justify-content:center">
+              <button class="btn primary" id="le-create" type="button">Criar conta e enviar código</button>
+              <button class="btn ghost small" data-le-back type="button">Voltar</button>
+            </div>
+          </div>
+          <div class="le-step" data-step="code" hidden>
+            <p class="small" style="margin:0 0 8px">Enviamos um código para <b class="le-to"></b>. Confira também o spam.</p>
+            <label for="le-code">Código</label>
+            <input id="le-code" inputmode="numeric" autocomplete="one-time-code" maxlength="10" placeholder="123456">
+            <div class="row" style="justify-content:center">
+              <button class="btn primary" id="le-verify" type="button">Entrar</button>
+              <button class="btn ghost small" data-le-back type="button">Trocar e-mail</button>
+            </div>
+          </div>
+          <p class="le-msg small" id="le-msg" hidden></p>
+        </form>
+      </div>
     </div>`;
     $('#btn-login').addEventListener('click', () => {
       try { sessionStorage.setItem('after-login', location.hash); } catch { /* ignora */ }
       api.signIn().catch(fail);
     });
+    $('#btn-copy-link')?.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(here); toast('Link copiado! Cole no navegador do celular.'); } catch { prompt('Copie o link:', here); }
+    });
+    const form = $('#login-email');
+    const msg = (text, bad = true) => { const m = $('#le-msg'); m.hidden = !text; m.textContent = text || ''; m.classList.toggle('bad', bad); };
+    let email = '';
+    const FOCUS = { email: '#le-email', new: '#f-game', code: '#le-code' };
+    const step = (name) => {
+      form.querySelectorAll('.le-step').forEach((x) => { x.hidden = x.dataset.step !== name; });
+      form.querySelectorAll('.le-to').forEach((x) => { x.textContent = email; });
+      msg('');
+      if (FOCUS[name]) $(FOCUS[name]).focus();
+    };
+    $('#btn-email-login').addEventListener('click', () => { form.hidden = !form.hidden; if (!form.hidden) $('#le-email').focus(); });
+    // 1) E-mail → procura a conta
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if ($('[data-step="email"]').hidden) return;
+      email = $('#le-email').value.trim().toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { msg('Digite um e-mail válido.'); return; }
+      const btn = $('#le-next'); btn.disabled = true; msg('');
+      try {
+        const name = await api.lookupEmail(email);
+        if (name) { $('#le-name').textContent = name; step('found'); } else step('new');
+      } catch (err) { msg(EMAIL_ERR(err)); } finally { btn.disabled = false; }
+    });
+    const send = async (btn, create, name) => {
+      btn.disabled = true; msg('');
+      try {
+        try { sessionStorage.setItem('after-login', location.hash); } catch { /* ignora */ }
+        await api.sendEmailCode(email, create, name);
+        step('code');
+      } catch (err) { msg(EMAIL_ERR(err)); } finally { btn.disabled = false; }
+    };
+    // 2a) Conta encontrada → confirma e envia o código
+    $('#le-confirm').addEventListener('click', (e) => send(e.currentTarget, false));
+    // 2b) Conta nova → perfil preenchido agora, salvo logo depois do primeiro acesso
+    $('#le-create').addEventListener('click', (e) => {
+      const game = $('#f-game').value.trim();
+      if (!game) { msg('Informe o nome do seu personagem.'); $('#f-game').focus(); return; }
+      try { sessionStorage.setItem('signup-profile', JSON.stringify({ email, fields: { game_name: game, ...readBuild(form) }, phone: $('#f-phone').value.trim() })); } catch { /* ignora */ }
+      send(e.currentTarget, true, game);
+    });
+    form.querySelectorAll('[data-le-back]').forEach((x) => x.addEventListener('click', () => { $('#le-code').value = ''; step('email'); }));
+    const verify = async () => {
+      const code = $('#le-code').value.replace(/\D/g, '');
+      if (code.length < 6) { msg('Digite o código que chegou no seu e-mail.'); return; }
+      const btn = $('#le-verify'); btn.disabled = true; msg('');
+      try { await api.verifyEmailCode(email, code); } catch (err) { msg(EMAIL_ERR(err)); btn.disabled = false; }
+    };
+    $('#le-verify').addEventListener('click', verify);
+    $('#le-code').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); verify(); } });
     if (CFG.googleClientId && !DEMO) mountGoogleButton();
   }
 
@@ -8692,6 +8867,20 @@
     }
   }
 
+  // Conta criada pelo código por e-mail: grava o perfil que a pessoa preencheu na tela de login
+  async function applySignupProfile() {
+    let saved = null;
+    try { saved = JSON.parse(sessionStorage.getItem('signup-profile') || 'null'); } catch { saved = null; }
+    if (!saved) return;
+    try { sessionStorage.removeItem('signup-profile'); } catch { /* ignora */ }
+    const mineEmail = String(state.user?.email || '').toLowerCase();
+    if (state.me.role !== 'pending' || state.me.game_name || (mineEmail && mineEmail !== saved.email)) return;
+    try {
+      await api.saveProfile(saved.fields || {}, saved.phone || '');
+      state.me = await api.myProfile();
+    } catch (e) { console.warn('perfil do cadastro', e); }
+  }
+
   let askedBuild = false;
   async function boot() {
     loading();
@@ -8703,6 +8892,7 @@
       if (state.user && !state.me) {
         throw new Error('Perfil não encontrado. Verifique se o schema.sql foi executado no Supabase.');
       }
+      if (state.me) await applySignupProfile();
       state.members = isMember() ? await api.members() : [];
       state.types = isMember() ? await api.eventTypes() : [];
       // Data da edição mais recente do Malah News (para o aviso de "novo" no menu)

@@ -1256,3 +1256,21 @@ body.has-fab main { padding-bottom: 90px; }
 .bn-notice-item { background: rgba(220, 38, 38, .08); border-radius: 8px; padding: 8px 10px; display: grid; gap: 4px; }
 .bn-notice-item ul { margin: 0; padding-left: 18px; font-size: .88rem; color: var(--muted); }
 .lb-warn { border: 1px solid rgba(220, 38, 38, .35); background: rgba(220, 38, 38, .06); border-radius: 10px; padding: 8px 10px; }
+
+/* ---------- Login: aviso e código por e-mail ---------- */
+.login-warn { display: flex; flex-direction: column; gap: 8px; max-width: 440px; margin: 0 auto 18px; padding: 12px 14px; border-radius: 12px; background: #3a2a0c; border: 1px solid #5c4415; color: #f3d699; font-size: .92rem; text-align: left; }
+.login-alt { margin-top: 18px; }
+.linklike { background: none; border: 0; color: var(--muted); font: inherit; font-size: .92rem; cursor: pointer; padding: 6px; }
+.linklike b { color: var(--gold); text-decoration: underline; text-underline-offset: 3px; }
+.linklike:hover b { color: var(--text); }
+.login-email { max-width: 380px; margin: 10px auto 0; text-align: left; }
+.login-email input { margin-bottom: 10px; }
+.login-email #le-code { font-size: 1.4rem; letter-spacing: .3em; text-align: center; }
+.le-msg { margin: 8px 0 0; }
+.le-msg.bad { color: #ffb4a8; }
+.login-email .le-step > label { display: block; }
+.le-wide { width: 100%; }
+.le-who { text-align: center; font-size: 1rem; margin: 4px 0 6px; }
+.le-who b { font-size: 1.3rem; color: var(--gold); }
+.le-info { background: rgba(220, 170, 82, .08); border: 1px dashed rgba(220, 170, 82, .45); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; font-size: .92rem; }
+.login-email .attrs { margin-bottom: 4px; }

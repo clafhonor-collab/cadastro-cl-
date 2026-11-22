@@ -374,7 +374,20 @@ O que protege os dados são as **regras do banco (RLS)** e as funções, que val
 - **Nick único:** ninguém ativo no clã pode usar o mesmo nick de outra pessoa (veja **Membros**).
 
 Para aplicar os ajustes mais recentes, rode o [`supabase/seguranca_dados.sql`](supabase/seguranca_dados.sql), o [`supabase/seguranca_correcoes.sql`](supabase/seguranca_correcoes.sql) e o [`supabase/limites.sql`](supabase/limites.sql) (veja **Dicas**).
-Como o site só usa o login do Google, desligue também o login por e-mail: no Supabase, **Authentication → Sign In / Providers → Email**, desative e salve.
+## Login com código por e-mail
+Para quem não consegue entrar com o Google (navegador do WhatsApp/Instagram, conta Google bloqueada etc.), a tela de login tem **"Problemas com o Google? Entrar com código por e-mail"**:
+- A pessoa digita o e-mail. Se já existe conta com esse e-mail, o site mostra o nome só em parte (ex.: "Va*****a") e envia um código. Com o mesmo e-mail da conta Google, ela entra **na mesma conta**.
+- Se o e-mail não tem conta, ela preenche nome do personagem, telefone (opcional), classe e atributos, e a conta nova fica em **Aguardando aprovação**.
+- O site também avisa quando foi aberto dentro de outro aplicativo (onde o Google bloqueia o login) e quando o login do Google não terminou.
+
+Para ativar (uma vez):
+1. Rode o [`supabase/login_email.sql`](supabase/login_email.sql) no SQL Editor (só cria a função `login_lookup`; também está no fim do `schema.sql`).
+2. No Supabase, **Authentication → Sign In / Providers → Email**: ative e salve.
+3. **Authentication → Emails → SMTP Settings**: configure um envio próprio (ex.: [Resend](https://resend.com), com o domínio `forhonorcla.com.br` verificado). Sem isso, o Supabase só envia e-mails para quem faz parte da equipe do projeto, e poucos por hora.
+4. **Authentication → Emails → Templates**: em **Magic Link** e em **Confirm signup**, troque o texto para mostrar o código, por exemplo: `Seu código para entrar no FOR HONOR: <h2>{{ .Token }}</h2>`.
+5. Em **Authentication → Rate Limits**, aumente o limite de e-mails por hora se precisar.
+
+Na demonstração (`?demo`), use `lider@exemplo.com` para entrar na conta do líder, qualquer outro e-mail para criar uma conta nova, e o código `123456`.
 
 ## Dicas
 - **Atualizando o site:** se você já tinha executado uma versão anterior do `schema.sql`, rode o arquivo inteiro de novo no SQL Editor. Ele só acrescenta o que falta e não apaga dados. Ao publicar arquivos novos, aumente o número `?v=` no `index.html` para os navegadores baixarem a versão nova.
