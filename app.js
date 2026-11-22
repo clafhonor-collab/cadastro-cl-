@@ -1719,7 +1719,8 @@
       },
       async assign(eventId, userId, team) {
         if (!db.rsvps.some((r) => r.event_id === eventId && r.user_id === userId && r.going)) throw new Error('Este membro não confirmou presença no evento');
-        if (db.slots.filter((s) => s.event_id === eventId && s.team === team && s.user_id !== userId).length >= TEAM_SIZE) throw new Error(`O time ${team} já tem 8 membros`);
+        const sz = teamSize(db.events.find((e) => e.id === eventId));
+        if (db.slots.filter((s) => s.event_id === eventId && s.team === team && s.user_id !== userId).length >= sz) throw new Error(`O time ${team} já tem ${sz} membros`);
         dropSlot(eventId, userId);
         db.slots.push({ event_id: eventId, user_id: userId, team });
       },
@@ -1753,10 +1754,11 @@
       },
       async saveTeams(eventId, slots) {
         const count = {};
+        const sz = teamSize(db.events.find((e) => e.id === eventId));
         slots.forEach((s) => {
           if (!db.rsvps.some((r) => r.event_id === eventId && r.user_id === s.user_id && r.going)) throw new Error('Um dos membros não confirmou presença no evento');
           count[s.team] = (count[s.team] || 0) + 1;
-          if (count[s.team] > TEAM_SIZE) throw new Error(`O time ${s.team} passou de 8 membros`);
+          if (count[s.team] > sz) throw new Error(`O time ${s.team} passou de ${sz} membros`);
         });
         const before = slotsOf(eventId);
         db.slots = db.slots.filter((s) => s.event_id !== eventId).concat(slots.map((s) => ({ event_id: eventId, user_id: s.user_id, team: s.team })));
@@ -2176,13 +2178,22 @@
   const isExaltRoom = (team) => /^Exaltação\b/.test(team || '');
   const p4Flag = '<span class="p4-flag" title="Prefere partidas de 4 pontos (não vai para Exaltação na sugestão automática)">🚩</span>';
   // Guerra das Torres (tipo ou nome com "torre"): sempre 3 times, Time 1, Time 2 e Time 3, sem renomear
-  const TOWER_TEAMS = ['Time 1', 'Time 2', 'Time 3'];
+  // Torres: de 1 a 4 times (escolhidos ao criar o evento), até 10 membros por time
+  const TOWER_MAX_TEAMS = 4;
+  const TOWER_DEFAULT_TEAMS = 3;
+  const TOWER_TEAM_SIZE = 10;
+  const TANK_CLASSES = new Set(['druida', 'cruzado', 'barbaro']);
+  const TOWER_MIN_TANKS = 3;
+  const towerCount = (ev) => Math.min(TOWER_MAX_TEAMS, Math.max(1, Number(ev.team_count) || TOWER_DEFAULT_TEAMS));
   const isTower = (ev) => norm(`${typeName(ev.type_id)} ${ev.title || ''}`).includes('torre');
   // (eventos antigos que já tinham times renomeados continuam mostrando os nomes, para não perder o histórico)
-  const towerNeedsFix = (ev) => isTower(ev) && (ev.team_format !== 'rito' || ev.team_count !== TOWER_TEAMS.length);
-  const fmtLabel = (ev) => (isTower(ev) ? 'Torres · 3 times' : FORMAT_LABEL[ev.team_format] || '');
+  const towerNeedsFix = (ev) => isTower(ev) && (ev.team_format !== 'rito' || !(ev.team_count >= 1 && ev.team_count <= TOWER_MAX_TEAMS));
+  // Quantos times a torre passa a ter ao ser convertida (mantém a quantidade se já estava entre 1 e 4)
+  const towerTarget = (ev) => (ev.team_format === 'rito' && ev.team_count >= 1 ? Math.min(ev.team_count, TOWER_MAX_TEAMS) : TOWER_DEFAULT_TEAMS);
+  const teamSize = (ev) => (ev && isTower(ev) ? TOWER_TEAM_SIZE : TEAM_SIZE);
+  const fmtLabel = (ev) => (isTower(ev) ? `Torres · ${towerCount(ev)} ${towerCount(ev) === 1 ? 'time' : 'times'}` : FORMAT_LABEL[ev.team_format] || '');
   function teamNames(ev) {
-    if (isTower(ev) && ev.team_format === 'rito') return TOWER_TEAMS.map((_, i) => customTeamName(ev, i));
+    if (isTower(ev) && ev.team_format === 'rito') return Array.from({ length: towerCount(ev) }, (_, i) => customTeamName(ev, i));
     if (ev.team_format === 'guerra') return WAR_GROUPS.flatMap((g) => [1, 2, 3].map((n) => `${g} ${n}`));
     if (ev.team_format === 'rito') return Array.from({ length: ev.team_count || RITE_MAX }, (_, i) => customTeamName(ev, i));
     return [];
@@ -3065,19 +3076,22 @@
   }
   const editTag = (x) => (x ? `<div class="team-edit" title="Último oficial ou líder a alterar esta sala">✎ ${esc(nameOf(x.actor))} · ${esc(fmtShortDate(x.at))} ${esc(fmtTime(x.at))}</div>` : '');
 
-  function teamCard(name, people, { editable = false, sel = null, showFoot = true, bare = false, renameIndex = null, edits = null } = {}) {
+  function teamCard(name, people, { editable = false, sel = null, showFoot = true, bare = false, renameIndex = null, edits = null, size = TEAM_SIZE, tanks = false } = {}) {
     const hide = bare || aggMode() === 'hide';
     const mineHere = people.some((p) => p.id === actingId());
-    const empties = editable ? Array.from({ length: TEAM_SIZE - people.length }, () => '<div class="slot-empty">vazio</div>').join('') : '';
-    return `<div class="team${mineHere ? ' mine' : ''}${people.length >= TEAM_SIZE ? ' full' : ''}${editable && sel ? ' target' : ''}" data-team="${esc(name)}">
-      <div class="team-head"><strong>${esc(name)}${renameIndex !== null ? ` <button type="button" class="team-rename" data-rename="${renameIndex}" title="Renomear este time" aria-label="Renomear ${esc(name)}">✏️</button>` : ''}</strong><span class="muted small">${people.some((p) => p.discord) ? `<span class="dc-count" title="Integrantes no Discord">🎧 ${people.filter((p) => p.discord).length}</span> · ` : ''}${people.length}/${TEAM_SIZE}</span></div>
+    const empties = editable ? Array.from({ length: Math.max(0, size - people.length) }, () => '<div class="slot-empty">vazio</div>').join('') : '';
+    const nTank = people.filter((p) => TANK_CLASSES.has(p.build.char_class)).length;
+    const tankTag = tanks && !bare ? `<span class="tank-count${nTank < TOWER_MIN_TANKS ? ' low' : ''}" title="Tanques no time (Druida, Cruzado, Bárbaro): o ideal é ter pelo menos ${TOWER_MIN_TANKS}">🛡 ${nTank}</span> · ` : '';
+    return `<div class="team${mineHere ? ' mine' : ''}${people.length >= size ? ' full' : ''}${editable && sel ? ' target' : ''}" data-team="${esc(name)}">
+      <div class="team-head"><strong>${esc(name)}${renameIndex !== null ? ` <button type="button" class="team-rename" data-rename="${renameIndex}" title="Renomear este time" aria-label="Renomear ${esc(name)}">✏️</button>` : ''}</strong><span class="muted small">${tankTag}${people.some((p) => p.discord) ? `<span class="dc-count" title="Integrantes no Discord">🎧 ${people.filter((p) => p.discord).length}</span> · ` : ''}${people.length}/${size}</span></div>
       ${edits ? editTag(edits[name]) : ''}
       <div class="team-slots">${people.map((p) => chip(p, { draggable: editable, removable: editable, selected: sel === p.id, compact: true, bare: hide, medals: true })).join('')}${empties}</div>
       ${people.length && showFoot && !hide ? teamFoot(people) : ''}
     </div>`;
   }
 
-  function teamsHtml(ev, people, slots, opts = {}) {
+  function teamsHtml(ev, people, slots, opts0 = {}) {
+    const opts = { ...opts0, size: teamSize(ev), tanks: isTower(ev) && isOfficer() };
     const byTeam = (t) => people.filter((p) => slots.get(p.id) === t);
     if (ev.team_format === 'guerra') {
       return WAR_GROUPS.map((g) => `<div class="team-group"><h3>${esc(g)}</h3><div class="teams-grid g3">
@@ -3656,7 +3670,7 @@
     T.log = await api.eventLog(id).catch((e) => { console.warn('histórico do evento', e); return []; });
     // Torres criadas com outro formato: sem ninguém escalado, já passa direto para os 3 times
     if (towerNeedsFix(ev) && !T.orig.size) {
-      try { await api.updateEvent(ev.id, { team_format: 'rito', team_count: TOWER_TEAMS.length }); await viewTeams(id); return; } catch (e) { fail(e); }
+      try { await api.updateEvent(ev.id, { team_format: 'rito', team_count: towerTarget(ev) }); await viewTeams(id); return; } catch (e) { fail(e); }
     }
     renderTeams();
   }
@@ -3664,12 +3678,12 @@
   // Converte uma Guerra das Torres para os 3 times fixos (quem estava em outro time volta para "Sem time")
   async function toTowerFormat() {
     const ev = T.ev;
-    const keep = new Set(teamNames({ ...ev, team_format: 'rito', team_count: TOWER_TEAMS.length }));
+    const keep = new Set(teamNames({ ...ev, team_format: 'rito', team_count: towerTarget(ev) }));
     const out = [...T.orig.values()].filter((t) => !keep.has(t));
     if (out.length && !(await confirmDialog(`${out.length} membro(s) estão em times que não existem na Guerra das Torres e voltarão para “Sem time”. Continuar?`, 'Continuar'))) return;
     try {
       if (out.length) await api.removeTeams(ev.id, [...new Set(out)]);
-      await api.updateEvent(ev.id, { team_format: 'rito', team_count: TOWER_TEAMS.length });
+      await api.updateEvent(ev.id, { team_format: 'rito', team_count: towerTarget(ev) });
       await viewTeams(ev.id);
     } catch (e) { fail(e); }
   }
@@ -3693,7 +3707,7 @@
     const tower = isTower(ev); const towerFix = towerNeedsFix(ev);
     const assigned = T.people.filter((p) => T.slots.has(p.id)).length;
     const pool = sortedPool();
-    const capacity = teamNames(ev).length * TEAM_SIZE;
+    const capacity = teamNames(ev).length * teamSize(ev);
     const finished = !isOpen(ev);
 
     const head = `
@@ -3705,7 +3719,8 @@
           <div class="muted small">${esc(fmtDay(ev.starts_at))} · ${fmtTime(ev.starts_at)} · ${T.people.length} confirmados · ${assigned} em times${capacity ? ` · ${capacity} vagas` : ''}</div>
         </div>
         <div class="row">
-          ${tower ? '<span class="tower-tag" title="Guerra das Torres tem sempre 3 times">🗼 Guerra das Torres · 3 times</span>' : `<div class="seg" role="group" aria-label="Formato">
+          ${tower ? `<span class="tower-tag" title="Torres: de 1 a ${TOWER_MAX_TEAMS} times de até ${TOWER_TEAM_SIZE} membros">🗼 Torres · até ${TOWER_TEAM_SIZE} por time</span>
+            ${towerFix ? '' : `<label class="inline-label">Times <select class="inline" id="tower-count">${Array.from({ length: TOWER_MAX_TEAMS }, (_, i) => i + 1).map((n) => `<option ${n === towerCount(ev) ? 'selected' : ''}>${n}</option>`).join('')}</select></label>`}` : `<div class="seg" role="group" aria-label="Formato">
             <button class="${ev.team_format === 'guerra' ? 'on' : ''}" data-format="guerra">Guerra</button>
             <button class="${ev.team_format === 'rito' ? 'on' : ''}" data-format="rito">Outros</button>
           </div>`}
@@ -3729,10 +3744,10 @@
 
     if (towerFix) {
       main.innerHTML = `${head}<div class="card empty">
-        <p>🗼 A Guerra das Torres tem sempre <b>3 times</b>: Time 1, Time 2 e Time 3.</p>
-        <p class="muted small">Este evento foi criado com outro formato${T.orig.size ? ' e já tem membros escalados' : ''}. Converta para montar os times.</p>
+        <p>🗼 Eventos de torre têm de <b>1 a ${TOWER_MAX_TEAMS} times</b> de até ${TOWER_TEAM_SIZE} membros.</p>
+        <p class="muted small">Este evento foi criado com outro formato${T.orig.size ? ' e já tem membros escalados' : ''}. Converta para montar os times (depois dá para mudar a quantidade).</p>
         <div class="row" style="justify-content:center;margin-top:12px">
-          <button class="btn primary big" id="btn-tower">Usar 3 times<small>Time 1 · Time 2 · Time 3</small></button>
+          <button class="btn primary big" id="btn-tower">Usar ${towerTarget(ev)} times<small>${teamNames({ ...ev, team_format: 'rito', team_count: towerTarget(ev) }).join(' · ')}</small></button>
         </div></div>`;
       $('#btn-tower').addEventListener('click', toTowerFormat);
       return;
@@ -3801,6 +3816,10 @@
       desc: 'Os mais fortes só na Exaltação 1 (Exaltação 2 e 3 vazias). Eminência, Renome e Orgulho completas, sempre os mais fortes nas salas mais altas.',
       rooms: { 'Exaltação': [1], 'Eminência': [1, 2, 3], 'Renome': [1, 2, 3], 'Orgulho': [1, 2, 3] },
     },
+    torre: {
+      label: 'Mais fortes com tanques',
+      desc: 'Escolhe os mais fortes pela Ressonância para preencher os times (até 10 por time), garante pelo menos 3 tanques (Druida, Cruzado ou Bárbaro) em cada time e equilibra as classes e a força entre os times.',
+    },
     equilibrado: {
       label: 'Equilibrado',
       desc: 'Distribui os confirmados entre os times, deixando a Ressonância dos times o mais parecida possível.',
@@ -3841,12 +3860,64 @@
     return groups;
   }
 
+  // Torres: os mais fortes, com pelo menos 3 tanques por time, classes e força equilibradas entre os times
+  function suggestTower() {
+    const names = teamNames(T.ev); const n = names.length; const size = teamSize(T.ev);
+    const pool = [...T.people].sort((a, b) => resOf(b) - resOf(a) || a.name.localeCompare(b.name, 'pt-BR'));
+    const isTank = (p) => TANK_CLASSES.has(p.build.char_class);
+    // 1) Os tanques mais fortes garantem as vagas de tanque (3 por time)
+    const tanks = pool.filter(isTank).slice(0, TOWER_MIN_TANKS * n);
+    const tankIds = new Set(tanks.map((p) => p.id));
+    // 2) As vagas restantes vão para os mais fortes (de qualquer classe, inclusive outros tanques)
+    const others = pool.filter((p) => !tankIds.has(p.id)).slice(0, Math.max(0, n * size - tanks.length));
+    const groups = balanceInto(n, tanks);
+    const sum = groups.map((g) => g.reduce((a, p) => a + resOf(p), 0));
+    const cls = (p) => p.build.char_class || '-';
+    const same = (r, p) => groups[r].filter((x) => cls(x) === cls(p)).length;
+    for (const p of others) {
+      let best = -1;
+      for (let r = 0; r < n; r++) {
+        if (groups[r].length >= size) continue;
+        // Menos gente da mesma classe primeiro; depois o time com menos membros; depois o mais fraco
+        if (best < 0 || same(r, p) < same(best, p)
+          || (same(r, p) === same(best, p) && (groups[r].length < groups[best].length
+            || (groups[r].length === groups[best].length && sum[r] < sum[best])))) best = r;
+      }
+      if (best < 0) break;
+      groups[best].push(p); sum[best] += resOf(p);
+    }
+    // 3) Ajuste fino: troca membros da MESMA classe entre o time mais forte e o mais fraco (mantém classes e tanques)
+    for (let it = 0; it < 500 && n > 1; it++) {
+      let hi = 0; let lo = 0;
+      for (let r = 1; r < n; r++) { if (sum[r] > sum[hi]) hi = r; if (sum[r] < sum[lo]) lo = r; }
+      const diff = sum[hi] - sum[lo];
+      if (diff <= 0) break;
+      let swap = null; let bestNew = diff;
+      for (const a of groups[hi]) {
+        for (const b of groups[lo]) {
+          if (cls(a) !== cls(b)) continue;
+          const d = resOf(a) - resOf(b);
+          if (d > 0 && Math.abs(diff - 2 * d) < bestNew) { bestNew = Math.abs(diff - 2 * d); swap = [a, b, d]; }
+        }
+      }
+      if (!swap) break;
+      const [a, b, d] = swap;
+      groups[hi][groups[hi].indexOf(a)] = b; groups[lo][groups[lo].indexOf(b)] = a;
+      sum[hi] -= d; sum[lo] += d;
+    }
+    const slots = new Map();
+    groups.forEach((g, r) => g.forEach((p) => slots.set(p.id, names[r])));
+    return { slots, left: pool.length - slots.size, noRes: pool.filter((p) => !Number.isFinite(p.build.resonance)).length,
+      tankShort: Math.max(0, TOWER_MIN_TANKS * n - tanks.length) };
+  }
+
   function suggestTeams(modeKey) {
+    if (modeKey === 'torre') return suggestTower();
     const pool = [...T.people].sort((a, b) => resOf(b) - resOf(a) || a.name.localeCompare(b.name, 'pt-BR'));
     let tiers;
     if (modeKey === 'equilibrado') {
       const names = teamNames(T.ev);
-      tiers = [names.slice(0, Math.max(1, Math.min(names.length, Math.ceil(pool.length / TEAM_SIZE))))];
+      tiers = [names.slice(0, Math.max(1, Math.min(names.length, Math.ceil(pool.length / teamSize(T.ev)))))];
     } else {
       const m = SUGGEST_MODES[modeKey].rooms;
       tiers = WAR_GROUPS.map((g) => m[g].map((n) => `${g} ${n}`));
@@ -3857,7 +3928,7 @@
       if (!rest.length) break;
       // Quem prefere partidas de 4 pontos pula as salas de Exaltação (vai de Eminência em diante)
       const exalt = rooms.some(isExaltRoom);
-      const chunk = rest.filter((p) => !(exalt && p.p4)).slice(0, rooms.length * TEAM_SIZE);
+      const chunk = rest.filter((p) => !(exalt && p.p4)).slice(0, rooms.length * teamSize(T.ev));
       if (!chunk.length) continue;
       const taken = new Set(chunk.map((p) => p.id));
       rest = rest.filter((p) => !taken.has(p.id));
@@ -3868,8 +3939,9 @@
 
   function openSuggestDialog() {
     const war = T.ev.team_format === 'guerra';
-    const modes = war ? ['exaltacao', '2x2', '1exaltacao'] : ['equilibrado'];
-    const capacity = (k) => (k === 'equilibrado' ? teamNames(T.ev).length : Object.values(SUGGEST_MODES[k].rooms).flat().length) * TEAM_SIZE;
+    const tower = isTower(T.ev);
+    const modes = war ? ['exaltacao', '2x2', '1exaltacao'] : tower ? ['torre', 'equilibrado'] : ['equilibrado'];
+    const capacity = (k) => (k === 'equilibrado' || k === 'torre' ? teamNames(T.ev).length : Object.values(SUGGEST_MODES[k].rooms).flat().length) * teamSize(T.ev);
     openDialog(`
       <form id="sg-form" class="stack">
         <h2>✨ Sugerir times</h2>
@@ -3891,13 +3963,13 @@
       $('#sg-form', d).addEventListener('submit', (e) => {
         e.preventDefault();
         const mode = d.querySelector('input[name="mode"]:checked').value;
-        const { slots, left, noRes } = suggestTeams(mode);
+        const { slots, left, noRes, tankShort } = suggestTeams(mode);
         T.slots = slots;
         T.sel = null;
         dlg.close();
         renderTeams();
         const rooms = new Set(slots.values()).size;
-        toast(`${SUGGEST_MODES[mode].label}: ${slots.size} membros em ${rooms} salas${left ? ` · ${left} sem vaga` : ''}${noRes ? ` · ${noRes} sem Ressonância informada` : ''}. Revise e salve.`);
+        toast(`${SUGGEST_MODES[mode].label}: ${slots.size} membros em ${rooms} ${tower ? (rooms === 1 ? 'time' : 'times') : 'salas'}${left ? ` · ${left} sem vaga` : ''}${noRes ? ` · ${noRes} sem Ressonância informada` : ''}${tankShort ? ` · ⚠ faltaram ${tankShort} tanques para ter ${TOWER_MIN_TANKS} em cada time` : ''}. Revise e salve.`, !!tankShort);
       });
     });
   }
@@ -3951,7 +4023,8 @@
   async function assign(uid, team) {
     if (T.slots.get(uid) === team) { T.sel = null; renderTeams(); return; }
     const count = [...T.slots.values()].filter((t) => t === team).length;
-    if (count >= TEAM_SIZE) { toast(`${team} já está completo (8/8)`, true); return; }
+    const size = teamSize(T.ev);
+    if (count >= size) { toast(`${team} já está completo (${size}/${size})`, true); return; }
     const who = T.people.find((p) => p.id === uid);
     if (who?.p4 && isExaltRoom(team) && !isExaltRoom(T.slots.get(uid))
       && !(await confirmDialog(`🚩 ${who.name} optou por jogar partidas de 4 pontos. Você está colocando essa pessoa na ${team}. Continuar mesmo assim?`, 'Colocar mesmo assim'))) {
@@ -4032,6 +4105,7 @@
   function bindTeamControls() {
     main.querySelectorAll('[data-format]').forEach((b) => b.addEventListener('click', () => changeFormat(b.dataset.format)));
     $('#rite-count')?.addEventListener('change', (e) => changeFormat('rito', Number(e.target.value)));
+    $('#tower-count')?.addEventListener('change', (e) => changeFormat('rito', Number(e.target.value)));
     $('#pool-sort')?.addEventListener('change', (e) => { T.sort = e.target.value; renderTeams(); });
     $('#pool-class')?.addEventListener('change', (e) => { T.cls = e.target.value; renderTeams(); });
     $('#btn-copy-teams')?.addEventListener('click', () => copy(teamsText(T.ev, T.people, T.slots), 'Times copiados — é só colar no WhatsApp'));
@@ -8326,7 +8400,10 @@
             <select id="f-weeks">${[1, 2, 3, 4, 6, 8, 12].map((n) => `<option value="${n}">${n === 1 ? 'Só esta vez' : `${n} semanas`}</option>`).join('')}</select></div>`}
         </div>
         ${editing ? '' : `<div class="field"><label for="f-format">Formato dos times <span class="muted small">(pode escolher depois)</span></label>
-          <select id="f-format"><option value="">Sem times</option><option value="guerra">Guerra (12 times)</option><option value="rito">Outros (até 10 times)</option></select></div>`}
+          <select id="f-format"><option value="">Sem times</option><option value="guerra">Guerra (12 times)</option><option value="rito">Outros (até 10 times)</option></select></div>
+        <div class="field" id="f-tower-field" hidden><label for="f-tcount">Quantidade de times <span class="muted small">(até ${TOWER_TEAM_SIZE} membros por time)</span></label>
+          <select id="f-tcount">${Array.from({ length: TOWER_MAX_TEAMS }, (_, i) => i + 1).map((n) => `<option value="${n}" ${n === TOWER_DEFAULT_TEAMS ? 'selected' : ''}>${n} ${n === 1 ? 'time' : 'times'}</option>`).join('')}</select>
+          <div class="muted small field-hint">🗼 Torres: escolha de 1 a ${TOWER_MAX_TEAMS} times. Dá para mudar depois na montagem dos times.</div></div>`}
         <div class="field">
           <label for="f-close">Prazo para responder</label>
           <select id="f-close">
@@ -8352,14 +8429,14 @@
         const t = norm(`${typeSel.selectedOptions[0]?.value ? typeSel.selectedOptions[0].textContent : ''} ${titleInput.value}`);
         fmt.value = t.includes('torre') ? 'rito' : t.includes('guerra') ? 'guerra' : t.includes('rito') ? 'rito' : '';
       };
-      // Guerra das Torres: só 3 times (o formato Guerra fica bloqueado)
+      // Torres: em vez do formato, escolhe de 1 a 4 times
       const towerForm = () => norm(`${typeSel.selectedOptions[0]?.value ? typeSel.selectedOptions[0].textContent : ''} ${titleInput.value}`).includes('torre');
       const syncTower = () => {
         if (!fmt) return;
         const tw = towerForm();
-        fmt.querySelector('option[value="guerra"]').disabled = tw;
-        fmt.querySelector('option[value="rito"]').textContent = tw ? 'Torres (3 times: Time 1, Time 2 e Time 3)' : 'Outros (até 10 times)';
-        if (tw && fmt.value === 'guerra') fmt.value = 'rito';
+        fmt.closest('.field').hidden = tw;
+        $('#f-tower-field', d).hidden = !tw;
+        if (tw) fmt.value = 'rito';
       };
       // Sugere o tipo pelo nome digitado, até o oficial escolher um manualmente
       titleInput.addEventListener('input', () => {
@@ -8418,11 +8495,12 @@
             toast('Evento atualizado');
           } else {
             const weeks = Number($('#f-weeks', d).value);
-            const team_format = fmt.value || null;
-            const tower = towerForm() && team_format === 'rito';
+            const tower = towerForm();
+            const team_format = tower ? 'rito' : fmt.value || null;
+            const towerTeams = Number($('#f-tcount', d)?.value) || TOWER_DEFAULT_TEAMS;
             const rows = Array.from({ length: weeks }, (_, i) => {
               const s = new Date(startDate); s.setDate(s.getDate() + 7 * i);
-              return { title, description, type_id, rsvp_close_minutes, starts_at: s.toISOString(), team_format, team_count: tower ? TOWER_TEAMS.length : RITE_MAX };
+              return { title, description, type_id, rsvp_close_minutes, starts_at: s.toISOString(), team_format, team_count: tower ? towerTeams : RITE_MAX };
             });
             await api.createEvents(rows);
             toast(weeks > 1 ? `${weeks} eventos criados` : 'Evento criado');
