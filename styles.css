@@ -1650,3 +1650,144 @@ fieldset.invalid { border-color: #ef4444; }
   .scroll-hint { display: block; margin: 4px 0 2px; }
   .sg-mode input[type="radio"] { width: 20px; height: 20px; }
 }
+
+/* =====================================================================
+   Clãs rivais (redesenho): linha de frente, faixas e dossiê.
+   Brasa = nosso clã melhor; aço frio = rival melhor.
+   ===================================================================== */
+:root { --steel: #7fa3c8; --steel-dim: rgba(127, 163, 200, .16); --ember-dim: rgba(255, 122, 47, .16); }
+.rv-sec { margin: 28px 0 0; }
+.rv-sec-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+.rv-sec-head h3 { margin: 0; font-family: "Cinzel", serif; font-size: 1.15rem; color: var(--gold); }
+.rv-lede { margin: 0 0 12px; color: var(--muted); font-size: .9rem; max-width: 70ch; }
+.rv-sec > .muted.small { margin: 8px 0 0; }
+
+/* Média / Mediana / Top 10 */
+.rv-seg { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; padding: 3px; background: var(--panel); }
+.rv-seg button { font: inherit; font-size: .84rem; color: var(--muted); background: none; border: 0; border-radius: 999px; padding: 5px 12px; cursor: pointer; }
+.rv-seg button:hover { color: var(--text); }
+.rv-seg button[aria-pressed="true"] { background: var(--panel-2); color: var(--gold); box-shadow: inset 0 0 0 1px rgba(220, 170, 82, .45); }
+.rv-seg button:focus-visible, .fr-name-btn:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+
+.fr-key { display: inline-flex; align-items: center; gap: 6px; margin-left: 12px; color: var(--text); font-size: .82rem; white-space: nowrap; }
+.fr-key::before { content: ""; width: 18px; height: 6px; border-radius: 3px; }
+.fr-key-us::before { background: var(--ember); }
+.fr-key-them::before { background: var(--steel); }
+
+/* Linha de frente */
+.fr-scroll { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); }
+.fr-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.fr-table thead th { text-align: center; color: var(--muted); font-weight: 600; font-size: .78rem; padding: 10px 8px 8px; border-bottom: 1px solid var(--border); line-height: 1.2; vertical-align: bottom; }
+.fr-table thead th.fr-clan { text-align: left; padding-left: 14px; }
+.fr-table td, .fr-table tbody th { padding: 9px 8px; border-bottom: 1px solid rgba(255, 255, 255, .045); vertical-align: middle; }
+.fr-table tbody tr:last-child > * { border-bottom: 0; }
+.fr-clan { text-align: left; min-width: 140px; padding-left: 14px !important; font-weight: 400; }
+.fr-name, .fr-name-btn { display: block; font-weight: 600; font-size: .95rem; color: var(--text); }
+.fr-name-btn { font: inherit; font-weight: 600; background: none; border: 0; padding: 0; text-align: left; cursor: pointer; color: var(--text); text-decoration: underline; text-decoration-color: rgba(220, 170, 82, .35); text-underline-offset: 3px; }
+.fr-name-btn:hover { color: var(--gold); text-decoration-color: var(--gold); }
+.fr-name-btn small { color: var(--muted); font-weight: 400; }
+.fr-sub { display: block; color: var(--muted); font-size: .74rem; margin-top: 1px; }
+.fr-n { text-align: center; color: var(--muted); font-size: .85rem; }
+.fr-ours > * { background: linear-gradient(180deg, rgba(255, 122, 47, .09), rgba(255, 122, 47, .04)); }
+.fr-ours .fr-name { color: var(--ember); }
+.fr-sel > * { background: rgba(220, 170, 82, .06); }
+.fr-sel .fr-clan { box-shadow: inset 3px 0 0 var(--gold); }
+
+.fr-cell { min-width: 84px; text-align: center; }
+.fr-num { display: block; font-weight: 600; font-size: .95rem; }
+.fr-ref { display: block; color: var(--muted); font-size: .72rem; margin-top: 3px; }
+.fr-bar { position: relative; display: block; height: 6px; margin: 5px 4px 3px; border-radius: 3px; background: rgba(255, 255, 255, .05); }
+.fr-bar::after { content: ""; position: absolute; left: 50%; top: -3px; bottom: -3px; width: 1px; background: rgba(240, 226, 210, .35); }
+.fr-bar i { position: absolute; top: 0; bottom: 0; border-radius: 3px; }
+.fr-cell.fr-us .fr-bar i { right: 50%; background: var(--ember); }
+.fr-cell.fr-them .fr-bar i { left: 50%; background: var(--steel); }
+.fr-pct { display: block; font-size: .74rem; color: var(--muted); }
+.fr-cell.fr-us .fr-pct { color: var(--ember); }
+.fr-cell.fr-them .fr-pct { color: var(--steel); }
+.fr-cell.fr-them .fr-num { color: #cfe0f1; }
+.fr-lead { text-align: center; white-space: nowrap; min-width: 84px; }
+.fr-pips { display: inline-flex; gap: 3px; vertical-align: middle; }
+.fr-pips i { width: 9px; height: 9px; transform: rotate(45deg); border: 1px solid rgba(255, 122, 47, .5); }
+.fr-pips i.on { background: var(--ember); border-color: var(--ember); }
+.fr-lead-n { display: block; font-size: .74rem; color: var(--muted); margin-top: 4px; }
+
+/* O único momento animado: as barras saem da linha central ao abrir a página */
+.fr-anim .fr-bar i { animation: fr-grow .7s cubic-bezier(.2, .7, .2, 1) both; animation-delay: calc(var(--d, 0) * 1ms + 120ms); }
+.fr-anim tbody tr:nth-child(2) { --d: 0; } .fr-anim tbody tr:nth-child(3) { --d: 70; } .fr-anim tbody tr:nth-child(4) { --d: 140; }
+.fr-anim tbody tr:nth-child(5) { --d: 210; } .fr-anim tbody tr:nth-child(n+6) { --d: 280; }
+@keyframes fr-grow { from { width: 0; } }
+@media (prefers-reduced-motion: reduce) { .fr-anim .fr-bar i { animation: none; } }
+
+/* Ressonância por faixa */
+.bd-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.bd-table thead th { color: var(--muted); font-weight: 600; font-size: .78rem; padding: 10px 10px 8px; border-bottom: 1px solid var(--border); text-align: center; white-space: nowrap; }
+.bd-table td, .bd-table tbody th { padding: 9px 10px; border-bottom: 1px solid rgba(255, 255, 255, .045); text-align: center; }
+.bd-table tbody tr:last-child > * { border-bottom: 0; }
+.bd-table td { font-weight: 600; font-size: .95rem; }
+.bd-table .bd-clan { text-align: left; padding-left: 14px; font-weight: 600; font-size: .9rem; white-space: nowrap; }
+.bd-table .bd-zero { color: rgba(169, 147, 131, .45); font-weight: 400; }
+.bd-table .bd-tot { color: var(--muted); font-weight: 400; border-left: 1px solid var(--border); }
+.bd-table thead .bd-tot { border-left: 1px solid var(--border); }
+.bd-us > * { background: linear-gradient(180deg, rgba(255, 122, 47, .09), rgba(255, 122, 47, .04)); }
+.bd-us .bd-clan { color: var(--ember); }
+.bd-sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+.bd-0 { background: #4b3b33; color: #e6d6c6; }
+.bd-1 { background: #7c3420; color: #fbe6d6; }
+.bd-2 { background: #a03a1c; color: #fff1e6; }
+.bd-3 { background: #d9561f; color: #1a0c06; }
+.bd-4 { background: #f08a36; color: #1a0c06; }
+.bd-5 { background: #f2c66e; color: #1a0c06; }
+
+/* Dossiê do clã */
+.ds-pick { margin-bottom: 12px; }
+.ds { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 18px 14px; position: relative; overflow: hidden; }
+.ds::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 3px; background: linear-gradient(90deg, var(--steel), transparent 70%); }
+.ds-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; flex-wrap: wrap; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
+.ds-name { margin: 0; font-family: "Cinzel", serif; font-weight: 900; font-size: clamp(1.5rem, 3.4vw, 2.2rem); line-height: 1.05; color: var(--text); letter-spacing: .01em; }
+.ds-meta { margin: 6px 0 0; color: var(--muted); font-size: .88rem; }
+.ds-verdict { display: flex; align-items: center; gap: 10px; font-size: .88rem; color: var(--muted); }
+.ds-verdict b { color: var(--text); }
+.ds-verdict .fr-pips i { width: 11px; height: 11px; }
+.ds-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 26px; padding-top: 16px; }
+.ds-side { border-top: 1px solid var(--border); padding-top: 16px; }
+.ds-grid h3 { margin: 0 0 10px; font-family: "Inter", sans-serif; font-size: .95rem; font-weight: 600; letter-spacing: 0; color: var(--text); }
+.ds-top-head { display: grid; gap: 8px; margin-bottom: 12px; }
+.ds-top-head h3 { margin: 0; }
+.ds-side .muted.small { margin: 8px 0 0; }
+.ds-more { margin-top: 12px; }
+.ds-more summary { cursor: pointer; color: var(--gold); font-size: .88rem; }
+.ds-all { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 16px; }
+
+/* Top 10 com a média do Top 10 do INFERNUM marcada */
+.t10 { list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; }
+.t10 li { display: grid; grid-template-columns: 20px minmax(80px, 30%) 1fr auto; align-items: center; gap: 10px; font-size: .88rem; }
+.t10-rank { color: var(--muted); font-size: .76rem; text-align: right; font-variant-numeric: tabular-nums; }
+.t10-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.t10-track { position: relative; height: 10px; border-radius: 5px; background: rgba(255, 255, 255, .05); }
+.t10-track i { position: absolute; inset: 0 auto 0 0; border-radius: 5px; background: rgba(255, 122, 47, .55); }
+.t10-over .t10-track i { background: var(--steel); }
+.t10-over .t10-name { color: #cfe0f1; font-weight: 600; }
+.t10-mark { position: absolute; top: -5px; bottom: -5px; width: 2px; margin-left: -1px; background: var(--gold); border-radius: 1px; }
+.t10-val { font-variant-numeric: tabular-nums; font-size: .85rem; min-width: 46px; text-align: right; }
+.t10-key { margin: 12px 0 0; color: var(--muted); font-size: .84rem; }
+.t10-key b { color: var(--text); }
+.t10-key-mark { display: inline-block; vertical-align: -2px; margin-right: 6px; width: 2px; height: 14px; background: var(--gold); border-radius: 1px; }
+
+#rv-dossier { scroll-margin-top: 90px; }
+.rv-sec #rv-q { width: 100%; }
+
+@media (max-width: 760px) {
+  .ds-grid { grid-template-columns: minmax(0, 1fr); }
+  .ds { padding: 14px 12px 12px; }
+  .fr-clan { position: sticky; left: 0; z-index: 1; background: var(--panel); min-width: 128px; box-shadow: 1px 0 0 var(--border); }
+  .fr-ours .fr-clan { background: #2a1610; }
+  .fr-sel .fr-clan { background: #241a12; }
+  .fr-cell { min-width: 96px; }
+  .fr-key { margin-left: 0; margin-right: 12px; }
+  .rv-sec-head .rv-seg { width: 100%; }
+  .rv-seg button { flex: 1; }
+}
+@media (max-width: 760px) {
+  .bd-table .bd-clan { position: sticky; left: 0; z-index: 1; background: var(--panel); box-shadow: 1px 0 0 var(--border); }
+  .bd-us .bd-clan { background: #2a1610; }
+}

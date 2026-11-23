@@ -8394,97 +8394,135 @@
     const fmt0 = (v) => (v == null ? '—' : fmtNum(Math.round(v)));
     const dmyS = (ymd) => ymd.split('-').reverse().join('/');
 
-    // ----- Comparativo -----
+    // ----- Linha de frente: cada rival contra o ${esc(OUR)}, atributo por atributo -----
     const ourStat = Object.fromEntries(ATTRS.map((a) => [a.key, statOf(us.players, a.key, statK)]));
-    const best = Object.fromEntries(ATTRS.map((a) => [a.key, Math.max(...rowsAll.map((r) => statOf(r.players, a.key, statK) || 0))]));
-    const cmpTable = `<div class="table-scroll"><table class="mini-table rv-cmp"><thead><tr><th>Clã</th><th>Jog.</th>${ATTRS.map((a) => `<th title="${esc(a.label)}">${a.short}</th>`).join('')}<th>Leitura</th></tr></thead><tbody>
-      ${rowsAll.map((r) => `<tr class="${r.us ? 'rv-us' : ''}"><td>${r.us ? `<b>⚔️ ${esc(OUR)}</b>` : `<a href="#" data-rv-clan="${esc(r.key)}">${esc(r.name)}</a>${clans.filter((x) => norm(x.name) === norm(r.name)).length > 1 && r.number ? ` <small class="muted">nº ${r.number}</small>` : ''}`}</td><td>${r.players.length}</td>
-        ${ATTRS.map((a) => {
-          const v = statOf(r.players, a.key, statK);
-          const d = !r.us && v != null && ourStat[a.key] ? (v - ourStat[a.key]) / ourStat[a.key] : null;
-          return `<td class="${v != null && Math.round(v) === Math.round(best[a.key]) ? 'rv-best' : ''}">${fmt0(v)}${d != null && Math.abs(d) >= 0.005
-            ? `<div class="rv-delta ${d > 0 ? 'c-no' : 'c-yes'}">${d > 0 ? '▲' : '▼'} ${Math.abs(Math.round(d * 100))}%</div>` : ''}</td>`;
+    const FR_SPAN = 0.5; // diferença de 50% enche meia barra
+    const dupName = (c) => clans.filter((x) => norm(x.name) === norm(c.name)).length > 1 && c.number;
+    const frCell = (a, v) => {
+      const ours = ourStat[a.key];
+      if (v == null) return '<td class="fr-cell fr-none"><span class="fr-num">—</span></td>';
+      const d = ours ? (v - ours) / ours : null;
+      const side = d == null || Math.abs(d) < 0.005 ? 'even' : d > 0 ? 'them' : 'us';
+      const w = d == null ? 0 : Math.min(Math.abs(d) / FR_SPAN, 1) * 50;
+      const pct = d == null ? '' : side === 'even' ? 'igual' : `${d > 0 ? '+' : '−'}${Math.abs(Math.round(d * 100))}%`;
+      const tip = d == null ? `${a.label}: ${fmt0(v)}` : side === 'even' ? `${a.label}: ${fmt0(v)}, igual ao ${esc(OUR)}` : `${a.label}: ${fmt0(v)}, ${Math.abs(Math.round(d * 100))}% ${d > 0 ? 'acima' : 'abaixo'} do ${esc(OUR)} (${fmt0(ours)})`;
+      return `<td class="fr-cell fr-${side}" title="${esc(tip)}"><span class="fr-num">${fmt0(v)}</span><span class="fr-bar" aria-hidden="true"><i style="width:${w}%"></i></span><span class="fr-pct">${pct}</span></td>`;
+    };
+    const leadOf = (r) => ATTRS.filter((a) => { const v = statOf(r.players, a.key, statK); const o = ourStat[a.key]; return v != null && o && (v - o) / o <= -0.005; }).length;
+    const pips = (n) => `<span class="fr-pips" aria-hidden="true">${ATTRS.map((_, i) => `<i class="${i < n ? 'on' : ''}"></i>`).join('')}</span>`;
+    const frontTable = `<div class="table-scroll fr-scroll"><table class="fr-table${keepScroll ? '' : ' fr-anim'}">
+      <thead><tr><th class="fr-clan" scope="col">Clã</th><th scope="col" class="fr-n">Jog.</th>${ATTRS.map((a) => `<th scope="col" title="${esc(a.label)}">${esc(a.label)}</th>`).join('')}<th scope="col" class="fr-lead" title="Em quantos dos 5 atributos o ${esc(OUR)} está à frente">Nossa vantagem</th></tr></thead>
+      <tbody>
+        <tr class="fr-ours"><th scope="row" class="fr-clan"><span class="fr-name">⚔️ ${esc(OUR)}</span><span class="fr-sub">perfis dos membros</span></th><td class="fr-n">${us.players.length}</td>
+          ${ATTRS.map((a) => `<td class="fr-cell"><span class="fr-num">${fmt0(ourStat[a.key])}</span><span class="fr-ref">referência</span></td>`).join('')}<td class="fr-lead"></td></tr>
+        ${clans.map((c) => {
+          const n = leadOf(c);
+          return `<tr class="${c.key === RIV.clan ? 'fr-sel' : ''}"><th scope="row" class="fr-clan"><button type="button" class="fr-name-btn" data-rv-clan="${esc(c.key)}" title="Abrir o dossiê de ${esc(c.name)}">${esc(c.name)}${dupName(c) ? ` <small>nº ${c.number}</small>` : ''}</button><span class="fr-sub">leitura de ${dmyS(c.last.scanned_on)}</span></th><td class="fr-n">${c.players.length}</td>
+            ${ATTRS.map((a) => frCell(a, statOf(c.players, a.key, statK))).join('')}
+            <td class="fr-lead" title="O ${esc(OUR)} está à frente em ${n} de ${ATTRS.length} atributos">${pips(n)}<span class="fr-lead-n">${n} de ${ATTRS.length}</span></td></tr>`;
         }).join('')}
-        <td class="muted small">${r.us ? 'perfis' : dmyS(r.last.scanned_on)}</td></tr>`).join('')}
-      </tbody></table></div>
-      <div class="muted small">▲ o rival está acima do ${esc(OUR)} · ▼ está abaixo · em dourado, o melhor de cada atributo. Do ${esc(OUR)} contam os membros ativos com o atributo preenchido no perfil.</div>`;
+      </tbody></table></div>`;
 
-    // ----- Ressonância por faixa -----
-    const bandTable = `<div class="table-scroll"><table class="mini-table"><thead><tr><th>Clã</th>${RIV_BANDS.map((b) => `<th>${b[2]}</th>`).join('')}</tr></thead><tbody>
-      ${rowsAll.map((r) => {
+    // ----- Ressonância por faixa: quantos jogadores de cada clã em cada faixa -----
+    const bandTable = `<div class="table-scroll fr-scroll"><table class="bd-table">
+      <thead><tr><th scope="col" class="bd-clan">Clã</th>${RIV_BANDS.map(([, , label], i) => `<th scope="col"><i class="bd-sw bd-${i}" aria-hidden="true"></i>${esc(label)}</th>`).join('')}<th scope="col" class="bd-tot">Total</th></tr></thead>
+      <tbody>${rowsAll.map((r) => {
         const v = r.players.map((x) => Number(x.resonance)).filter((n) => n > 0);
-        return `<tr class="${r.us ? 'rv-us' : ''}"><td>${r.us ? `<b>⚔️ ${esc(OUR)}</b>` : esc(r.name)}</td>${RIV_BANDS.map(([lo, hi]) => {
+        return `<tr class="${r.us ? 'bd-us' : ''}"><th scope="row" class="bd-clan">${r.us ? `⚔️ ${esc(OUR)}` : esc(r.name)}</th>${RIV_BANDS.map(([lo, hi, label]) => {
           const n = v.filter((x) => x >= lo && x < hi).length;
-          return `<td title="${n} jogador${n === 1 ? '' : 'es'}">${v.length ? `${Math.round((100 * n) / v.length)}%` : '—'}<span class="muted small"> (${n})</span></td>`;
-        }).join('')}</tr>`;
+          return `<td class="${n ? '' : 'bd-zero'}" title="${esc(`${label}: ${n} jogador${n === 1 ? '' : 'es'}${v.length ? ` (${Math.round((100 * n) / v.length)}% do clã)` : ''}`)}">${n}</td>`;
+        }).join('')}<td class="bd-tot">${v.length}</td></tr>`;
       }).join('')}</tbody></table></div>`;
 
-    // ----- Clã em detalhe -----
+    // ----- Dossiê do clã -----
     const sel = clans.find((c) => c.key === RIV.clan) || clans[0];
     RIV.clan = sel.key;
     const attr = ATTRS.find((a) => a.key === RIV.attr) || ATTRS.find((a) => a.key === 'resonance');
     const sorted = sel.players.slice().sort((a, b) => (Number(b[attr.key]) || 0) - (Number(a[attr.key]) || 0));
     const top = sorted.filter((x) => Number(x[attr.key]) > 0).slice(0, 10);
     const ourTop = statOf(us.players, attr.key, 'top10');
+    const topMax = Math.max(ourTop || 0, ...top.map((x) => Number(x[attr.key]))) * 1.04 || 1;
+    const markAt = ourTop ? (100 * ourTop) / topMax : null;
+    const over = top.filter((x) => ourTop && Number(x[attr.key]) > ourTop).length;
+    const topChart = top.length ? `<ol class="t10">${top.map((x, i) => {
+      const v = Number(x[attr.key]);
+      return `<li class="${ourTop && v > ourTop ? 't10-over' : ''}" title="${esc(`${x.name}: ${fmtNum(v)}${x.note ? ` (${x.note})` : ''}`)}"><span class="t10-rank">${i + 1}</span><span class="t10-name">${esc(x.name)}</span>
+        <span class="t10-track"><i style="width:${(100 * v) / topMax}%"></i>${markAt != null ? `<b class="t10-mark" style="left:${markAt}%"></b>` : ''}</span><span class="t10-val">${fmtNum(v)}</span></li>`;
+    }).join('')}</ol>
+      <p class="t10-key">${markAt != null ? `<span class="t10-key-mark"></span> Média do Top 10 do ${esc(OUR)}: <b>${fmt0(ourTop)}</b>. ${over ? `${over} jogador${over > 1 ? 'es' : ''} de ${esc(sel.name)} ${over > 1 ? 'passam' : 'passa'} dela.` : `Nenhum jogador de ${esc(sel.name)} passa dela.`}` : `O ${esc(OUR)} ainda não tem esse atributo nos perfis.`}</p>`
+      : '<p class="muted small">Sem valores nesta leitura.</p>';
     const history = sel.scans.slice().reverse().map((sc, i, arr) => {
       const pl = playersBy[sc.id] || [];
       const prevPl = arr[i + 1] ? playersBy[arr[i + 1].id] || [] : null;
-      return `<tr><td>${dmyS(sc.scanned_on)}</td><td class="small">${esc(sc.imported_by || 'INFERNUM')}${sc.imported_by_name ? `<div class="muted">${esc(sc.imported_by_name)}</div>` : ''}</td><td>${pl.length}</td>${ATTRS.map((a) => {
+      return `<tr><td>${dmyS(sc.scanned_on)}</td><td class="small">${esc(sc.imported_by || OUR)}${sc.imported_by_name ? `<div class="muted">${esc(sc.imported_by_name)}</div>` : ''}</td><td>${pl.length}</td>${ATTRS.map((a) => {
         const v = statOf(pl, a.key, 'avg'); const pv = prevPl ? statOf(prevPl, a.key, 'avg') : null;
         const d = v != null && pv ? (v - pv) / pv : null;
         return `<td>${fmt0(v)}${d != null && Math.abs(d) >= 0.005 ? `<div class="rv-delta ${d > 0 ? 'c-no' : 'c-yes'}">${d > 0 ? '▲' : '▼'} ${Math.abs(Math.round(d * 100))}%</div>` : ''}</td>`;
-      }).join('')}<td>${can('rivals_import') ? `<button class="btn small ghost" data-rv-del="${sc.id}" title="Apagar esta leitura">🗑</button>` : ''}</td></tr>`;
+      }).join('')}<td>${can('rivals_import') ? `<button class="btn small ghost" data-rv-del="${sc.id}" title="Apagar esta leitura" aria-label="Apagar a leitura de ${dmyS(sc.scanned_on)}">🗑</button>` : ''}</td></tr>`;
     }).join('');
     const whenTxt = (iso) => new Date(iso).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' });
     const clanLog = (data.log || []).filter((l) => sel.ids.has(l.scan_id) || sel.names.has(norm(l.clan_name))).slice(0, 20);
     const logHtml = clanLog.length ? `<ul class="plain-list small rv-log">${clanLog.map((l) => `<li>${l.action === 'delete' ? '🗑' : '📥'} <b>${esc(l.actor_name || 'Desconhecido')}</b> <span class="muted">(${esc(l.actor_clan)})</span>
-      ${l.action === 'delete' ? '<span class="c-no">apagou</span>' : 'importou'} a leitura de ${l.scanned_on ? dmyS(l.scanned_on) : '—'}${l.players != null ? ` (${l.players} jogadores)` : ''}
-      <span class="muted">· ${whenTxt(l.created_at)}</span></li>`).join('')}</ul>`
+      ${l.action === 'delete' ? '<span class="c-no">apagou</span>' : 'importou'} a leitura de ${l.scanned_on ? dmyS(l.scanned_on) : '—'}${l.players != null ? ` (${l.players} jogadores)` : ''},
+      <span class="muted">em ${whenTxt(l.created_at)}</span></li>`).join('')}</ul>`
       : '<div class="muted small">Nenhum registro ainda.</div>';
+    const selLead = leadOf(sel);
     const detail = `
-      ${clans.length >= 8 ? `<input type="search" id="rv-clan-q" class="rv-clan-q" placeholder="Buscar clã (${clans.length} mapeados)…" value="${esc(RIV.clanQ || '')}" autocomplete="off">` : ''}
-      <div class="evo-tabs" role="tablist" id="rv-clan-tabs">${clans.slice().sort((a, b) => a.name.localeCompare(b.name, 'pt-BR')).map((c) => `<button type="button" class="evo-tab" role="tab" data-rv-clan="${esc(c.key)}" data-rv-names="${esc([...c.names].join(' '))}" aria-selected="${c.key === sel.key}">${esc(c.name)}${clans.filter((x) => norm(x.name) === norm(c.name)).length > 1 && c.number ? ` <small>· nº ${c.number}</small>` : ''}</button>`).join('')}</div>
-      <div class="kpi-grid">
-        ${kpi('👥', 'Jogadores', sel.players.length, `Nº ${sel.number ?? '—'}`)}
-        ${kpi('💠', 'Ressonância média', fmt0(statOf(sel.players, 'resonance', 'avg')), `${OUR}: ${fmt0(statOf(us.players, 'resonance', 'avg'))}`)}
-        ${kpi('🏅', 'Ressonância Top 10', fmt0(statOf(sel.players, 'resonance', 'top10')), `${OUR}: ${fmt0(statOf(us.players, 'resonance', 'top10'))}`)}
-        ${kpi('📅', 'Última leitura', dmyS(sel.last.scanned_on), `${sel.scans.length} leitura${sel.scans.length > 1 ? 's' : ''}`)}
+      <div class="ds-pick">
+        ${clans.length >= 8 ? `<input type="search" id="rv-clan-q" class="rv-clan-q" placeholder="Buscar clã entre os ${clans.length} mapeados" aria-label="Buscar clã" value="${esc(RIV.clanQ || '')}" autocomplete="off">` : ''}
+        <div class="evo-tabs" role="tablist" id="rv-clan-tabs" aria-label="Clã do dossiê">${clans.slice().sort((a, b) => a.name.localeCompare(b.name, 'pt-BR')).map((c) => `<button type="button" class="evo-tab" role="tab" data-rv-clan="${esc(c.key)}" data-rv-names="${esc([...c.names].join(' '))}" aria-selected="${c.key === sel.key}">${esc(c.name)}${dupName(c) ? ` <small>nº ${c.number}</small>` : ''}</button>`).join('')}</div>
       </div>
-      <div class="chart-grid">
-        <div class="card chart wide"><h4>🏆 Top 10 · ${esc(sel.name)}</h4>
-          <div class="evo-tabs" role="tablist">${ATTRS.slice().sort((a, b) => (a.key === 'resonance' ? -1 : b.key === 'resonance' ? 1 : 0))
-            .map((a) => `<button type="button" class="evo-tab" role="tab" data-rv-attr="${a.key}" aria-selected="${a.key === attr.key}">${esc(a.label)}</button>`).join('')}</div>
-          ${top.length ? hbars(top.map((x) => ({ label: x.name, value: Number(x[attr.key]), title: `${x.name}: ${fmtNum(Number(x[attr.key]))}${x.note ? ` · ${x.note}` : ''}` })), { fmt: fmtNum }) : '<div class="muted small">Sem valores.</div>'}
-          <div class="muted small">Média do Top 10: <b>${fmt0(statOf(sel.players, attr.key, 'top10'))}</b> · ${esc(OUR)}: <b>${fmt0(ourTop)}</b></div></div>
-        <div class="card chart wide"><h4>📅 Leituras</h4>
-          <div class="table-scroll"><table class="mini-table"><thead><tr><th>Data</th><th title="Clã que importou a leitura">Por</th><th>Jog.</th>${ATTRS.map((a) => `<th title="Média de ${esc(a.label)}">${a.short}</th>`).join('')}<th></th></tr></thead><tbody>${history}</tbody></table></div>
-          <div class="muted small">Médias de cada leitura · as setas comparam com a leitura anterior · “Por” é o clã e quem importou (as leituras são compartilhadas com o INFERNUM).</div></div>
-        <div class="card chart wide"><h4>📝 Registro · ${esc(sel.name)}</h4>${logHtml}</div>
-        <div class="card chart wide"><details><summary><b>Ver os ${sel.players.length} jogadores</b> <span class="muted small">· ordenados por ${esc(attr.label)}</span></summary>
+      <article class="ds">
+        <header class="ds-head">
+          <div class="ds-id">
+            <h2 class="ds-name">${esc(sel.name)}</h2>
+            <p class="ds-meta">${sel.number != null ? `Clã nº ${sel.number}. ` : ''}${sel.players.length} jogadores na leitura de ${dmyS(sel.last.scanned_on)}${sel.scans.length > 1 ? `, de ${sel.scans.length} leituras` : ''}.</p>
+          </div>
+          <div class="ds-verdict" title="Comparando pela ${esc(RIV_STATS[statK].toLowerCase())}">${pips(selLead)}<span>${esc(OUR)} à frente em <b>${selLead} de ${ATTRS.length}</b> atributos</span></div>
+        </header>
+        <div class="ds-grid">
+          <div class="ds-top">
+            <div class="ds-top-head"><h3>Top 10 em ${esc(attr.label)}</h3>
+              <div class="evo-tabs" role="tablist" aria-label="Atributo do Top 10">${ATTRS.slice().sort((a, b) => (a.key === 'resonance' ? -1 : b.key === 'resonance' ? 1 : 0))
+                .map((a) => `<button type="button" class="evo-tab" role="tab" data-rv-attr="${a.key}" aria-selected="${a.key === attr.key}">${esc(a.label)}</button>`).join('')}</div></div>
+            ${topChart}
+          </div>
+          <div class="ds-side">
+            <h3>Leituras</h3>
+            <div class="table-scroll"><table class="mini-table"><thead><tr><th>Data</th><th title="Clã que importou a leitura">Por</th><th>Jog.</th>${ATTRS.map((a) => `<th title="Média de ${esc(a.label)}">${a.short}</th>`).join('')}<th></th></tr></thead><tbody>${history}</tbody></table></div>
+            <p class="muted small">Médias de cada leitura. As setas comparam com a leitura anterior. As leituras são compartilhadas com o INFERNUM.</p>
+            <details class="ds-more"><summary>Quem importou ou apagou leituras</summary>${logHtml}</details>
+          </div>
+        </div>
+        <details class="ds-more ds-all"><summary>Ver os ${sel.players.length} jogadores, ordenados por ${esc(attr.label)}</summary>
           <div class="table-scroll"><table class="mini-table"><thead><tr><th>#</th><th>Jogador</th>${ATTRS.map((a) => `<th>${a.short}</th>`).join('')}</tr></thead><tbody>
           ${sorted.map((x, i) => `<tr><td class="muted">${i + 1}</td><td>${esc(x.name)}${x.note ? ` <span title="${esc(x.note)}">⚠️</span>` : ''}</td>${ATTRS.map((a) => `<td>${fmt0(x[a.key])}</td>`).join('')}</tr>`).join('')}
-          </tbody></table></div></details></div>
-      </div>`;
+          </tbody></table></div></details>
+      </article>`;
 
     main.innerHTML = `${head}
-      <section class="stats-section">
-        <h3>🛡️ Comparativo <span class="muted small">· última leitura de cada clã</span>
-          <select id="rv-stat" aria-label="Como comparar">${Object.entries(RIV_STATS).map(([k, l]) => `<option value="${k}" ${k === statK ? 'selected' : ''}>${l}</option>`).join('')}</select></h3>
-        <div class="chart-grid">
-          <div class="card chart wide">${cmpTable}</div>
-          <div class="card chart wide"><h4>💠 Ressonância por faixa</h4>${bandTable}</div>
+      <section class="rv-sec rv-front">
+        <div class="rv-sec-head">
+          <h3>Linha de frente</h3>
+          <div class="rv-seg" role="group" aria-label="Como comparar">${Object.entries(RIV_STATS).map(([k, l]) => `<button type="button" data-rv-stat="${k}" aria-pressed="${k === statK}">${l}</button>`).join('')}</div>
         </div>
+        <p class="rv-lede">Cada rival contra o ${esc(OUR)}, pela última leitura. <span class="fr-key fr-key-us">${esc(OUR)} melhor</span> <span class="fr-key fr-key-them">rival melhor</span></p>
+        ${frontTable}
+        <p class="muted small">Do ${esc(OUR)} contam os membros ativos com o atributo preenchido no perfil. Clique num clã para abrir o dossiê.</p>
       </section>
-      <section class="stats-section">
-        <h3>🔍 Clã em detalhe</h3>
+      <section class="rv-sec">
+        <div class="rv-sec-head"><h3>Ressonância por faixa</h3></div>
+        <p class="rv-lede">Quantos jogadores de cada clã estão em cada faixa. O total conta só quem tem a ressonância lida.</p>
+        ${bandTable}
+      </section>
+      <section class="rv-sec" id="rv-dossier">
+        <div class="rv-sec-head"><h3>Dossiê do clã</h3></div>
         ${detail}
       </section>
-      <section class="stats-section">
-        <h3>🔎 Buscar jogador</h3>
-        <div class="card chart">
-          <input type="search" id="rv-q" placeholder="Nome do jogador rival…" value="${esc(RIV.q)}" autocomplete="off">
-          <div id="rv-found"></div>
-        </div>
+      <section class="rv-sec">
+        <div class="rv-sec-head"><h3>Buscar jogador</h3></div>
+        <input type="search" id="rv-q" placeholder="Nome do jogador rival" aria-label="Nome do jogador rival" value="${esc(RIV.q)}" autocomplete="off">
+        <div id="rv-found"></div>
       </section>`;
     bind();
 
@@ -8509,11 +8547,11 @@
     };
     $('#rv-clan-q')?.addEventListener('input', (e) => { RIV.clanQ = e.target.value; filterClans(); });
     filterClans();
-    $('#rv-stat').addEventListener('change', (e) => { RIV.stat = e.target.value; viewRivals(true); });
+    main.querySelectorAll('[data-rv-stat]').forEach((b) => b.addEventListener('click', () => { RIV.stat = b.dataset.rvStat; viewRivals(true); }));
     markScrollHints(main);
     main.querySelectorAll('[data-rv-clan]').forEach((b) => b.addEventListener('click', (e) => {
       e.preventDefault(); RIV.clan = b.dataset.rvClan;
-      viewRivals(true).then(() => { if (b.tagName === 'A') main.querySelector('.evo-tab[aria-selected="true"]')?.scrollIntoView({ block: 'center' }); });
+      viewRivals(true).then(() => { if (b.classList.contains('fr-name-btn')) $('#rv-dossier')?.scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); });
     }));
     main.querySelectorAll('[data-rv-attr]').forEach((b) => b.addEventListener('click', () => { RIV.attr = b.dataset.rvAttr; viewRivals(true); }));
     main.querySelectorAll('[data-rv-del]').forEach((b) => b.addEventListener('click', async () => {
