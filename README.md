@@ -390,6 +390,21 @@ O que protege os dados são as **regras do banco (RLS)** e as funções, que val
 - **Nick único:** ninguém ativo no clã pode usar o mesmo nick de outra pessoa (veja **Membros**).
 
 Para aplicar os ajustes mais recentes, rode o [`supabase/seguranca_dados.sql`](supabase/seguranca_dados.sql), o [`supabase/seguranca_correcoes.sql`](supabase/seguranca_correcoes.sql) e o [`supabase/limites.sql`](supabase/limites.sql) (veja **Dicas**).
+## Lembretes na agenda do celular
+Em **Meu perfil → ⚙️ Minhas configurações** (ou **⚙️ Configurações** no perfil de uma conta que você pilota), cada membro escolhe, na mesma linha de cada tipo, **Lembrar** e quando avisar (**Na hora**, 15 min, 30 min, 1 h ou 2 h antes; o padrão é Na hora):
+- **Eventos do site:** Guerras das Sombras, Vigílias, Ritos do Exílio e Torres. É uma **agenda assinada**: só entram eventos já criados no site, as mudanças chegam sozinhas e os eventos em que a conta respondeu "Não vou" saem da agenda.
+- **Eventos fixos do jogo:** 💰 **Cofre** (seg a sáb, 12h–13h e 19h–20h) e 🏛️ **Assembleia** (seg a sáb, 12h–14h e 19h–21h, só no ciclo das Sombras). O membro escolhe o horário (12h, 19h ou os dois) e quando avisar. Aparecem com a duração real, no horário de Brasília. O ciclo vem dos **Ciclos** cadastrados nas Estatísticas: vale o último ciclo cadastrado; sem ciclo cadastrado, a Assembleia aparece; depois de um ciclo Imortal, volta sozinha após 7 semanas.
+
+O próprio **Salvar** já adiciona a agenda (uma vez por aparelho):
+- 📱 **iPhone:** abre o Calendário para assinar a agenda.
+- 💻 **Computador:** abre o Google Agenda para adicionar a agenda.
+- 🤖 **Android:** a página explica que é preciso fazer pelo computador (com a mesma conta Google, a agenda aparece sozinha no celular).
+
+**Para ativar (uma vez):**
+1. Rode o [`supabase/agenda_membro.sql`](supabase/agenda_membro.sql) no SQL Editor (também está no fim do `schema.sql`).
+2. No Supabase, **Edge Functions → Deploy a new function → Via Editor**, com o nome **`agenda`**. Cole o arquivo [`supabase/functions/agenda/index.ts`](supabase/functions/agenda/index.ts) e publique.
+3. Nos detalhes da função `agenda`, **desligue "Verify JWT with legacy secret"** (as agendas do Google e do iPhone não mandam login; cada link tem um código secreto pessoal).
+
 ## Login com código por e-mail
 Para quem não consegue entrar com o Google (navegador do WhatsApp/Instagram, conta Google bloqueada etc.), a tela de login tem **"Problemas com o Google? Entrar com código por e-mail"**:
 - A pessoa digita o e-mail. Se já existe conta com esse e-mail, o site mostra o nome só em parte (ex.: "Va*****a") e envia um código. Com o mesmo e-mail da conta Google, ela entra **na mesma conta**.

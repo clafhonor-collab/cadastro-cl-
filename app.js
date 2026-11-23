@@ -314,6 +314,12 @@
           : q.gte('starts_at', cut).order('starts_at')));
       },
       async event(id) { return ok(await sb.from('events').select(full).eq('id', id).maybeSingle()); },
+      // Lembretes na agenda (null = SQL ainda não rodado)
+      async memberCalendar(userId) {
+        const r = await sb.from('member_calendar').select('*').eq('user_id', userId).maybeSingle();
+        return r.error ? null : r.data || { user_id: userId, token: null, cal_war: false, war_alarm: 0, cal_vigil: false, vigil_alarm: 0, cal_rite: false, rite_alarm: 0, cal_tower: false, tower_alarm: 0, cal_vault: false, vault_slot: 'both', vault_alarm: 0, cal_assembly: false, assembly_slot: 'both', assembly_alarm: 0 };
+      },
+      async saveMemberCalendar(userId, o) { return ok(await sb.rpc('save_member_calendar', { p_user: userId, p: o })); },
       // Eventos anteriores do mesmo tipo (para "Repetir times da semana passada")
       async prevSameEvents(ev) {
         let q = sb.from('events').select('id, title, type_id, starts_at, team_format, team_count, team_names, team_slots(user_id, team)')
@@ -889,6 +895,7 @@
     ];
     db.rwinners = [{ raffle_id: 600, user_id: 'u0', position: 1 }, { raffle_id: 600, user_id: 'u9', position: 2 }];
     db.rrerolls = [];
+    db.memberCalendar = {};
     db.rentries = [];
     const enter = (raffleId, userId, removed) => db.rentries.push({ raffle_id: raffleId, user_id: userId, entered_at: new Date(Date.now() - 3 * 86400e3).toISOString(),
       removed_at: removed ? new Date(Date.now() - 5 * 3600e3).toISOString() : null, removed_by: removed ? 'u1' : null, removed_reason: removed || null });
@@ -1182,6 +1189,17 @@
           .map(attach);
       },
       async event(id) { const e = db.events.find((x) => x.id === id); return e ? attach(e) : null; },
+      async memberCalendar(userId) {
+        if (!canActAsDemo(userId)) return null;
+        return { ...{ user_id: userId, token: null, cal_war: false, war_alarm: 0, cal_vigil: false, vigil_alarm: 0, cal_rite: false, rite_alarm: 0, cal_tower: false, tower_alarm: 0, cal_vault: false, vault_slot: 'both', vault_alarm: 0, cal_assembly: false, assembly_slot: 'both', assembly_alarm: 0 }, ...(db.memberCalendar[userId] || {}) };
+      },
+      async saveMemberCalendar(userId, o) {
+        if (!canActAsDemo(userId)) throw new Error('Você não pode mudar as configurações desta conta');
+        if (!['war', 'vigil', 'rite', 'tower', 'vault', 'assembly'].every((k) => [0, 15, 30, 60, 120].includes(o[`${k}_alarm`] ?? 0))) throw new Error('Antecedência do lembrete inválida');
+        const cur = db.memberCalendar[userId] || { token: Array.from({ length: 32 }, () => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('') };
+        db.memberCalendar[userId] = { ...cur, ...o };
+        return db.memberCalendar[userId].token;
+      },
       async prevSameEvents(ev) {
         return db.events.filter((e) => Date.parse(e.starts_at) < Date.parse(ev.starts_at) && (ev.type_id ? e.type_id === ev.type_id : e.title === ev.title))
           .sort((a, b) => Date.parse(b.starts_at) - Date.parse(a.starts_at)).slice(0, 8).map(attach);
@@ -2553,6 +2571,7 @@
   const UA = navigator.userAgent || '';
   const IN_APP = /WhatsApp|FBAN|FBAV|FB_IAB|Instagram|Discord|Telegram|Line\/|; wv\)/i.test(UA);
   const IS_ANDROID_UA = /Android/i.test(UA);
+  const IS_IOS = /iPhone|iPad|iPod/i.test(UA) || (/Macintosh/i.test(UA) && navigator.maxTouchPoints > 1); // iPad novo se apresenta como Mac
   // Voltou do Google mas o login não terminou neste navegador?
   let loginFailed = false;
   try {
@@ -3124,6 +3143,131 @@
         setTimeout(() => URL.revokeObjectURL(a.href), 4000);
         toast('Abra o arquivo baixado para salvar na agenda');
       });
+    });
+  }
+
+  // ---------- Minhas configurações: lembretes na agenda do celular ----------
+  // Uma linha por tipo: "Lembrar" e quando avisar. É uma agenda assinada (Edge Function "agenda"):
+  // só entram eventos já criados no site, as mudanças chegam sozinhas e quem respondeu "Não vou" sai dela.
+  const CAL_TYPES = [
+    { key: 'war', label: '⚔️ Guerras das Sombras' },
+    { key: 'vigil', label: '🌙 Vigílias' },
+    { key: 'rite', label: '🔥 Ritos do Exílio' },
+    { key: 'tower', label: '🗼 Torres' },
+  ];
+  // Eventos fixos do jogo: de segunda a sábado, no horário de Brasília, com a duração real
+  const GAME_REMINDERS = [
+    { key: 'vault', label: '💰 Cofre', note: 'Seg a sáb · 12h–13h e 19h–20h', game: true },
+    { key: 'assembly', label: '🏛️ Assembleia', note: 'Seg a sáb · 12h–14h e 19h–21h · só no ciclo das Sombras', game: true },
+  ];
+  const CAL_KEYS = [...CAL_TYPES, ...GAME_REMINDERS];
+  const CAL_SLOTS = [['both', '12h e 19h'], ['12', 'Só 12h'], ['19', 'Só 19h']];
+  const CAL_ALARMS = [[0, 'Na hora'], [15, '15 min antes'], [30, '30 min antes'], [60, '1 h antes'], [120, '2 h antes']];
+  const CAL_FEED = `${CFG.supabaseUrl || 'https://exemplo.supabase.co'}/functions/v1/agenda`;
+  async function viewMySettings(accountId) {
+    renderHeader('profile');
+    const id = accountId || state.user.id;
+    const accs = myAccounts();
+    const acc = accs.find((a) => a.id === id);
+    if (!acc) {
+      // Membro piloto (sem conta própria): vai para a primeira conta que pilota
+      if (accs[0] && accs[0].id !== id) { location.hash = `#/minhas-configuracoes/${encodeURIComponent(accs[0].id)}`; return; }
+      main.innerHTML = '<div class="card empty">Nenhuma conta do jogo para configurar ainda.</div>'; return;
+    }
+    loading();
+    const self = id === state.user.id;
+    const cal = await api.memberCalendar(id).catch(() => null);
+    const back = self ? backRow('#/perfil', 'Meu perfil') : backRow(`#/membro/${encodeURIComponent(id)}`, `Perfil de ${displayName(acc)}`);
+    const picker = accs.length > 1 ? `<select class="inline" id="ms-acc" aria-label="Conta">
+        ${accs.map((a) => `<option value="${esc(a.id)}" ${a.id === id ? 'selected' : ''}>${esc(displayName(a))}${a.id === state.user.id ? ' (você)' : ''}</option>`).join('')}
+      </select>` : '';
+    const head = `${back}<div class="page-head"><h1>${self ? 'Minhas configurações' : 'Configurações da conta'}</h1>${picker}</div>`;
+    const bindPicker = () => $('#ms-acc')?.addEventListener('change', (e) => {
+      location.hash = e.target.value === state.user.id ? '#/minhas-configuracoes' : `#/minhas-configuracoes/${encodeURIComponent(e.target.value)}`;
+    });
+    if (!cal) {
+      main.innerHTML = `${head}<div class="card empty">Os lembretes na agenda ainda não estão ativos. A liderança precisa rodar o arquivo <code>supabase/agenda_membro.sql</code> no Supabase.</div>`;
+      bindPicker(); return;
+    }
+    const on = (k) => !!cal[`cal_${k}`];
+    const row = (t) => `<div class="ms-ev"><span>${t.label}${t.note ? `<small class="muted">${t.note}</small>` : ''}</span></div>
+      <div class="ms-cell">
+        <label class="radio ms-on"><input type="checkbox" id="mc-${t.key}" ${on(t.key) ? 'checked' : ''}> Lembrar</label>
+        ${t.game ? `<select class="inline" id="mc-${t.key}-slot" aria-label="Horário de ${esc(t.label)}" ${on(t.key) ? '' : 'disabled'}>
+          ${CAL_SLOTS.map(([v, l]) => `<option value="${v}" ${(cal[`${t.key}_slot`] || 'both') === v ? 'selected' : ''}>${l}</option>`).join('')}
+        </select>` : ''}
+        <select class="inline" id="mc-${t.key}-alarm" aria-label="Quando avisar: ${esc(t.label)}" ${on(t.key) ? '' : 'disabled'}>
+          ${CAL_ALARMS.map(([v, l]) => `<option value="${v}" ${(cal[`${t.key}_alarm`] ?? 0) === v ? 'selected' : ''}>${l}</option>`).join('')}
+        </select>
+      </div>`;
+    main.innerHTML = `${head}
+      <form class="card ms-card" id="ms">
+        <h2 style="margin:0 0 4px">📅 Lembretes na agenda do celular</h2>
+        <p class="muted small" style="margin:0 0 10px">Escolha o que lembrar e quando avisar. Ao salvar, a agenda do ${esc(CFG.clanName || 'clã')} entra no seu ${IS_IOS ? 'Calendário' : 'Google Agenda'}:
+          só entram eventos já criados no site, as mudanças chegam sozinhas e os eventos em que você respondeu “Não vou” saem da agenda.</p>
+        <div class="ms-grid one">
+          <div class="ms-th">Eventos do site</div><div class="ms-th">Lembrete</div>
+          ${CAL_TYPES.map(row).join('')}
+          <div class="ms-th ms-th-sub">Eventos fixos do jogo <span class="muted">(horário de Brasília, com a duração real)</span></div><div class="ms-th ms-th-sub"></div>
+          ${GAME_REMINDERS.map(row).join('')}
+        </div>
+        <div class="row end dlg-actions"><button type="submit" class="btn primary">Salvar</button></div>
+      </form>
+      <p class="muted small">${IS_ANDROID_UA
+        ? '🤖 No Android, o Google Agenda só deixa adicionar a agenda pelo <b>computador</b>: salve lá, com a mesma conta Google do celular, e ela aparece sozinha aqui.'
+        : 'Depois de adicionada, a agenda se atualiza sozinha (o Google Agenda e o iPhone buscam as mudanças de tempos em tempos).'}</p>`;
+    bindPicker();
+    CAL_KEYS.forEach((t) => $(`#mc-${t.key}`)?.addEventListener('change', (e) => {
+      [$(`#mc-${t.key}-alarm`), $(`#mc-${t.key}-slot`)].forEach((el) => { if (el) el.disabled = !e.target.checked; });
+    }));
+    // Ao salvar com algum lembrete ligado, já adiciona a agenda neste aparelho (uma vez por aparelho e conta):
+    // iPhone/iPad abre o Calendário; computador abre o Google Agenda; Android explica o caminho pelo computador.
+    const addedKey = `agenda-added:${id}`;
+    const wasAdded = () => { try { return localStorage.getItem(addedKey) === '1'; } catch { return false; } };
+    const markAdded = () => { try { localStorage.setItem(addedKey, '1'); } catch { /* sem armazenamento: pode perguntar de novo */ } };
+    function addToCalendar(force = false) {
+      if (!cal?.token || !CAL_KEYS.some((t) => cal[`cal_${t.key}`]) || (wasAdded() && !force)) return;
+      const webcal = `${CAL_FEED}?t=${cal.token}`.replace(/^https?:/, 'webcal:');
+      const google = `https://calendar.google.com/calendar/r?cid=${encodeURIComponent(webcal)}`;
+      if (IS_IOS) { markAdded(); location.href = webcal; return; }
+      if (IS_ANDROID_UA) {
+        openDialog(`<div class="stack">
+          <h2>📅 Agenda no Android</h2>
+          <p style="margin:0">Seus lembretes foram salvos. No Android, o Google Agenda só deixa adicionar a agenda do clã pelo <b>computador</b>:
+            abra <b>${esc(location.host || 'o site')}</b> no computador, vá em <b>Meu perfil → ⚙️ Minhas configurações</b> e clique em <b>Salvar</b>.</p>
+          <p class="muted small" style="margin:0">Use a mesma conta Google do celular: a agenda ${esc(CFG.clanName || '')} aparece sozinha no Android.</p>
+          <div class="row end"><button type="button" class="btn primary" data-close>Entendi</button></div>
+        </div>`);
+        return;
+      }
+      markAdded();
+      const w = window.open(google, '_blank');
+      if (w) { w.opener = null; return; }
+      // Bloqueador de janelas: oferece o link
+      openDialog(`<div class="stack">
+        <h2>📅 Adicionar à agenda</h2>
+        <p style="margin:0">Abra o Google Agenda para confirmar a agenda do clã.</p>
+        <div class="row end"><a class="btn primary" href="${esc(google)}" target="_blank" rel="noopener" data-close>Abrir o Google Agenda</a></div>
+      </div>`);
+    }
+    $('#ms').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const c = {};
+      for (const t of CAL_KEYS) {
+        c[`cal_${t.key}`] = $(`#mc-${t.key}`).checked;
+        c[`${t.key}_alarm`] = Number($(`#mc-${t.key}-alarm`).value);
+        if (t.game) c[`${t.key}_slot`] = $(`#mc-${t.key}-slot`).value;
+      }
+      const btn = e.submitter || $('#ms button[type=submit]');
+      btn.disabled = true;
+      try {
+        const token = await api.saveMemberCalendar(id, c);
+        Object.assign(cal, c, { token });
+        const any = CAL_KEYS.some((t) => c[`cal_${t.key}`]);
+        toast(any ? (wasAdded() ? 'Lembretes salvos. A agenda se atualiza sozinha.' : 'Lembretes salvos') : 'Lembretes desligados: a agenda fica vazia');
+        addToCalendar();
+      } catch (err) { fail(err); }
+      btn.disabled = false;
     });
   }
 
@@ -6204,8 +6348,8 @@
               : me.char_class ? `<div class="member-build">${classTag(me.char_class)} <span>${esc(CLASS[me.char_class].label)}</span><span class="chip-stats">${statsLine(me)}</span></div>` : ''}
             ${!po && me.is_pilot ? '<div class="muted small">🧑‍✈️ Também é piloto</div>' : ''}
           </div>
-          ${self ? `<div class="row me-actions"><button class="btn small" id="btn-photo-pf">📷 ${me.custom_avatar_url ? 'Trocar foto' : 'Enviar foto'}</button><button class="btn small" id="btn-edit-pf">✎ Editar perfil</button></div>`
-            : canRename(me) || canChangeKind(me) || canLeaderBuild(me) ? `<div class="row me-actions">${canLeaderBuild(me) ? '<button class="btn small" id="btn-lead-build" title="Só o líder: alterar classe e atributos desta conta">✎ Editar perfil</button>' : ''}${canRename(me) ? '<button class="btn small" id="btn-rename">✎ Editar nick</button>' : ''}${canChangeKind(me) ? `<button class="btn small" id="btn-kind">${po ? '🎮 Tornar jogador' : '🧑‍✈️ Tornar membro piloto'}</button>` : ''}</div>` : ''}
+          ${self ? `<div class="row me-actions"><button class="btn small" id="btn-photo-pf">📷 ${me.custom_avatar_url ? 'Trocar foto' : 'Enviar foto'}</button><button class="btn small" id="btn-edit-pf">✎ Editar perfil</button>${ACTIVE_ROLES.includes(me.role) ? '<a class="btn small" href="#/minhas-configuracoes">⚙️ Minhas configurações</a>' : ''}</div>`
+            : canRename(me) || canChangeKind(me) || canLeaderBuild(me) || (canActAs(me.id) && ACTIVE_ROLES.includes(me.role)) ? `<div class="row me-actions">${canActAs(me.id) && ACTIVE_ROLES.includes(me.role) ? `<a class="btn small" href="#/minhas-configuracoes/${encodeURIComponent(me.id)}">⚙️ Configurações</a>` : ''}${canLeaderBuild(me) ? '<button class="btn small" id="btn-lead-build" title="Só o líder: alterar classe e atributos desta conta">✎ Editar perfil</button>' : ''}${canRename(me) ? '<button class="btn small" id="btn-rename">✎ Editar nick</button>' : ''}${canChangeKind(me) ? `<button class="btn small" id="btn-kind">${po ? '🎮 Tornar jogador' : '🧑‍✈️ Tornar membro piloto'}</button>` : ''}</div>` : ''}
         </div>
       </div>
 
@@ -9422,19 +9566,20 @@
     const rc = RECRUIT_ON ? h.match(/^\/recrutamento\/(\d+)$/) : null;
     const tk = TICKETS_ON ? h.match(/^\/ticket\/(\d+)$/) : null;
     const pg = h.match(/^\/pilotagem\/([\w%-]+)$/); // link de um anúncio de pilotagem
+    const ms = h.match(/^\/minhas-configuracoes(?:\/([\w%-]+))?$/); // configurações da conta (minha ou pilotada)
     const key = h === '/passados' ? 'past' : h === '/frequencia' ? 'freq' : h === '/news' ? 'news' : h === '/utils' ? 'utils' : h === '/estatisticas' ? 'panel' : h === '/rivais' ? 'rivals' : h === '/pilotagem' || pg ? 'pilotage'
       : h === '/config' ? 'config' : h === '/solicitacoes' ? 'requests'
       : RECRUIT_ON && h === '/recrutamentos' ? 'recruits' : rc ? 'recruits'
       : RAFFLE_ON && h === '/sorteio' ? 'raffle'
       : TICKETS_ON && h === '/tickets' ? 'tickets' : TICKETS_ON && h === '/atendimento' ? 'support' : tk ? 'ticket'
-      : h === '/perfil' ? 'profile' : h === '/membros' ? (isOfficer() ? 'members' : 'profile') : mp ? 'members'
+      : ms ? 'settings' : h === '/perfil' ? 'profile' : h === '/membros' ? (isOfficer() ? 'members' : 'profile') : mp ? 'members'
       : tm ? 'teams' : ev ? 'event' : 'upcoming';
-    return { ev, tm, mp, rc, tk, pg, key };
+    return { ev, tm, mp, rc, tk, pg, ms, key };
   }
   const currentRouteKey = () => parseRoute().key;
 
   async function route() {
-    const { ev, tm, mp, rc, tk, pg, key } = parseRoute();
+    const { ev, tm, mp, rc, tk, pg, ms, key } = parseRoute();
     if (state.user && isOfficer()) await loadPerms();
     if (state.user && isMember()) await Promise.all([loadRecruits(), loadTickets(), loadRaffles(), loadBell(), loadLeaves(), loadBadges()]);
     bellOpen = false;
@@ -9449,6 +9594,7 @@
       else if (key === 'news') await viewNews();
       else if (key === 'utils') viewUtils();
       else if (key === 'pilotage') await viewPilotage(pg ? decodeURIComponent(pg[1]) : null);
+      else if (key === 'settings') await viewMySettings(ms[1] ? decodeURIComponent(ms[1]) : null);
       else if (key === 'raffle') await viewRaffle();
       else if (key === 'config') await viewConfig();
       else if (key === 'requests') await viewRequests();

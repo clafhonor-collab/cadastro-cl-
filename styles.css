@@ -1391,3 +1391,25 @@ fieldset.invalid { border-color: #ef4444; }
 /* ---------- Repetir times da semana passada ---------- */
 .rp-missing { display: grid; gap: 4px; padding: 10px 12px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--border); font-size: .92rem; max-height: 40vh; overflow-y: auto; }
 .sg-mode input:disabled + span { opacity: .55; }
+
+/* ---------- Minhas configurações: lembretes na agenda ---------- */
+.ms-card { max-width: 760px; }
+.ms-grid { display: grid; grid-template-columns: max-content 1fr; column-gap: 24px; align-items: center; }
+.ms-th { font-weight: 600; font-size: .85rem; color: var(--muted); padding: 6px 0 8px; }
+.ms-th-sub { margin-top: 14px; color: var(--gold); }
+.ms-ev, .ms-cell { border-top: 1px solid var(--border); padding: 12px 0; align-self: stretch; display: flex; align-items: center; }
+.ms-ev { font-weight: 600; }
+.ms-ev small { display: block; font-weight: 400; font-size: .78rem; }
+.ms-cell { flex-wrap: wrap; gap: 6px 14px; }
+.ms-cell .radio { margin: 0; }
+.ms-cell input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--accent-hi); }
+.ms-cell select:disabled { opacity: .4; }
+@media (max-width: 600px) {
+  .ms-grid { grid-template-columns: minmax(0, 1fr); }
+  .ms-cell, .ms-ev { min-width: 0; }
+  .ms-th:nth-child(2n) { display: none; }
+  .ms-cell { border-top: 0; padding: 0 0 12px; }
+  .ms-cell { flex-wrap: nowrap; gap: 8px; }
+  .ms-cell .ms-on { flex: none; }
+  .ms-cell select { flex: 1 1 0; min-width: 0; min-height: 44px; font-size: 16px; padding-left: 8px; padding-right: 4px; }
+}
