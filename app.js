@@ -3531,11 +3531,13 @@
     $('#btn-result')?.addEventListener('click', () => openResultDialog(ev, result, () => viewEvent(id)));
     if (isOfficer()) {
       $('#btn-copy-list').addEventListener('click', () => {
-        const names = (arr) => arr.map((x) => displayName(x.p)).join(', ') || '—';
-        const text = `**${ev.title}** — ${fmtDay(ev.starts_at)} às ${fmtTime(ev.starts_at)}\n`
-          + `✔ Vão (${yes.length}): ${names(yes)}\n🎧 No Discord (${onDiscord.length}): ${names(onDiscord)}\n`
-          + `✖ Não vão (${no.length}): ${names(no)}\n… Sem resposta (${none.length}): ${names(none)}`;
-        copy(text, 'Lista copiada — cole no Discord');
+        // Padrão do WhatsApp: título em negrito e um nome por linha, com um ponto na frente
+        const lines = [`*${ev.title}*`, `${fmtDay(ev.starts_at)} às ${fmtTime(ev.starts_at)}`];
+        const block = (title, arr) => { lines.push('', `*${title} (${arr.length})*`, ...(arr.length ? arr.map((x) => `• ${displayName(x.p)}`) : ['—'])); };
+        block('✔ Vão', yes);
+        if (yes.length) lines.push(`🎧 No Discord: ${onDiscord.length} de ${yes.length}`);
+        block('✖ Não vão', no); block('… Sem resposta', none);
+        copy(lines.join('\n'), 'Lista copiada — é só colar no WhatsApp');
       });
       $('#btn-edit')?.addEventListener('click', () => openEventForm(ev));
       // Evento já finalizado: avisa antes de abrir a revisão dos times
@@ -3757,9 +3759,9 @@
     }));
     $('#f-copy').addEventListener('click', () => {
       const period = F.days ? `últimos ${F.days} dias` : 'todo o histórico';
-      const text = [`**Frequência — ${filterLabel} (${period}, ${withAtt.length} eventos)**`,
-        ...rows.filter((r) => r.total).map((r) => `${displayName(r.m)}: ${pctText(r.pct)} (${r.present}/${r.total})${r.noShow ? ` · confirmou e faltou ${r.noShow}x` : ''}`)].join('\n');
-      copy(text, 'Frequência copiada');
+      const text = [`*Frequência — ${filterLabel}*`, `${cap(period)} · ${withAtt.length} eventos`, '',
+        ...rows.filter((r) => r.total).map((r) => `• ${displayName(r.m)}: ${pctText(r.pct)} (${r.present}/${r.total})${r.noShow ? ` · confirmou e faltou ${r.noShow}x` : ''}`)].join('\n');
+      copy(text, 'Frequência copiada — é só colar no WhatsApp');
     });
   }
 
@@ -5434,6 +5436,119 @@
       <path fill="url(#trophy-gold)" fill-rule="evenodd" d="M18 6H46V12H56V18C56 26 50 32 43 33C41 38 38 41 34 42V48H42V54H22V48H30V42C26 41 23 38 21 33C14 32 8 26 8 18V12H18ZM14 18C14 22 17 26 20 27C19 24 18 21 18 18ZM46 18C46 21 45 24 44 27C47 26 50 22 50 18Z"/>
       <rect x="18" y="56" width="28" height="4" rx="1.5" fill="url(#trophy-gold)"/></svg>`;
 
+  // ---------- Compartilhar o resultado do sorteio (imagem + texto para o WhatsApp) ----------
+  const TROPHY_PATH = 'M18 6H46V12H56V18C56 26 50 32 43 33C41 38 38 41 34 42V48H42V54H22V48H30V42C26 41 23 38 21 33C14 32 8 26 8 18V12H18ZM14 18C14 22 17 26 20 27C19 24 18 21 18 18ZM46 18C46 21 45 24 44 27C47 26 50 22 50 18Z';
+  function raffleText(r) {
+    const ws = sortedWinners(r);
+    return [`*🏆 Resultado do sorteio — ${CFG.clanName || 'Clã'}*`, fmtDraw(r.draw_at), `Prêmio: *${prizeText(r)}*${r.winners_count > 1 ? ' (1 item para cada ganhador)' : ''}`, '',
+      ...(ws.length ? ws.map((w) => `🏆 *${nameOf(w.user_id)}*`) : ['Nenhum inscrito estava elegível neste sorteio.']),
+      ...(ws.length ? ['', `Parabéns! ${ws.length > 1 ? 'Entrem' : 'Entre'} em contato com a staff para retirar o prêmio.`] : [])].join('\n');
+  }
+  // Troféu dourado desenhado na imagem (mesmo desenho do site)
+  function drawTrophy(g, x, y, size) {
+    g.save();
+    g.translate(x, y); g.scale(size / 64, size / 64);
+    const gr = g.createLinearGradient(0, 0, 0, 64);
+    gr.addColorStop(0, '#fff0b8'); gr.addColorStop(0.45, '#e9b949'); gr.addColorStop(1, '#9c6a17');
+    g.fillStyle = gr;
+    g.fill(new Path2D(TROPHY_PATH), 'evenodd');
+    g.fillRect(18, 56, 28, 4);
+    g.restore();
+  }
+  // Imagem 1080×1350 (boa para WhatsApp e stories): prêmio, data e ganhadores
+  async function raffleImage(r) {
+    try { await Promise.all(['700 64px Cinzel', '400 36px Inter', '600 36px Inter', '700 36px Inter'].map((f) => document.fonts.load(f))); } catch { /* usa a fonte padrão */ }
+    const W = 1080; const H = 1350;
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    const g = c.getContext('2d');
+    const bg = g.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, '#2a1a0a'); bg.addColorStop(0.55, '#140c07'); bg.addColorStop(1, '#0b0605');
+    g.fillStyle = bg; g.fillRect(0, 0, W, H);
+    const glow = g.createRadialGradient(W / 2, 260, 40, W / 2, 260, 700);
+    glow.addColorStop(0, 'rgba(233,185,73,.30)'); glow.addColorStop(1, 'rgba(233,185,73,0)');
+    g.fillStyle = glow; g.fillRect(0, 0, W, H);
+    g.strokeStyle = 'rgba(220,170,82,.6)'; g.lineWidth = 4; g.strokeRect(28, 28, W - 56, H - 56);
+    g.textAlign = 'center'; g.textBaseline = 'alphabetic';
+    const fit = (txt, font, max) => { g.font = font; let t = txt; while (g.measureText(t).width > max && t.length > 3) t = t.slice(0, -1); return t === txt ? t : `${t}…`; };
+    // Cabeçalho
+    g.fillStyle = '#dcaa52'; g.font = '700 46px Cinzel, serif';
+    g.fillText((CFG.clanName || 'Clã').toUpperCase(), W / 2, 112);
+    g.fillStyle = '#ff7a2f'; g.font = '600 34px Inter, sans-serif';
+    g.fillText('🎟️  SORTEIO', W / 2, 166);
+    drawTrophy(g, W / 2 - 75, 200, 150);
+    g.fillStyle = '#ffffff'; g.font = '700 64px Cinzel, serif';
+    g.fillText('RESULTADO', W / 2, 430);
+    // Prêmio e data
+    g.fillStyle = '#f5d78a';
+    const prize = wrapLines((g.font = '700 46px Inter, sans-serif', g), prizeText(r), W - 200, 2);
+    prize.forEach((l, i) => g.fillText(l, W / 2, 506 + i * 56));
+    let y = 506 + prize.length * 56;
+    g.fillStyle = '#c9b29a'; g.font = '400 32px Inter, sans-serif';
+    g.fillText(fmtDraw(r.draw_at), W / 2, y + 4);
+    y += 40;
+    if (r.winners_count > 1) { g.fillText('1 item para cada ganhador', W / 2, y + 4); y += 40; }
+    // Ganhadores
+    const ws = sortedWinners(r);
+    const top = y + 40; const bottom = H - 230;
+    if (ws.length) {
+      // Poucos ganhadores: linhas e letras maiores, e o bloco fica centralizado no espaço livre
+      const rowH = Math.min(ws.length <= 2 ? 170 : 130, Math.floor((bottom - top) / ws.length));
+      const nameSize = Math.max(34, Math.min(76, Math.floor(rowH * 0.5)));
+      const icon = Math.round(nameSize * 1.05);
+      const start = top + Math.max(0, ((bottom - top) - rowH * ws.length) / 2);
+      ws.forEach((w, i) => {
+        const cy = start + i * rowH + rowH / 2;
+        g.fillStyle = 'rgba(233,185,73,.08)';
+        g.beginPath(); g.roundRect ? g.roundRect(150, cy - rowH / 2 + 6, W - 300, rowH - 12, 18) : g.rect(150, cy - rowH / 2 + 6, W - 300, rowH - 12); g.fill();
+        drawTrophy(g, 190, cy - icon / 2, icon);
+        g.textAlign = 'left'; g.fillStyle = '#ffffff';
+        g.fillText(fit(nameOf(w.user_id), `700 ${nameSize}px Inter, sans-serif`, W - 300 - 140 - 60), 190 + icon + 30, cy + nameSize * 0.36);
+        g.textAlign = 'center';
+      });
+    } else {
+      g.fillStyle = '#c9b29a'; g.font = '400 36px Inter, sans-serif';
+      g.fillText('Nenhum inscrito estava elegível neste sorteio.', W / 2, (top + bottom) / 2);
+    }
+    // Rodapé
+    if (ws.length) {
+      g.fillStyle = '#dcaa52'; g.font = '700 40px Inter, sans-serif';
+      g.fillText('Parabéns!', W / 2, H - 160);
+      g.fillStyle = '#c9b29a'; g.font = '400 30px Inter, sans-serif';
+      g.fillText(`${ws.length > 1 ? 'Entrem' : 'Entre'} em contato com a staff para retirar o prêmio.`, W / 2, H - 112);
+    }
+    g.fillStyle = '#8f7a6a'; g.font = '400 26px Inter, sans-serif';
+    g.fillText(location.host || 'forhonorcla.com.br', W / 2, H - 62);
+    return new Promise((resolve, reject) => c.toBlob((b) => (b ? resolve(b) : reject(new Error('Não foi possível gerar a imagem'))), 'image/png'));
+  }
+  async function openRaffleShare(r) {
+    let blob;
+    try { blob = await raffleImage(r); } catch (e) { fail(e); return; }
+    const src = URL.createObjectURL(blob);
+    const fileName = `sorteio-${r.draw_at.slice(0, 10)}.png`;
+    const file = typeof File === 'function' ? new File([blob], fileName, { type: 'image/png' }) : null;
+    const canShareFile = !!(file && navigator.canShare && navigator.canShare({ files: [file] }));
+    const text = raffleText(r);
+    openDialog(`<div class="stack pg-share-dlg">
+        <h2>Compartilhar o resultado</h2>
+        <img class="pg-share-img" src="${src}" alt="Imagem do resultado do sorteio">
+        <p class="muted small" style="margin:0">Baixe a imagem e envie no grupo do WhatsApp${canShareFile ? ', ou use “Compartilhar” para mandar direto' : ''}. O texto pronto vai junto, se quiser.</p>
+        <div class="row end dlg-actions" style="flex-wrap:wrap">
+          <button type="button" class="btn ghost" data-close>Fechar</button>
+          <button type="button" class="btn" id="rfs-copy">📋 Copiar texto</button>
+          ${canShareFile ? '<button type="button" class="btn" id="rfs-share">📤 Compartilhar</button>' : ''}
+          <a class="btn primary" id="rfs-dl" href="${src}" download="${esc(fileName)}">⬇ Baixar imagem</a>
+        </div>
+      </div>`, (d) => {
+      $('#rfs-copy', d).addEventListener('click', () => copy(text, 'Texto copiado — é só colar no WhatsApp'));
+      $('#rfs-share', d)?.addEventListener('click', async () => {
+        try { await navigator.share({ files: [file], title: 'Resultado do sorteio', text }); }
+        catch (e) { if (e?.name !== 'AbortError') toast('Não foi possível compartilhar. Use “Baixar imagem”.', true); }
+      });
+      dlg.addEventListener('close', () => setTimeout(() => URL.revokeObjectURL(src), 1000), { once: true });
+    });
+  }
+
   // Notificações do sininho (o que mudou desde a última visita à página do sorteio)
   const raffleSeenKey = () => `raffle-seen-${state.user?.id}`;
   const raffleSeen = () => { try { return Date.parse(localStorage.getItem(raffleSeenKey()) || '') || 0; } catch { return 0; } };
@@ -5492,6 +5607,7 @@
               <div class="raffle-congrats">Parabéns, entre em contato com a staff para retirar seu prêmio!</div></div>
           </li>`).join('')}</ul>`
           : '<p class="muted" style="margin:12px 0 0">Nenhum inscrito estava elegível neste sorteio.</p>'}
+        ${staff ? `<div class="row raffle-share"><button class="btn small primary" data-rf-share="${r.id}">🖼️ Compartilhar no WhatsApp</button></div>` : ''}
       </div>`;
 
     const openCard = (r) => {
@@ -5549,6 +5665,12 @@
       e.currentTarget.setAttribute('aria-expanded', String(!msg.hidden));
     });
     $('#btn-new-rf')?.addEventListener('click', () => openRaffleForm());
+    main.querySelectorAll('[data-rf-share]').forEach((b) => b.addEventListener('click', async () => {
+      const r = state.raffles.find((x) => x.id === Number(b.dataset.rfShare));
+      if (!r) return;
+      b.disabled = true;
+      try { await openRaffleShare(r); } finally { b.disabled = false; }
+    }));
     main.querySelectorAll('[data-rf-edit]').forEach((b) => b.addEventListener('click', () => openRaffleForm(state.raffles.find((r) => r.id === Number(b.dataset.rfEdit)))));
     main.querySelectorAll('[data-rf-delete]').forEach((b) => b.addEventListener('click', async () => {
       const r = state.raffles.find((x) => x.id === Number(b.dataset.rfDelete));
@@ -5620,7 +5742,8 @@
       ${open.length ? open.map(card).join('') : '<div class="card empty">Nenhum sorteio ativado.</div>'}
       ${drawn.length ? `<div class="section-head"><h2>Sorteios realizados</h2></div>
         <div class="card rf-past">${drawn.slice(0, 10).map((r) => `<div class="rf-past-row">
-          <div><b>${esc(fmtDrawShort(r.draw_at))}</b> · ${esc(prizeText(r))}</div>
+          <div class="rf-past-head"><div><b>${esc(fmtDrawShort(r.draw_at))}</b> · ${esc(prizeText(r))}</div>
+            <button class="btn small ghost" data-rf-share="${r.id}" title="Imagem e texto do resultado para o WhatsApp">🖼️ Compartilhar</button></div>
           <div class="small">${r.winners?.length ? sortedWinners(r).map((w) => `🏆 ${esc(nameOf(w.user_id))}`).join(' · ') : '<span class="muted">Sem ganhadores</span>'}
             <span class="muted">· ${plural(r.eligible_count || 0, 'elegível', 'elegíveis')}</span></div>
         </div>`).join('')}</div>` : ''}`;
@@ -6811,7 +6934,7 @@
 
     $('#st-type').addEventListener('change', (e) => { S.type = e.target.value; renderClanStats(box).catch(fail); });
     $('#st-copy-pending')?.addEventListener('click', () => {
-      copy([`**Ainda não responderam: ${nextEv.title} ${fmtShortDate(nextEv.starts_at)}**`, ...pendingNames.map((m) => `• ${displayName(m)}`)].join('\n'), 'Lista copiada');
+      copy([`*Ainda não responderam: ${nextEv.title} ${fmtShortDate(nextEv.starts_at)}*`, '', ...pendingNames.map((m) => `• ${displayName(m)}`)].join('\n'), 'Lista copiada — é só colar no WhatsApp');
     });
   }
 
@@ -7337,8 +7460,8 @@
     $('#pn-sel').addEventListener('change', (e) => { PANEL.sel = e.target.value; viewPanel().catch(fail); });
     $('#pn-n')?.addEventListener('change', (e) => { PANEL.inactiveN = Math.min(15, Math.max(2, Number(e.target.value) || 3)); viewPanel().catch(fail); });
     $('#pn-cycles')?.addEventListener('click', () => openCyclesDialog(cycles, () => viewPanel()));
-    $('#pn-copy-inactive')?.addEventListener('click', () => copy([`**Inativos: faltaram os últimos ${N} eventos**`, ...inactive.map((r) => `• ${displayName(r.m)}`)].join('\n'), 'Lista copiada'));
-    $('#pn-copy-incomplete')?.addEventListener('click', () => copy(['**Perfis para atualizar no site**', ...incomplete.map((r) => `• ${displayName(r.m)} (${r.miss.join(', ')})`)].join('\n'), 'Lista copiada'));
+    $('#pn-copy-inactive')?.addEventListener('click', () => copy([`*Inativos: faltaram os últimos ${N} eventos*`, '', ...inactive.map((r) => `• ${displayName(r.m)}`)].join('\n'), 'Lista copiada — é só colar no WhatsApp'));
+    $('#pn-copy-incomplete')?.addEventListener('click', () => copy(['*Perfis para atualizar no site*', '', ...incomplete.map((r) => `• ${displayName(r.m)} (${r.miss.join(', ')})`)].join('\n'), 'Lista copiada — é só colar no WhatsApp'));
     $('#pn-type').addEventListener('change', (e) => { PANEL.type = e.target.value; viewPanel().catch(fail); });
     main.querySelectorAll('[data-pn-attr]').forEach((b) => b.addEventListener('click', () => {
       if (PANEL.attr === b.dataset.pnAttr) return;
@@ -7347,7 +7470,7 @@
       viewPanel().then(() => window.scrollTo(0, y)).catch(fail);
     }));
     $('#pn-copy-pending')?.addEventListener('click', () => {
-      copy([`**Ainda não responderam: ${nextEv.title} ${fmtShortDate(nextEv.starts_at)}**`, ...pendingNames.map((m) => `• ${displayName(m)}`)].join('\n'), 'Lista copiada');
+      copy([`*Ainda não responderam: ${nextEv.title} ${fmtShortDate(nextEv.starts_at)}*`, '', ...pendingNames.map((m) => `• ${displayName(m)}`)].join('\n'), 'Lista copiada — é só colar no WhatsApp');
     });
   }
 

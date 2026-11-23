@@ -1365,3 +1365,7 @@ fieldset.invalid { border-color: #ef4444; }
   .dialog form > .row.end:last-child .muted:empty { display: none; }
   .choice-grid { grid-template-columns: 1fr; }
 }
+
+/* ---------- Sorteio: compartilhar o resultado ---------- */
+.raffle-share { margin-top: 14px; }
+.rf-past-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
