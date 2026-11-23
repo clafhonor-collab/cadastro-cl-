@@ -2516,6 +2516,16 @@
   }
 
   const TOUCH = matchMedia('(pointer: coarse)').matches;
+  // Tabelas largas no celular: aviso "deslize para o lado" quando a tabela não cabe (some ao chegar no fim)
+  function markScrollHints(root) {
+    root.querySelectorAll('.table-scroll').forEach((w) => {
+      w.previousElementSibling?.classList?.contains('scroll-hint') && w.previousElementSibling.remove();
+      if (w.scrollWidth <= w.clientWidth + 4) return;
+      w.classList.add('has-more-x');
+      w.insertAdjacentHTML('beforebegin', '<div class="scroll-hint muted small">↔ Deslize a tabela para o lado</div>');
+      w.addEventListener('scroll', () => { w.classList.toggle('at-end', w.scrollLeft + w.clientWidth >= w.scrollWidth - 4); }, { passive: true });
+    });
+  }
 
   // ---------- Menu do celular: botão ☰ que abre um painel lateral ----------
   function setupNavDrawer() {
@@ -8500,6 +8510,7 @@
     $('#rv-clan-q')?.addEventListener('input', (e) => { RIV.clanQ = e.target.value; filterClans(); });
     filterClans();
     $('#rv-stat').addEventListener('change', (e) => { RIV.stat = e.target.value; viewRivals(true); });
+    markScrollHints(main);
     main.querySelectorAll('[data-rv-clan]').forEach((b) => b.addEventListener('click', (e) => {
       e.preventDefault(); RIV.clan = b.dataset.rvClan;
       viewRivals(true).then(() => { if (b.tagName === 'A') main.querySelector('.evo-tab[aria-selected="true"]')?.scrollIntoView({ block: 'center' }); });

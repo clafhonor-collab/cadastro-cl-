@@ -1626,3 +1626,27 @@ fieldset.invalid { border-color: #ef4444; }
   .req-row { gap: 8px; }
   .req-row > .btn { flex: 1 1 0; justify-content: center; min-height: 42px; }
 }
+
+/* =====================================================================
+   Celular: ajustes finais do membro e Clãs rivais (lote 7)
+   ===================================================================== */
+.scroll-hint { display: none; }
+@media (max-width: 760px) {
+  /* Alvos de toque do membro */
+  .ms-cell .ms-on { min-height: 44px; padding-right: 4px; }
+  .tk-check { min-height: 44px; }
+  .tk-check input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--accent); }
+  .evo-tab { min-height: 40px; padding: 8px 14px; }
+  .pr-info { width: 36px; height: 36px; font-size: 1rem; }
+  .userbox .who { min-width: 40px; min-height: 40px; justify-content: center; }
+  /* Clãs rivais: tabelas compactas, com a coluna do clã fixa ao deslizar */
+  .table-scroll { position: relative; -webkit-overflow-scrolling: touch; }
+  .table-scroll .mini-table { font-size: .82rem; }
+  .table-scroll .mini-table th, .table-scroll .mini-table td { padding: 6px 6px; white-space: nowrap; }
+  .table-scroll .mini-table th:first-child, .table-scroll .mini-table td:first-child { position: sticky; left: 0; z-index: 1; background: var(--panel);
+    box-shadow: 1px 0 0 var(--border); max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
+  .table-scroll .mini-table .rv-us td:first-child { background: #2a1a10; }
+  .table-scroll.has-more-x:not(.at-end) { -webkit-mask-image: linear-gradient(90deg, #000 85%, transparent); mask-image: linear-gradient(90deg, #000 85%, transparent); }
+  .scroll-hint { display: block; margin: 4px 0 2px; }
+  .sg-mode input[type="radio"] { width: 20px; height: 20px; }
+}
