@@ -1572,3 +1572,57 @@ fieldset.invalid { border-color: #ef4444; }
   body:has(.sel-bar) .help-fab { display: none; }
   .tb { padding-bottom: 70px; }
 }
+
+/* =====================================================================
+   Liderança no celular: Frequência e Configurações (lote 6)
+   ===================================================================== */
+.fq-sort-m, .pm-s { display: none; }
+.perm-gh { display: flex; align-items: center; gap: 10px; }
+.pg-sums { display: none; }
+@media (max-width: 760px) {
+  /* Frequência: cada membro vira um cartão, sem rolar para o lado */
+  .fq-sort-m { display: flex; align-items: center; gap: 8px; flex-basis: 100%; font-size: .9rem; color: var(--muted); }
+  .fq-sort-m select { flex: 1 1 auto; min-width: 0; }
+  .fq-sort-m .btn { flex: none; min-width: 44px; }
+  .table-wrap { overflow-x: visible; }
+  .freq, .freq tbody { display: block; width: 100%; }
+  .freq td { display: block; min-width: 0; }
+  .freq td:first-child .row { flex-wrap: wrap !important; }
+  .freq thead { display: none; }
+  .freq tr { display: grid; box-sizing: border-box; width: 100%; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px 8px; padding: 12px; border-bottom: 1px solid var(--border); align-items: end; }
+  .freq tbody tr:last-child { border-bottom: 0; }
+  .freq td { padding: 0; border: 0; white-space: normal; text-align: left !important; }
+  .freq td:first-child { grid-column: 1 / 4; min-width: 0; }
+  .freq td:nth-child(2) { grid-column: 4; grid-row: 1; text-align: right !important; align-self: center; }
+  .freq td:first-child { grid-row: 1; align-self: center; }
+  .freq td:nth-child(2) .pct { justify-content: flex-end; min-width: 0; }
+  .freq td:nth-child(2) .pct b { width: auto; }
+  .freq td:nth-child(2) .pct-bar { display: none; }
+  .freq td:nth-child(2) b { font-size: 1.15rem; }
+  .freq td[data-label] { font-size: .95rem; }
+  .freq td[data-label]::before { content: attr(data-label); display: block; font-size: .72rem; color: var(--muted); line-height: 1.2; margin-bottom: 2px; }
+  .freq td.fq-dots { grid-column: 1 / -1; order: 9; }
+  .freq td.fq-dots .dots { flex-wrap: wrap; }
+  .freq .name { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; min-width: 0; }
+
+  /* Configurações: grupos recolhidos com resumo, rótulos curtos e botões maiores */
+  .perm-head { flex-wrap: wrap; }
+  .perm-head h2 { flex-basis: 100%; }
+  .perm-head .btn { width: 100%; justify-content: center; min-height: 42px; }
+  .pg-sums { display: inline-flex; gap: 6px; margin-left: auto; font-family: "Inter", sans-serif; font-size: .8rem; font-weight: 600; }
+  .pg-sum { padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); }
+  .pg-sum.allow { color: #b9f0bf; border-color: #3f7a45; }
+  .pg-sum.approval { color: #f3d699; border-color: #8a6a1c; }
+  .pg-sum.deny { color: #ffc9c0; border-color: #7a2a20; }
+  .perm-group.pfold > .perm-gh { cursor: pointer; user-select: none; margin: 0; }
+  .perm-group.pfold > .perm-gh::after { content: "▾"; color: var(--muted); font-size: .9rem; transition: transform .2s ease; }
+  .perm-group.pfold.folded > .perm-gh::after { transform: rotate(-90deg); }
+  .perm-group.pfold.folded > .perm-row { display: none; }
+  .perm-group.pfold:not(.folded) > .perm-gh { margin-bottom: 8px; }
+  .perm-row { padding: 12px 0; }
+  .perm-row .seg button { min-height: 44px; padding: 6px 4px; font-size: .88rem; }
+  .pm-l { display: none; }
+  .pm-s { display: inline; }
+  .req-row { gap: 8px; }
+  .req-row > .btn { flex: 1 1 0; justify-content: center; min-height: 42px; }
+}

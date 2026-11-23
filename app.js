@@ -4027,6 +4027,10 @@
             ${hasUntyped ? `<option value="none" ${F.type === 'none' ? 'selected' : ''}>Sem tipo</option>` : ''}
           </select>
           <button class="btn small" id="f-copy">📋 Copiar</button>
+          <label class="fq-sort-m">Ordenar por <select class="inline" id="fq-sort">
+            ${[['pct', 'Frequência'], ['name', 'Nome'], ['present', 'Presenças'], ['noShow', 'Confirmou e faltou'], ['noAnswer', 'Sem resposta'], ['last', 'Última presença']]
+              .map(([k, l]) => `<option value="${k}" ${F.sort === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
+            <button type="button" class="btn small ghost" id="fq-dir" title="Inverter a ordem" aria-label="Inverter a ordem">${F.dir === 1 ? '▲' : '▼'}</button></label>
         </div>
       </div>
 
@@ -4057,11 +4061,11 @@
             ${rows.map((r) => `<tr>
               <td><div class="row" style="gap:8px;flex-wrap:nowrap">${avatar(r.m)}<span class="name"><a class="member-link" href="#/membro/${encodeURIComponent(r.m.id)}">${esc(displayName(r.m))}</a>${medalsHtml(r.m.id)}${r.m.char_class ? ` ${classTag(r.m.char_class)}` : ''}</span></div></td>
               <td><div class="pct"><b class="${pctClass(r.pct)}">${pctText(r.pct)}</b><span class="pct-bar"><span class="${pctClass(r.pct)}" style="width:${Math.round((r.pct || 0) * 100)}%"></span></span></div></td>
-              <td class="num">${r.present}<span class="muted">/${r.total}</span></td>
-              <td class="num ${r.noShow ? 'c-no' : 'muted'}">${r.noShow}</td>
-              <td class="num ${r.noAnswer ? '' : 'muted'}">${r.noAnswer}</td>
-              <td><div class="dots">${dots(r)}</div></td>
-              <td class="muted small">${r.last ? fmtShortDate(r.last) : '—'}</td>
+              <td class="num" data-label="Presenças">${r.present}<span class="muted">/${r.total}</span></td>
+              <td class="num ${r.noShow ? 'c-no' : 'muted'}" data-label="Confirmou e faltou">${r.noShow}</td>
+              <td class="num ${r.noAnswer ? '' : 'muted'}" data-label="Sem resposta">${r.noAnswer}</td>
+              <td class="fq-dots"><div class="dots">${dots(r)}</div></td>
+              <td class="muted small" data-label="Última presença">${r.last ? fmtShortDate(r.last) : '—'}</td>
             </tr>`).join('')}
           </tbody>
         </table>
@@ -4072,6 +4076,8 @@
 
     $('#f-days').addEventListener('change', (e) => { F.days = Number(e.target.value); viewFrequency(); });
     $('#fq-type').addEventListener('change', (e) => { F.type = e.target.value; viewFrequency(); });
+    $('#fq-sort')?.addEventListener('change', (e) => { F.sort = e.target.value; F.dir = F.sort === 'name' ? 1 : -1; viewFrequency(); });
+    $('#fq-dir')?.addEventListener('click', () => { F.dir *= -1; viewFrequency(); });
     main.querySelectorAll('[data-sort]').forEach((b) => b.addEventListener('click', () => {
       const k = b.dataset.sort;
       if (F.sort === k) F.dir *= -1; else { F.sort = k; F.dir = k === 'name' ? 1 : -1; }
@@ -7533,6 +7539,7 @@
 
   const sqlMissingCard = () => '<div class="card attend-sum warn">As Configurações ainda não estão ativas no banco. Rode no Supabase o trecho “Configurações do líder” do arquivo <code>supabase/schema.sql</code> e recarregue a página.</div>';
 
+  const CFG_OPEN = new Set(); // grupos de permissões abertos no celular (continuam abertos ao trocar uma opção)
   async function viewConfig() {
     if (!isLeader()) { location.hash = '#/'; return; }
     await loadPerms();
@@ -7547,21 +7554,43 @@
       <h2>Aprovações pendentes ${pend.length ? `<span class="badge warn">${pend.length}</span>` : ''}</h2>
       <div class="card req-list">${pend.length ? pend.map((r) => requestRow(r, { actions: true })).join('') : '<p class="muted small" style="margin:0">Nenhuma solicitação aguardando você.</p>'}</div>
 
-      <div class="section-head" style="margin-top:24px"><h2>Permissões dos oficiais</h2>
+      <div class="section-head perm-head" style="margin-top:24px"><h2>Permissões dos oficiais</h2>
         <button class="btn small ghost" id="perm-reset">Restaurar padrão (tudo permitido)</button></div>
       <p class="muted small">Você (líder) sempre pode tudo. <b>Precisa de aprovação</b>: a ação do oficial só acontece depois que você aprovar aqui. <b>Bloqueado</b>: a opção some para os oficiais e o banco recusa a ação.</p>
-      ${PERMS.map((g) => `<div class="card perm-group">
-        <h3>${esc(g.group)}</h3>
+      ${PERMS.map((g) => {
+        const n = (m) => g.items.filter((p) => permMode(p.key) === m).length;
+        const sum = [['allow', '✔'], ['approval', '⏳'], ['deny', '⛔']].filter(([m]) => n(m)).map(([m, ic]) => `<span class="pg-sum ${m}" title="${esc(PERM_MODES.find(([k]) => k === m)[1])}">${ic} ${n(m)}</span>`).join('');
+        return `<div class="card perm-group" data-pg="${esc(g.group)}">
+        <h3 class="perm-gh"><span>${esc(g.group)}</span><span class="pg-sums">${sum}</span></h3>
         ${g.items.map((p) => `<div class="perm-row">
           <div class="spacer"><b>${esc(p.label)}</b>${p.desc ? `<div class="muted small">${esc(p.desc)}</div>` : ''}</div>
           <div class="seg" role="group" aria-label="${esc(p.label)}">
-            ${PERM_MODES.filter(([m]) => m !== 'approval' || p.approval).map(([m, l]) => `<button class="${permMode(p.key) === m ? 'on' : ''} mode-${m}" data-perm="${p.key}" data-mode="${m}">${l}</button>`).join('')}
+            ${PERM_MODES.filter(([m]) => m !== 'approval' || p.approval).map(([m, l]) => `<button class="${permMode(p.key) === m ? 'on' : ''} mode-${m}" data-perm="${p.key}" data-mode="${m}" title="${esc(l)}"><span class="pm-l">${l}</span><span class="pm-s">${{ allow: 'Permitido', approval: 'Aprovação', deny: 'Bloqueado' }[m]}</span></button>`).join('')}
           </div>
         </div>`).join('')}
-      </div>`).join('')}
+      </div>`;
+      }).join('')}
 
       ${done.length ? `<h2 style="margin-top:24px">Decisões recentes</h2><div class="card req-list">${done.map((r) => requestRow(r)).join('')}</div>` : ''}`;
 
+    // Celular: cada grupo de permissões fica recolhido (com o resumo ✔ ⏳ ⛔); tocar no título abre
+    if (matchMedia('(max-width: 760px)').matches) {
+      main.querySelectorAll('.perm-group').forEach((c) => {
+        const h = c.querySelector('.perm-gh');
+        const key = c.dataset.pg;
+        c.classList.add('pfold');
+        if (!CFG_OPEN.has(key)) c.classList.add('folded');
+        h.setAttribute('role', 'button'); h.setAttribute('tabindex', '0');
+        h.setAttribute('aria-expanded', String(!c.classList.contains('folded')));
+        const toggle = () => {
+          const folded = c.classList.toggle('folded');
+          h.setAttribute('aria-expanded', String(!folded));
+          if (folded) CFG_OPEN.delete(key); else CFG_OPEN.add(key);
+        };
+        h.addEventListener('click', toggle);
+        h.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+      });
+    }
     main.querySelectorAll('[data-perm]').forEach((b) => b.addEventListener('click', async () => {
       if (permMode(b.dataset.perm) === b.dataset.mode) return;
       main.querySelectorAll('[data-perm]').forEach((x) => { x.disabled = true; });
