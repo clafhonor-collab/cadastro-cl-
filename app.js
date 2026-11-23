@@ -461,6 +461,11 @@
       async createRaffle(row) { return ok(await sb.rpc('create_raffle', { p: cleanRaffleRow(row) })); },
       async updateRaffle(id, row) { ok(await sb.rpc('update_raffle', { p_id: id, p: cleanRaffleRow(row) })); },
       async deleteRaffle(id) { ok(await sb.rpc('delete_raffle', { p_id: id })); },
+      // Revisão do resultado (só o líder)
+      async raffleReroll(id, userId, reason) { return ok(await sb.rpc('raffle_reroll', { p_raffle: id, p_user: userId, p_reason: reason || '' })); },
+      async raffleRerollAll(id, reason) { ok(await sb.rpc('raffle_reroll_all', { p_raffle: id, p_reason: reason || '' })); },
+      async rafflePublish(id) { ok(await sb.rpc('raffle_publish', { p_raffle: id })); },
+      async raffleRerolls(id) { return ok(await sb.from('raffle_rerolls').select('*').eq('raffle_id', id).order('done_at')) || []; },
       async joinRaffle(id) { ok(await sb.rpc('join_raffle', { p_id: id })); },
       async leaveRaffle(id) { ok(await sb.rpc('leave_raffle', { p_id: id })); },
       async removeRaffleEntry(id, userId, reason) { ok(await sb.rpc('remove_raffle_entry', { p_id: id, p_user: userId, p_reason: reason })); },
@@ -867,7 +872,8 @@
       { id: 602, draw_at: drawIso(0), prize_kind: 'bp_simple', prize_qty: 3, prize_text: null, winners_count: 3, status: 'open',
         created_by: 'u1', created_at: new Date(Date.now() - 2 * 86400e3).toISOString(), drawn_at: null, eligible_count: null },
     ];
-    db.rwinners = [{ raffle_id: 600, user_id: 'u4', position: 1 }, { raffle_id: 600, user_id: 'u9', position: 2 }];
+    db.rwinners = [{ raffle_id: 600, user_id: 'u0', position: 1 }, { raffle_id: 600, user_id: 'u9', position: 2 }];
+    db.rrerolls = [];
     db.rentries = [];
     const enter = (raffleId, userId, removed) => db.rentries.push({ raffle_id: raffleId, user_id: userId, entered_at: new Date(Date.now() - 3 * 86400e3).toISOString(),
       removed_at: removed ? new Date(Date.now() - 5 * 3600e3).toISOString() : null, removed_by: removed ? 'u1' : null, removed_reason: removed || null });
@@ -880,6 +886,14 @@
       return db.events.filter((e) => e.type_id === GDS && Date.parse(e.starts_at) >= from && Date.parse(e.starts_at) < to)
         .sort((a, b) => Date.parse(a.starts_at) - Date.parse(b.starts_at))
         .map((e) => ({ event_id: e.id, title: e.title, starts_at: e.starts_at, registered: db.attendance.some((a) => a.event_id === e.id) }));
+    };
+    // Demonstração: só o líder, e só com o sorteio em revisão
+    const reviewRowDemo = (id) => {
+      if (profile(state.user.id)?.role !== 'leader') throw new Error('Só o líder revisa o resultado do sorteio');
+      const r = db.raffles.find((x) => x.id === id);
+      if (!r) throw new Error('Sorteio não encontrado');
+      if (r.status !== 'review') throw new Error('Este sorteio não está em revisão');
+      return r;
     };
     const raffleChecksDemo = (r) => {
       const wars = raffleWarsDemo(r);
@@ -1776,15 +1790,21 @@
           ...r,
           entries: db.rentries.filter((e) => e.raffle_id === r.id && (isOfficer() || e.user_id === state.user.id))
             .map((e) => pick(e, ['raffle_id', 'user_id', 'entered_at', 'removed_at'])),
-          winners: db.rwinners.filter((w) => w.raffle_id === r.id).map((w) => ({ ...w })),
+          // Em revisão: só o líder vê os ganhadores (igual ao banco)
+          winners: r.status === 'review' && profile(state.user.id)?.role !== 'leader' ? []
+            : db.rwinners.filter((w) => w.raffle_id === r.id).map((w) => ({ ...w })),
         }));
       },
       async runRaffleDraws() {
         db.raffles.filter((r) => r.status === 'open' && Date.parse(r.draw_at) <= Date.now()).forEach((r) => {
           const pool = raffleChecksDemo(r).filter((c) => c.eligible).map((c) => c.user_id);
           for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [pool[i], pool[j]] = [pool[j], pool[i]]; }
+          // Só na demonstração: põe na frente alguém que já ganhou antes, para mostrar o aviso da revisão
+          const before = new Set(db.rwinners.map((w) => w.user_id));
+          const rep = pool.find((u) => before.has(u));
+          if (rep) { pool.splice(pool.indexOf(rep), 1); pool.unshift(rep); }
           pool.slice(0, r.winners_count).forEach((u, i) => db.rwinners.push({ raffle_id: r.id, user_id: u, position: i + 1 }));
-          Object.assign(r, { status: 'drawn', drawn_at: new Date().toISOString(), eligible_count: pool.length });
+          Object.assign(r, { status: 'review', drawn_at: new Date().toISOString(), eligible_count: pool.length });
         });
       },
       async raffleStaff(id) {
@@ -1814,6 +1834,36 @@
         if (Date.parse(c.draw_at) <= Date.now()) throw new Error('Escolha um domingo que ainda não passou');
         if (db.raffles.some((x) => x.id !== id && Date.parse(x.draw_at) === Date.parse(c.draw_at))) throw new Error('Já existe um sorteio neste domingo');
         Object.assign(r, c);
+      },
+      async raffleReroll(id, userId, reason) {
+        const r = reviewRowDemo(id);
+        const w = db.rwinners.find((x) => x.raffle_id === id && x.user_id === userId);
+        if (!w) throw new Error('Este membro não está entre os ganhadores');
+        db.rwinners = db.rwinners.filter((x) => x !== w);
+        const out = new Set([...db.rwinners.filter((x) => x.raffle_id === id).map((x) => x.user_id), ...db.rrerolls.filter((x) => x.raffle_id === id && x.user_id).map((x) => x.user_id), userId]);
+        const pool = raffleChecksDemo(r).filter((c) => c.eligible && !out.has(c.user_id)).map((c) => c.user_id);
+        const nu = pool.length ? pool[Math.floor(Math.random() * pool.length)] : null;
+        if (nu) db.rwinners.push({ raffle_id: id, user_id: nu, position: w.position });
+        db.rrerolls.push({ id: db.rrerolls.length + 1, raffle_id: id, user_id: userId, new_user: nu, position: w.position, reason: String(reason || '').trim().slice(0, 200) || null, done_by: state.user.id, done_at: new Date().toISOString() });
+        return nu;
+      },
+      async raffleRerollAll(id, reason) {
+        const r = reviewRowDemo(id);
+        const out = new Set(db.rrerolls.filter((x) => x.raffle_id === id && x.user_id).map((x) => x.user_id));
+        const pool = raffleChecksDemo(r).filter((c) => c.eligible && !out.has(c.user_id)).map((c) => c.user_id);
+        for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [pool[i], pool[j]] = [pool[j], pool[i]]; }
+        db.rwinners = db.rwinners.filter((x) => x.raffle_id !== id);
+        pool.slice(0, r.winners_count).forEach((u, i) => db.rwinners.push({ raffle_id: id, user_id: u, position: i + 1 }));
+        db.rrerolls.push({ id: db.rrerolls.length + 1, raffle_id: id, user_id: null, new_user: null, position: null, reason: String(reason || '').trim().slice(0, 200) || null, done_by: state.user.id, done_at: new Date().toISOString() });
+      },
+      async rafflePublish(id) {
+        const r = reviewRowDemo(id);
+        const now = new Date().toISOString();
+        Object.assign(r, { status: 'drawn', reviewed_by: state.user.id, reviewed_at: now, drawn_at: now });
+      },
+      async raffleRerolls(id) {
+        if (profile(state.user.id)?.role !== 'leader') return [];
+        return db.rrerolls.filter((x) => x.raffle_id === id).map((x) => ({ ...x }));
       },
       async deleteRaffle(id) {
         raffleStaffDemo();
@@ -5570,6 +5620,12 @@
         mine.push({ icon: '🎟️', text: `Sorteio aberto: <b>${esc(prizeText(r))}</b>`, sub: `${esc(fmtDrawShort(r.draw_at))} às 22h · inscreva-se`, href: '#/sorteio' });
       }
     });
+    // Líder: resultado aguardando a revisão antes de ser publicado
+    if (isLeader()) {
+      state.raffles.filter((r) => r.status === 'review').forEach((r) => {
+        lead.push({ icon: '🎟️', text: `Sorteio de <b>${esc(fmtDrawShort(r.draw_at))}</b> aguardando sua revisão`, sub: 'Confira os ganhadores e publique o resultado', href: '#/sorteio' });
+      });
+    }
     // Para a staff: remoções feitas pelos outros (quem removeu não recebe o próprio alerta)
     if (isOfficer()) {
       state.raffleRemovals.filter((x) => x.removed_by !== me && x.user_id !== me && fresh(x.removed_at)).forEach((x) => {
@@ -5589,6 +5645,13 @@
     const byDate = (a, b) => Date.parse(a.draw_at) - Date.parse(b.draw_at);
     const open = state.raffles.filter((r) => r.status === 'open').sort(byDate);
     const drawn = state.raffles.filter((r) => r.status === 'drawn').sort((a, b) => byDate(b, a));
+    const inReview = state.raffles.filter((r) => r.status === 'review').sort(byDate);
+    const leader = isLeader();
+    const rerolls = {};
+    if (leader && inReview.length) {
+      const rows = await Promise.all(inReview.map((r) => api.raffleRerolls(r.id).catch(() => [])));
+      inReview.forEach((r, i) => { rerolls[r.id] = rows[i]; });
+    }
     const latest = drawn[0];
     const showResult = !!latest && now - Date.parse(latest.draw_at) < RAFFLE_RESULT_DAYS * 86400e3;
     const history = drawn.flatMap((r) => sortedWinners(r).map((w) => ({ ...w, raffle: r }))).slice(0, 3);
@@ -5608,6 +5671,40 @@
           </li>`).join('')}</ul>`
           : '<p class="muted" style="margin:12px 0 0">Nenhum inscrito estava elegível neste sorteio.</p>'}
         ${staff ? `<div class="row raffle-share"><button class="btn small primary" data-rf-share="${r.id}">🖼️ Compartilhar no WhatsApp</button></div>` : ''}
+      </div>`;
+
+    // Revisão (só o líder): quem também ganhou nos sorteios anteriores fica marcado
+    const prevWins = (r, uid) => drawn.filter((d) => Date.parse(d.draw_at) < Date.parse(r.draw_at)).slice(0, 3)
+      .map((d, i) => ({ d, i })).filter(({ d }) => (d.winners || []).some((w) => w.user_id === uid));
+    const reviewCard = (r) => {
+      const ws = sortedWinners(r);
+      const log = rerolls[r.id] || [];
+      return `<div class="card raffle-review">
+        <h2>🔍 Revisão do sorteio</h2>
+        <p class="small" style="margin:0 0 6px">O sorteio de <b>${esc(fmtDraw(r.draw_at))}</b> já foi feito. <b>Só você vê os ganhadores</b>: confira, troque quem precisar e publique. Até lá, os membros veem só que o resultado está em revisão.</p>
+        <div class="muted small">Prêmio: <b>${esc(prizeText(r))}</b> · ${plural(r.eligible_count || 0, 'inscrito elegível', 'inscritos elegíveis')}</div>
+        ${ws.length ? `<ul class="raffle-winners review">${ws.map((w) => {
+          const pw = prevWins(r, w.user_id);
+          return `<li class="raffle-winner${pw.length ? ' repeat' : ''}">
+            ${trophy()}
+            <div class="spacer"><div class="raffle-winner-name">${esc(nameOf(w.user_id))}</div>
+              ${pw.length ? `<div class="raffle-repeat">⚠ Também ganhou ${pw.map(({ d, i }) => `${i === 0 ? 'o sorteio anterior' : 'o sorteio'} (${esc(fmtDrawShort(d.draw_at))})`).join(' e ')}</div>` : '<div class="muted small">Não ganhou nos últimos sorteios</div>'}</div>
+            <button class="btn small" data-rv-reroll="${r.id}" data-user="${esc(w.user_id)}" data-repeat="${pw.length ? '1' : ''}">🎲 Sortear outro</button>
+          </li>`;
+        }).join('')}</ul>` : '<p class="muted" style="margin:12px 0 0">Nenhum inscrito elegível foi sorteado.</p>'}
+        ${ws.length < r.winners_count && ws.length ? `<p class="small rc-note">Faltaram elegíveis: ${ws.length} de ${r.winners_count} ganhadores.</p>` : ''}
+        ${log.length ? `<details class="rv-log"><summary class="muted small">Trocas feitas (${log.length})</summary>${log.map((x) => `<div class="small">${x.user_id
+          ? `🎲 ${esc(nameOf(x.user_id))} → ${x.new_user ? `<b>${esc(nameOf(x.new_user))}</b>` : '<i>ninguém (sem elegíveis)</i>'}`
+          : '🎲 Sorteou tudo de novo'}${x.reason ? ` · “${esc(x.reason)}”` : ''} <span class="muted">· ${esc(fmtWhenShort(x.done_at))}</span></div>`).join('')}</details>` : ''}
+        <div class="row raffle-review-actions">
+          <button class="btn ghost" data-rv-all="${r.id}">🎲 Sortear tudo de novo</button>
+          <button class="btn primary" data-rv-publish="${r.id}">✔ Publicar resultado</button>
+        </div>
+      </div>`;
+    };
+    const reviewNotice = (r) => `<div class="card raffle-result pending">
+        <h2>⏳ Resultado em revisão</h2>
+        <p class="small" style="margin:0">O sorteio de <b>${esc(fmtDraw(r.draw_at))}</b> (${esc(prizeText(r))}) já foi realizado. O resultado está em revisão pela liderança e aparece aqui assim que for publicado.</p>
       </div>`;
 
     const openCard = (r) => {
@@ -5641,6 +5738,7 @@
         Para concorrer, inscreva-se e tenha <b>presença registrada nas duas Guerras das Sombras da semana</b>.</p>
       ${staff && !isLeader() && can('raffle_manage') && permMode('raffle_manage') === 'approval' ? '<p class="small rc-note">⏳ Os sorteios que você ativar, editar ou cancelar só valem depois que o líder aprovar. Acompanhe em “Solicitações”.</p>' : ''}
       ${staff && state.raffleError ? '<div class="card attend-sum warn">O sorteio ainda não está ativo no banco. Rode no Supabase o arquivo <code>supabase/sorteio.sql</code> e recarregue a página.</div>' : ''}
+      ${inReview.map((r) => (leader ? reviewCard(r) : reviewNotice(r))).join('')}
       ${showResult ? resultCard(latest) : ''}
       ${open.length ? `<div class="section-head"><h2>${open.length > 1 ? 'Próximos sorteios' : 'Próximo sorteio'}</h2></div>${open.map(openCard).join('')}`
         : `<div class="card empty">Nenhum sorteio ativado no momento.${staff
@@ -5665,6 +5763,25 @@
       e.currentTarget.setAttribute('aria-expanded', String(!msg.hidden));
     });
     $('#btn-new-rf')?.addEventListener('click', () => openRaffleForm());
+    // Revisão do líder
+    main.querySelectorAll('[data-rv-reroll]').forEach((b) => b.addEventListener('click', () => {
+      const r = state.raffles.find((x) => x.id === Number(b.dataset.rvReroll));
+      if (r) openRerollDialog(r, b.dataset.user, b.dataset.repeat === '1', async (reason) => {
+        const nu = await api.raffleReroll(r.id, b.dataset.user, reason);
+        toast(nu ? `${nameOf(b.dataset.user)} saiu. Novo ganhador: ${nameOf(nu)}` : `${nameOf(b.dataset.user)} saiu. Não há mais ninguém elegível para entrar no lugar.`, !nu);
+      });
+    }));
+    main.querySelectorAll('[data-rv-all]').forEach((b) => b.addEventListener('click', () => {
+      const r = state.raffles.find((x) => x.id === Number(b.dataset.rvAll));
+      if (r) openRerollDialog(r, null, false, async (reason) => { await api.raffleRerollAll(r.id, reason); toast('Sorteado de novo. Confira os novos ganhadores.'); });
+    }));
+    main.querySelectorAll('[data-rv-publish]').forEach((b) => b.addEventListener('click', async () => {
+      const r = state.raffles.find((x) => x.id === Number(b.dataset.rvPublish));
+      if (!r) return;
+      const names = sortedWinners(r).map((w) => nameOf(w.user_id)).join(', ');
+      if (!(await confirmDialog(`Publicar o resultado do sorteio de ${fmtDrawShort(r.draw_at)}? ${names ? `Ganhadores: ${names}.` : 'Sem ganhadores.'} Todos os membros passam a ver o resultado, e os ganhadores são avisados.`, 'Publicar'))) return;
+      run(() => api.rafflePublish(r.id), 'Resultado publicado');
+    }));
     main.querySelectorAll('[data-rf-share]').forEach((b) => b.addEventListener('click', async () => {
       const r = state.raffles.find((x) => x.id === Number(b.dataset.rfShare));
       if (!r) return;
@@ -5747,6 +5864,29 @@
           <div class="small">${r.winners?.length ? sortedWinners(r).map((w) => `🏆 ${esc(nameOf(w.user_id))}`).join(' · ') : '<span class="muted">Sem ganhadores</span>'}
             <span class="muted">· ${plural(r.eligible_count || 0, 'elegível', 'elegíveis')}</span></div>
         </div>`).join('')}</div>` : ''}`;
+  }
+
+  // Líder: sortear outro no lugar de um ganhador (ou tudo de novo), com motivo opcional
+  function openRerollDialog(r, userId, repeat, doIt) {
+    const one = !!userId;
+    openDialog(`<form id="rv-form" class="stack">
+        <h2>${one ? 'Sortear outro ganhador' : 'Sortear tudo de novo'}</h2>
+        <p class="small" style="margin:0">${one
+          ? `<b>${esc(nameOf(userId))}</b> sai deste sorteio e não volta a ser sorteado nele. Outro inscrito elegível é sorteado no lugar.`
+          : 'Os ganhadores atuais são descartados e o sorteio é feito de novo entre os elegíveis (quem você já tirou continua de fora).'}</p>
+        <div class="field"><label for="rv-reason">Motivo <span class="muted small">(opcional, fica no registro da revisão)</span></label>
+          <input id="rv-reason" maxlength="200" value="${one && repeat ? 'Ganhou o sorteio anterior' : ''}" placeholder="Ex.: ganhou o sorteio anterior"></div>
+        <div class="row end"><button type="button" class="btn ghost" data-close>Cancelar</button>
+          <button type="submit" class="btn primary">🎲 ${one ? 'Sortear outro' : 'Sortear de novo'}</button></div>
+      </form>`, (d) => {
+      $('#rv-form', d).addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const btn = $('button[type=submit]', d);
+        btn.disabled = true;
+        try { await doIt($('#rv-reason', d).value.trim()); dlg.close(); await loadRaffles(); await viewRaffle(); }
+        catch (err) { fail(err); btn.disabled = false; }
+      });
+    });
   }
 
   function openRaffleRemove(r, userId) {
