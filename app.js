@@ -511,6 +511,12 @@
       },
       async saveTeams(eventId, slots) { ok(await sb.rpc('save_teams', { p_event: eventId, p_slots: slots })); },
       // Histórico de alterações do evento e das salas (só líder e oficiais)
+      // Saídas de sala dos últimos dias nos eventos informados (sininho da liderança)
+      async roomExits(eventIds) {
+        if (!eventIds.length) return [];
+        return ok(await sb.from('event_log').select('event_id, at, actor, room, detail').in('event_id', eventIds).eq('kind', 'room')
+          .gte('at', new Date(Date.now() - 7 * 86400e3).toISOString()).order('at', { ascending: false }).limit(200)) || [];
+      },
       async eventLog(eventId) {
         return ok(await sb.from('event_log').select('*').eq('event_id', eventId)
           .order('at', { ascending: false }).order('id', { ascending: false }).limit(300));
@@ -1530,6 +1536,12 @@
         r.withdraw_reason = null; r.withdraw_requested_at = null;
       },
       async updateEvent(id, row) { const e = db.events.find((x) => x.id === id); logEventUpdate(e, row); Object.assign(e, row); },
+      async roomExits(eventIds) {
+        if (!isOfficer()) return [];
+        const since = Date.now() - 7 * 86400e3;
+        return db.elog.filter((x) => eventIds.includes(x.event_id) && x.kind === 'room' && Date.parse(x.at) >= since)
+          .map((x) => ({ event_id: x.event_id, at: x.at, actor: x.actor, room: x.room, detail: JSON.parse(JSON.stringify(x.detail)) }));
+      },
       async eventLog(eventId) {
         if (!isOfficer()) return [];
         return db.elog.filter((x) => x.event_id === eventId)
@@ -3329,8 +3341,10 @@
         } catch (e) { fail(e); }
       };
       try {
-        if (already) { await api.clearRsvp(ev.id, acct); toast('Resposta removida', false, { label: 'Desfazer', fn: undo }); }
-        else { await api.setRsvp(ev.id, false, null, acct); toast(`✖ Não vou: ${ev.title}`, false, { label: 'Desfazer', fn: undo }); }
+        // Quem estava num time não ganha "Desfazer": voltar para "Vou" não devolve a vaga no time (só a liderança escala)
+        const undoAct = team ? null : { label: 'Desfazer', fn: undo };
+        if (already) { await api.clearRsvp(ev.id, acct); toast('Resposta removida', false, undoAct); }
+        else { await api.setRsvp(ev.id, false, null, acct); toast(team ? `✖ Não vou: você saiu do time ${team}` : `✖ Não vou: ${ev.title}`, false, undoAct); }
         await rerender();
       } catch (e) { fail(e); root.querySelectorAll(`[data-rsvp="${ev.id}"]`).forEach((x) => { x.disabled = false; }); }
     }));
@@ -3657,6 +3671,7 @@
   }
 
   async function viewEvent(id) {
+    if (isOfficer()) { markExitsSeen(Number(id)); renderBell(); }
     loading();
     const [ev, result] = await Promise.all([api.event(id), api.eventResult(id).catch(() => null)]);
     if (!ev) { main.innerHTML = `<div class="card empty">Evento não encontrado (talvez tenha sido apagado).<br><br>${backBtn('#/', 'Voltar')}</div>`; return; }
@@ -5292,6 +5307,44 @@
   // Aviso ao entrar no site (e enquanto ele está aberto) quando a staff responde ou resolve um ticket meu,
   // com atalho direto para o ticket. Some ao abrir o ticket ou ao fechar o aviso (✕).
   const tkToastKey = () => `tk-notice-${state.user?.id}`;
+  // ---------- Liderança: quem estava escalado marcou "Não vou" e saiu do time ----------
+  // Vem do histórico do evento (saída automática da sala feita pelo próprio membro ou por quem pilota a conta).
+  // Saídas aceitas pela liderança (pedido de saída) e remoções feitas por oficiais não entram.
+  const exitSeenKey = () => `exit-seen-${state.user?.id}`;
+  const exitSeen = () => { try { return JSON.parse(localStorage.getItem(exitSeenKey()) || '{}') || {}; } catch { return {}; } };
+  function markExitsSeen(eventId) {
+    const m = exitSeen(); m[eventId] = new Date().toISOString();
+    try { localStorage.setItem(exitSeenKey(), JSON.stringify(m)); } catch { /* ignora */ }
+    state.teamExits = (state.teamExits || []).filter((x) => x.event_id !== eventId);
+  }
+  async function loadTeamExits() {
+    state.teamExits = [];
+    if (!isOfficer() || !(can('teams_build') || isLeader())) return;
+    const evs = (state.bellUp || []).filter((ev) => !hasStarted(ev));
+    const logs = await api.roomExits(evs.map((e) => e.id)).catch(() => []);
+    const seen = exitSeen();
+    const byId = Object.fromEntries(evs.map((e) => [e.id, e]));
+    const out = [];
+    logs.forEach((l) => {
+      const d = l.detail || {};
+      if (!d.auto || !(d.removed || []).length) return;
+      if (seen[l.event_id] && Date.parse(l.at) <= Date.parse(seen[l.event_id])) return;
+      const ev = byId[l.event_id];
+      if (!ev) return;
+      const actor = memberById(l.actor);
+      d.removed.forEach((uid) => {
+        // Só quando foi a própria conta (ou quem pilota) que marcou "Não vou"
+        const selfMade = l.actor === uid || (actor && !['officer', 'leader'].includes(actor.role));
+        if (!selfMade) return;
+        // Já voltou para algum time? Então não precisa avisar
+        if ((ev.team_slots || []).some((x) => x.user_id === uid)) return;
+        if (out.some((x) => x.event_id === l.event_id && x.user_id === uid)) return;
+        out.push({ event_id: l.event_id, user_id: uid, room: l.room, at: l.at });
+      });
+    });
+    state.teamExits = out;
+  }
+
   // ---------- Avisos da liderança (ex.: atributos alterados pelo líder) ----------
   async function loadNotices() {
     state.notices = await api.myNotices(myAccounts().map((a) => a.id)).catch(() => []); // banco sem a tabela: sem avisos
@@ -9442,7 +9495,7 @@
       can('attendance') ? api.events(true).catch(() => []) : [],
     ]);
     state.bellUp = up || []; state.bellPast = past || [];
-    await Promise.all([loadPilotage(), loadNotices()]);
+    await Promise.all([loadPilotage(), loadNotices(), loadTeamExits()]);
     state.bellReady = true; // a partir daqui o histórico do sininho pode comparar as pendências
   }
   let bellTimer = null;
@@ -9498,6 +9551,12 @@
 
     // --- Liderança (conforme as Configurações do líder) ---
     if (isOfficer()) {
+      (state.teamExits || []).forEach((x) => {
+        const ev = (state.bellUp || []).find((e) => e.id === x.event_id);
+        if (!ev) return;
+        lead.push({ icon: '🚪', text: `<b>${esc(nameOf(x.user_id))}</b> marcou “Não vou” e saiu do time <b>${esc(x.room || '')}</b>`,
+          sub: `${esc(ev.title)} · ${esc(fmtWhenShort(ev.starts_at))} · vaga aberta`, href: `#/evento/${ev.id}` });
+      });
       if (can('member_approve')) {
         const n = state.members.filter((m) => m.role === 'pending').length;
         if (n) lead.push({ icon: '🙋', text: `${plural(n, 'membro aguardando', 'membros aguardando')} aprovação`, href: '#/membros' });
