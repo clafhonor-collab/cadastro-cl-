@@ -1493,12 +1493,18 @@ fieldset.invalid { border-color: #ef4444; }
 .card.fold.folded > h2 { margin-bottom: 0; }
 @media (max-width: 760px) {
   /* Topo numa linha: ☰, emblema e, à direita, conta, sino e foto */
-  body.authed .brand .wordmark { display: none; }
+  /* Nome do clã continua no topo, um pouco menor; a conta "Respondendo como" encolhe com reticências */
+  body.authed .brand { flex: none; gap: 6px; }
+  body.authed .brand .emblem { display: none; }   /* no celular fica o nome do clã; o emblema volta no computador */
+  body.authed .userbox { flex: 1 1 auto; justify-content: flex-end; }
+  body.authed .acting { flex: 0 1 auto; }
+  body.authed .brand .wordmark { font-size: .95rem; letter-spacing: .1em; white-space: nowrap; }
   body.authed .topbar { flex-wrap: nowrap; padding: 8px 12px; }
   body.authed .userbox { min-width: 0; gap: 6px; }
   .userbox .gear { display: none; }
   .acting { min-width: 0; }
-  .acting select { max-width: 44vw; text-overflow: ellipsis; }
+  .acting select { max-width: 38vw; min-width: 0; text-overflow: ellipsis; padding-left: 8px; padding-right: 22px; }
+  body.authed .nav-toggle { margin-left: -8px; }
   .nav .nav-extra { display: flex; }
   /* Selos com letra legível */
   .badge { font-size: .72rem; }
