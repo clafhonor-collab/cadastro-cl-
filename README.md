@@ -342,6 +342,8 @@ Nos tickets, o líder também pode impedir que os oficiais vejam, respondam ou r
 
 **✔ Confirmar presença:** a janela mostra a classe e os atributos num resumo de uma linha, com o botão **✎ Corrigir** para abrir os campos (se faltar algum dado, os campos já vêm abertos). O Discord é escolhido em dois botões grandes. No celular, os botões **Cancelar** e **Confirmar** ficam sempre visíveis no rodapé da janela (isso vale para todas as janelas). Se faltar algo, o campo fica vermelho com a mensagem logo abaixo, e a janela rola até ele.
 
+**📱 No celular:** o **Sair** fica dentro do menu ☰. O botão 💬 da Central de Atendimento sai da frente ao rolar a página para baixo e volta ao rolar para cima (e não aparece dentro de um ticket). O aviso da liderança aparece primeiro e o de tickets depois, mostrando um ticket por vez. Tocar no cartão de um evento abre o evento. Ao marcar **✖ Não vou**, a mensagem traz o botão **Desfazer**. Em **Passados**, os eventos aparecem aos poucos (**Mostrar eventos mais antigos**). Os campos usam letra de 16px, para o iPhone não dar zoom ao tocar.
+
 **🔔 Pendências** (sino no topo): reúne o que precisa da sua atenção.
 - **Para você:** eventos sem resposta, respostas novas nos seus tickets, candidatos nos seus recrutamentos, pedidos de piloto e edição nova do Malah News.
 - **Liderança:** membros aguardando aprovação, tickets não iniciados ou pendentes com você e solicitações dos oficiais, conforme as permissões de cada um.

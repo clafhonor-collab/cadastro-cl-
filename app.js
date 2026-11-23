@@ -124,7 +124,7 @@
   const $ = (s, r = document) => r.querySelector(s);
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   // Botão "← Voltar" com o mesmo visual do "+ Novo evento"
-  const backBtn = (href, label) => `<a href="${href}" class="btn primary back-btn">← ${label}</a>`;
+  const backBtn = (href, label) => `<a href="${href}" class="btn back-btn">← ${label}</a>`;
   const backRow = (href, label) => `<p class="back-row">${backBtn(href, label)}</p>`;
   const pad = (n) => String(n).padStart(2, '0');
   const pick = (obj, keys) => Object.fromEntries(keys.map((k) => [k, obj?.[k] ?? null]));
@@ -2202,8 +2202,8 @@
   const controllersOf = (m) => [...(m && !m.managed ? [m.id] : []), ...approvedPilotIds(m?.id)];
   function pilotLabel(m) {
     const names = approvedPilotIds(m.id).map((id) => displayName(memberById(id))).filter(Boolean);
-    if (!names.length) return m.managed ? '<span class="pilot-tag warn" title="Esta conta não tem piloto">🧑‍✈️ sem piloto</span>' : '';
-    return `<span class="pilot-tag" title="Pode ser respondida por: ${esc(names.join(', '))}">🧑‍✈️ pilotada por ${esc(names.join(', '))}</span>`;
+    if (!names.length) return m.managed ? '<span class="pilot-tag warn" title="Esta conta não tem piloto">✈️ sem piloto</span>' : '';
+    return `<span class="pilot-tag" title="Pode ser respondida por: ${esc(names.join(', '))}">✈️ pilotada por ${esc(names.join(', '))}</span>`;
   }
   function setActing(id) {
     state.acting = id;
@@ -2287,12 +2287,19 @@
   }
 
   let toastTimer;
-  function toast(msg, isErr = false) {
+  function toast(msg, isErr = false, action = null) {
     const t = $('#toast');
     t.textContent = msg;
-    t.className = `toast show${isErr ? ' err' : ''}`;
+    if (action) {
+      // Botão dentro da mensagem (ex.: "Desfazer"); a mensagem fica um pouco mais na tela
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'toast-act'; b.textContent = action.label;
+      b.addEventListener('click', () => { t.className = 'toast'; clearTimeout(toastTimer); action.fn(); }, { once: true });
+      t.append(' ', b);
+    }
+    t.className = `toast show${isErr ? ' err' : ''}${action ? ' has-act' : ''}`;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { t.className = 'toast'; }, 3500);
+    toastTimer = setTimeout(() => { t.className = 'toast'; }, action ? 6500 : 3500);
   }
   function fail(err) {
     // Ação que precisa do líder: não é erro, foi enviada para aprovação
@@ -2446,6 +2453,20 @@
   const main = $('#app');
   const loading = () => { main.innerHTML = '<div class="spinner" aria-label="Carregando"></div>'; };
 
+  // Celular: o botão 💬 sai da frente ao rolar para baixo e volta ao rolar para cima (ou no fim da página)
+  {
+    let lastY = window.scrollY;
+    window.addEventListener('scroll', () => {
+      const els = [$('#help-fab'), $('#tk-notice')].filter((x) => x && !x.hidden);
+      if (!els.length || !matchMedia('(max-width: 760px)').matches) { lastY = window.scrollY; return; }
+      const y = window.scrollY;
+      const atEnd = y + innerHeight >= document.documentElement.scrollHeight - 8;
+      if (y > lastY + 6 && y > 80 && !atEnd) els.forEach((x) => x.classList.add('away'));
+      else if (y < lastY - 6 || atEnd || y <= 80) els.forEach((x) => x.classList.remove('away'));
+      lastY = y;
+    }, { passive: true });
+  }
+
   // ---------- Menu do celular: botão ☰ que abre um painel lateral ----------
   function setupNavDrawer() {
     if ($('#nav-toggle')) return;
@@ -2511,7 +2532,8 @@
       fab.innerHTML = '<span class="help-fab-icon" aria-hidden="true">💬</span><span class="help-fab-label">Central de Atendimento</span>';
       document.body.appendChild(fab);
     }
-    fab.hidden = !(TICKETS_ON && memberUI()) || currentKey === 'teams';
+    fab.hidden = !(TICKETS_ON && memberUI()) || currentKey === 'teams' || !!parseRoute().tk;
+    fab.classList.remove('away');
     fab.href = supportOn() ? '#/atendimento' : '#/tickets';
     fab.title = supportOn() ? 'Central de Atendimento: tickets dos membros' : 'Central de Atendimento: fale com a liderança';
     fab.setAttribute('aria-label', 'Central de Atendimento');
@@ -2535,6 +2557,8 @@
           const on = currentKey === key || (key === 'utils' && currentKey === 'pilotage');
           return `<a href="${href}" class="${on ? 'active' : ''}"${on ? ' aria-current="page"' : ''}><span class="nav-ic" aria-hidden="true">${ic}</span>${label}</a>`;
         }).join('')}`;
+      nav.insertAdjacentHTML('beforeend', '<button type="button" class="nav-logout">🚪 Sair</button>');
+      nav.querySelector('.nav-logout').addEventListener('click', () => { closeNav(); api.signOut().catch(fail); });
       nav.querySelector('.nav-close').addEventListener('click', () => closeNav(true));
       nav.querySelectorAll('a').forEach((a) => a.addEventListener('click', () => closeNav()));
     } else { nav.innerHTML = ''; closeNav(); }
@@ -2545,7 +2569,7 @@
       const accounts = memberUI() ? myAccounts() : [];
       box.innerHTML = `${accounts.length > 1 || (isPilotOnly(state.me) && accounts.length) ? `<label class="acting" title="Escolha a conta do jogo pela qual você está respondendo">
           <span>Respondendo como</span>
-          <select id="acting-select" class="inline">${accounts.map((a) => `<option value="${esc(a.id)}" ${a.id === actingId() ? 'selected' : ''}>${esc(displayName(a))}${a.id === state.user.id ? ' (você)' : ' 🧑‍✈️'}</option>`).join('')}</select>
+          <select id="acting-select" class="inline">${accounts.map((a) => `<option value="${esc(a.id)}" ${a.id === actingId() ? 'selected' : ''}>${esc(displayName(a))}${a.id === state.user.id ? ' (você)' : ' ✈️'}</option>`).join('')}</select>
         </label>` : ''}
         ${memberUI() ? '<div class="bell-wrap" id="bell-wrap"></div>' : ''}
         ${memberUI() && (can('panel_view') || can('rivals_view')) ? `<a class="gear${currentKey === 'panel' || currentKey === 'rivals' ? ' active' : ''}" href="${can('panel_view') ? '#/estatisticas' : '#/rivais'}" title="Estatísticas" aria-label="Estatísticas"><span aria-hidden="true">📊</span></a>` : ''}
@@ -2776,7 +2800,7 @@
       <p>Olá, <strong>${esc(displayName(state.me))}</strong>! Seu acesso precisa ser aprovado por um oficial ou pelo líder do clã. Enquanto isso, preencha seu perfil:</p>
       <ul class="pending-kinds">
         <li><b>🎮 Jogador</b>: tem a própria conta no jogo. Informe o nome do personagem, a classe e os atributos.</li>
-        <li><b>🧑‍✈️ Membro piloto</b>: não tem conta própria, só pilota contas de outros membros. Informe seu nome e qual conta você pilota (sem classe e atributos).</li>
+        <li><b>✈️ Membro piloto</b>: não tem conta própria, só pilota contas de outros membros. Informe seu nome e qual conta você pilota (sem classe e atributos).</li>
       </ul>
       ${state.me.pilot_only ? `<p class="muted small">Cadastrado como membro piloto${state.me.pilot_note ? ` · pilota: ${esc(state.me.pilot_note)}` : ''}.</p>` : ''}
       <div class="row" style="justify-content:center">
@@ -2926,7 +2950,7 @@
   }
   function rsvpButtonsRaw(ev) {
     if (isPilotOnly(state.me) && !myAccounts().length) {
-      return '<div class="rsvp-locked"><span class="muted small" title="Peça acesso à conta em Meu perfil → Pilotos">🧑‍✈️ Membro piloto: você responde pelas contas que pilota</span></div>';
+      return '<div class="rsvp-locked"><span class="muted small" title="Peça acesso à conta em Meu perfil → Pilotos">✈️ Membro piloto: você responde pelas contas que pilota</span></div>';
     }
     const mine = myRsvp(ev);
     if (!canChangeRsvp(ev)) {
@@ -2960,7 +2984,7 @@
     const pct = (n) => (c.total ? (100 * n) / c.total : 0);
     const team = myTeam(ev);
     const needsAttendance = can('attendance') && hasStarted(ev) && !ev.attendance?.length;
-    return `<div class="card event">
+    return `<div class="card event" data-ev-open="${ev.id}">
       <div class="time">${fmtTime(ev.starts_at)}<small>${esc(fmtShortWeekday(ev.starts_at))}</small></div>
       <div>
         <a class="title" href="#/evento/${ev.id}">${esc(ev.title)}</a>
@@ -2999,7 +3023,7 @@
           <h2>${already ? 'Sua presença está confirmada' : 'Confirmar presença'}</h2>
           <p class="muted" style="margin:0">${esc(ev.title)} · ${esc(fmtDay(ev.starts_at))} às ${fmtTime(ev.starts_at)}</p>
         </div>
-        ${piloting ? `<p class="piloting-note">🧑‍✈️ Respondendo pela conta <b>${esc(displayName(acct))}</b></p>` : ''}
+        ${piloting ? `<p class="piloting-note">✈️ Respondendo pela conta <b>${esc(displayName(acct))}</b></p>` : ''}
         ${complete ? `<div class="rsvp-build" id="rsvp-build">
             <div class="rsvp-build-tx"><span class="muted small">${piloting ? 'Classe e atributos desta conta' : 'Sua classe e seus atributos'}</span>
               <div class="rsvp-build-sum">${classTag(initial.char_class)} <b>${esc(CLASS[initial.char_class]?.label || '')}</b></div>
@@ -3292,8 +3316,21 @@
       const team = myTeam(ev);
       if (!already && team && !(await confirmDialog(`Você está no time ${team}. Ao marcar “Não vou”, você sai do time. Continuar?`, 'Não vou'))) return;
       root.querySelectorAll(`[data-rsvp="${ev.id}"]`).forEach((x) => { x.disabled = true; });
+      const acct = actingId();
+      const before = myRsvp(ev) ? { ...myRsvp(ev) } : null;
+      // Desfazer: volta para a resposta anterior (sem resposta, ou "Vou" com os mesmos dados)
+      const undo = async () => {
+        try {
+          if (!before) await api.clearRsvp(ev.id, acct);
+          else if (before.going) await api.setRsvp(ev.id, true, { ...pick(before, BUILD_KEYS), discord: !!before.discord, ...(has4pts(ev) ? { prefer_4pts: !!before.prefer_4pts } : {}) }, acct);
+          else await api.setRsvp(ev.id, false, null, acct);
+          toast('Resposta desfeita');
+          await rerender();
+        } catch (e) { fail(e); }
+      };
       try {
-        if (already) { await api.clearRsvp(ev.id, actingId()); toast('Resposta removida'); } else { await api.setRsvp(ev.id, false, null, actingId()); toast('Ausência registrada'); }
+        if (already) { await api.clearRsvp(ev.id, acct); toast('Resposta removida', false, { label: 'Desfazer', fn: undo }); }
+        else { await api.setRsvp(ev.id, false, null, acct); toast(`✖ Não vou: ${ev.title}`, false, { label: 'Desfazer', fn: undo }); }
         await rerender();
       } catch (e) { fail(e); root.querySelectorAll(`[data-rsvp="${ev.id}"]`).forEach((x) => { x.disabled = false; }); }
     }));
@@ -3311,10 +3348,16 @@
   }
 
   let eventsTimer = null;
+  // Passados: mostra os mais recentes primeiro, aos poucos
+  const PAST_PAGE = 12;
+  const PAST = { n: PAST_PAGE };
   async function viewEvents(past) {
     clearTimeout(eventsTimer);
+    if (!past) PAST.n = PAST_PAGE;
     loading();
-    const events = await api.events(past);
+    const all = await api.events(past);
+    const events = past ? all.slice(0, PAST.n) : all;
+    const moreCount = past ? all.length - events.length : 0;
     // Quem está com a lista aberta vê o selo "Agora" aparecer no início e o evento
     // sair para "Passados" 20 min depois, sem recarregar a página
     if (!past) {
@@ -3339,13 +3382,19 @@
     const body = events.length
       ? groupByDay(events)
       : `<div class="card empty">${past ? 'Nenhum evento passado ainda.' : 'Nenhum evento agendado.'}${can('event_create') && !past ? '<br><br>Crie o primeiro em “+ Novo evento”.' : ''}</div>`;
-    main.innerHTML = head + body;
+    main.innerHTML = head + body + (moreCount ? `<div class="ev-more"><button class="btn" id="ev-more">Mostrar eventos mais antigos (${moreCount})</button></div>` : '');
     $('#btn-new')?.addEventListener('click', () => openEventForm());
     main.querySelectorAll('[data-result]').forEach((b) => b.addEventListener('click', () => {
       const ev = events.find((e) => e.id === Number(b.dataset.result));
       if (ev) openResultDialog(ev, ev.result, () => viewEvents(past));
     }));
     bindRsvp(main, events, () => viewEvents(past));
+    // Tocar no cartão (fora dos botões e links) abre o evento
+    main.querySelectorAll('[data-ev-open]').forEach((c) => c.addEventListener('click', (e) => {
+      if (e.target.closest('a, button, select, input, label, summary')) return;
+      location.hash = `#/evento/${c.dataset.evOpen}`;
+    }));
+    $('#ev-more')?.addEventListener('click', () => { PAST.n += PAST_PAGE; viewEvents(true); });
   }
 
   // ---------- Times: blocos compartilhados ----------
@@ -3380,7 +3429,7 @@
     const stats = bare ? '' : statsLine(p.build);
     return `<div class="chip${selected ? ' sel' : ''}${mine ? ' mine' : ''}${compact ? ' compact' : ''}${bare ? ' bare' : ''}${p.p4 ? ' p4' : ''}" data-uid="${esc(p.id)}" title="${esc(bare ? who : `${who}\n${full}`)}" ${draggable ? 'draggable="true" tabindex="0" role="button"' : ''}>
       ${classTag(p.build.char_class)}
-      <div class="chip-body"><div class="chip-name">${p.p4 ? `${p4Flag} ` : ''}${esc(p.name)}${medals ? medalsHtml(p.id) : ''}${p.discord ? ` ${dcIcon}` : ''}${p.wd && isOfficer() ? ` <span class="wd-flag" title="Pediu para sair: ${esc(p.wd)}">⚠</span>` : ''}${isOfficer() && approvedPilotIds(p.id).length ? ` <span class="pilot-flag" title="Pilotada por ${esc(approvedPilotIds(p.id).map((i) => displayName(memberById(i))).join(', '))}">🧑‍✈️</span>` : ''}</div>${bare ? `<div class="chip-class">${esc(CLASS[p.build.char_class]?.label || 'Sem classe')}</div>` : `<div class="chip-stats">${stats}</div>`}</div>
+      <div class="chip-body"><div class="chip-name">${p.p4 ? `${p4Flag} ` : ''}${esc(p.name)}${medals ? medalsHtml(p.id) : ''}${p.discord ? ` ${dcIcon}` : ''}${p.wd && isOfficer() ? ` <span class="wd-flag" title="Pediu para sair: ${esc(p.wd)}">⚠</span>` : ''}${isOfficer() && approvedPilotIds(p.id).length ? ` <span class="pilot-flag" title="Pilotada por ${esc(approvedPilotIds(p.id).map((i) => displayName(memberById(i))).join(', '))}">✈️</span>` : ''}</div>${bare ? `<div class="chip-class">${esc(CLASS[p.build.char_class]?.label || 'Sem classe')}</div>` : `<div class="chip-stats">${stats}</div>`}</div>
       ${removable ? `<button class="chip-x" data-unassign="${esc(p.id)}" title="Tirar do time" aria-label="Tirar ${esc(p.name)} do time">×</button>` : ''}
     </div>`;
   }
@@ -3673,7 +3722,7 @@
     main.innerHTML = `
       ${backRow(finished ? '#/passados' : '#/', finished ? 'Voltar aos eventos passados' : 'Voltar')}
       <div class="card stack">
-        <div class="row">
+        <div class="row ev-detail-head">
           <div class="spacer">
             <h1>${esc(ev.title)}</h1>
             <div class="muted">${esc(fmtDay(ev.starts_at))} · ${fmtTime(ev.starts_at)}${typeName(ev.type_id) ? ` · <span class="type-tag">${esc(typeName(ev.type_id))}</span>` : ''}</div>
@@ -3992,7 +4041,7 @@
     }));
     const multi = [...byPerson].filter(([, accs]) => accs.length > 1);
     if (!multi.length) return '';
-    return `<div class="lock-banner warn">🧑‍✈️ <b>Mesmo piloto em mais de uma conta:</b> ${multi.map(([c, accs]) => {
+    return `<div class="lock-banner warn">✈️ <b>Mesmo piloto em mais de uma conta:</b> ${multi.map(([c, accs]) => {
       const where = accs.map((a) => `${esc(a.name)}${T.slots.get(a.id) ? ` <span class="muted">(${esc(T.slots.get(a.id))})</span>` : ''}`).join(', ');
       return `${esc(displayName(memberById(c)))} controla ${accs.length} contas confirmadas: ${where}`;
     }).join(' · ')}. Confira se ele consegue jogar com todas ao mesmo tempo.</div>`;
@@ -4671,7 +4720,7 @@
     const pilotsOfIt = approvedPilotIds(m.id).map((id) => displayName(memberById(id)));
     openDialog(`<form id="kd" class="stack">
       <h2>${toPilot ? `Tornar ${who} membro piloto` : `Tornar ${who} jogador`}</h2>
-      ${toPilot ? `<p style="margin:0">${who} passa a ser <b>🧑‍✈️ membro piloto</b>: não tem conta própria no jogo, só pilota contas de outros membros.</p>
+      ${toPilot ? `<p style="margin:0">${who} passa a ser <b>✈️ membro piloto</b>: não tem conta própria no jogo, só pilota contas de outros membros.</p>
         <ul class="kd-list small">
           <li>Sai do rank de força, da média do clã e da frequência (contam só as contas que ele pilota).</li>
           <li>As respostas e vagas da própria conta nos próximos eventos são retiradas.</li>
@@ -5276,12 +5325,15 @@
         state.notices = (state.notices || []).filter((n) => !done.has(n.id));
         box.remove();
         renderBell();
+        notifyTicketReplies();
       } catch (err) { fail(err); e.currentTarget.disabled = false; }
     });
   }
 
   function notifyTicketReplies() {
     const old = $('#tk-notice');
+    // O aviso da liderança vem primeiro; o de tickets aparece depois de "Entendi"
+    if ($('#bn-notice')) { old?.remove(); return; }
     if (!TICKETS_ON || !state.user || !isMember()) { old?.remove(); return; }
     let done = {};
     try { done = JSON.parse(localStorage.getItem(tkToastKey()) || '{}') || {}; } catch { done = {}; }
@@ -5296,10 +5348,10 @@
     box.setAttribute('role', 'status');
     box.innerHTML = `<div class="tk-notice-head"><b>📬 ${items.length === 1 ? 'Novidade no seu ticket' : `Novidades em ${items.length} tickets seus`}</b>
         <button type="button" class="tk-notice-x" aria-label="Fechar aviso" title="Fechar (o ticket continua marcado no 💬)">✕</button></div>
-      ${items.slice(0, 4).map(({ t, n }) => `<a class="tk-notice-item" href="#/ticket/${t.id}">
+      ${items.slice(0, matchMedia('(max-width: 760px)').matches ? 1 : 4).map(({ t, n }) => `<a class="tk-notice-item" href="#/ticket/${t.id}">
         <span class="tk-notice-txt"><b>${esc(t.title)}</b><small>${ticketNewsText(n)} · ${esc(fmtWhenShort(new Date(n.at).toISOString()))}</small></span>
         <span class="btn small primary">Abrir →</span></a>`).join('')}
-      ${items.length > 4 ? `<a class="tk-notice-more" href="#/tickets">Ver todos os ${items.length} tickets →</a>` : ''}`;
+      ${items.length > (matchMedia('(max-width: 760px)').matches ? 1 : 4) ? `<a class="tk-notice-more" href="#/tickets">Ver todos os ${items.length} tickets →</a>` : ''}`;
     if (!old) document.body.appendChild(box);
     const dismiss = () => {
       items.forEach(({ t, n }) => { done[t.id] = n.key; });
@@ -6344,12 +6396,12 @@
           <div class="spacer">
             <div class="me-name">${esc(displayName(me))}${medalsHtml(me.id, 4)}${me.role === 'former' ? ' <span class="badge former-badge">Ex-membro</span>' : ''}</div>
             <div class="muted small">${me.game_name ? `${esc(me.google_name)} · ` : ''}${ROLE_LABEL[me.role]}${me.created_at ? ` · no clã desde ${new Date(me.created_at).toLocaleDateString('pt-BR')}` : ''}${phone ? ` · <a href="tel:${esc(phone.replace(/[^\d+]/g, ''))}">📞 ${esc(phone)}</a>` : ''}</div>
-            ${po ? `<div class="member-build"><span class="pilot-kind">🧑‍✈️ Membro piloto</span>${me.pilot_note ? `<span class="muted small">pilota: ${esc(me.pilot_note)}</span>` : ''}</div>`
+            ${po ? `<div class="member-build"><span class="pilot-kind">✈️ Membro piloto</span>${me.pilot_note ? `<span class="muted small">pilota: ${esc(me.pilot_note)}</span>` : ''}</div>`
               : me.char_class ? `<div class="member-build">${classTag(me.char_class)} <span>${esc(CLASS[me.char_class].label)}</span><span class="chip-stats">${statsLine(me)}</span></div>` : ''}
-            ${!po && me.is_pilot ? '<div class="muted small">🧑‍✈️ Também é piloto</div>' : ''}
+            ${!po && me.is_pilot ? '<div class="muted small">✈️ Também é piloto</div>' : ''}
           </div>
           ${self ? `<div class="row me-actions"><button class="btn small" id="btn-photo-pf">📷 ${me.custom_avatar_url ? 'Trocar foto' : 'Enviar foto'}</button><button class="btn small" id="btn-edit-pf">✎ Editar perfil</button>${ACTIVE_ROLES.includes(me.role) ? '<a class="btn small" href="#/minhas-configuracoes">⚙️ Minhas configurações</a>' : ''}</div>`
-            : canRename(me) || canChangeKind(me) || canLeaderBuild(me) || (canActAs(me.id) && ACTIVE_ROLES.includes(me.role)) ? `<div class="row me-actions">${canActAs(me.id) && ACTIVE_ROLES.includes(me.role) ? `<a class="btn small" href="#/minhas-configuracoes/${encodeURIComponent(me.id)}">⚙️ Configurações</a>` : ''}${canLeaderBuild(me) ? '<button class="btn small" id="btn-lead-build" title="Só o líder: alterar classe e atributos desta conta">✎ Editar perfil</button>' : ''}${canRename(me) ? '<button class="btn small" id="btn-rename">✎ Editar nick</button>' : ''}${canChangeKind(me) ? `<button class="btn small" id="btn-kind">${po ? '🎮 Tornar jogador' : '🧑‍✈️ Tornar membro piloto'}</button>` : ''}</div>` : ''}
+            : canRename(me) || canChangeKind(me) || canLeaderBuild(me) || (canActAs(me.id) && ACTIVE_ROLES.includes(me.role)) ? `<div class="row me-actions">${canActAs(me.id) && ACTIVE_ROLES.includes(me.role) ? `<a class="btn small" href="#/minhas-configuracoes/${encodeURIComponent(me.id)}">⚙️ Configurações</a>` : ''}${canLeaderBuild(me) ? '<button class="btn small" id="btn-lead-build" title="Só o líder: alterar classe e atributos desta conta">✎ Editar perfil</button>' : ''}${canRename(me) ? '<button class="btn small" id="btn-rename">✎ Editar nick</button>' : ''}${canChangeKind(me) ? `<button class="btn small" id="btn-kind">${po ? '🎮 Tornar jogador' : '✈️ Tornar membro piloto'}</button>` : ''}</div>` : ''}
         </div>
       </div>
 
@@ -6564,7 +6616,7 @@
           <span class="pr-name">${esc(displayName(r.m))}${medalsHtml(r.m.id)}</span>${classTag(r.m.char_class)}
           <span class="pr-score">${r.score}</span></li>`;
     const head = isPilotOnly(person)
-      ? `<div class="pr-missing">🧑‍✈️ ${self ? 'Você é membro piloto: membros piloto' : 'Membros piloto'} não entram no rank. Contam só as contas que ${self ? 'você pilota' : 'essa pessoa pilota'}.</div>`
+      ? `<div class="pr-missing">✈️ ${self ? 'Você é membro piloto: membros piloto' : 'Membros piloto'} não entram no rank. Contam só as contas que ${self ? 'você pilota' : 'essa pessoa pilota'}.</div>`
       : !mine
       ? `<div class="pr-missing">${self
         ? `Complete sua classe e os 5 atributos no perfil para entrar no rank.${state.me.id === person.id ? ' <button class="btn small primary" id="btn-pr-fill" type="button">Completar perfil</button>' : ''}`
@@ -6862,7 +6914,7 @@
     if (isPilotOnly(account)) {
       if (self) {
         return `<div class="card pilots-card">
-          <h2>🧑‍✈️ Contas pilotadas</h2>
+          <h2>✈️ Contas pilotadas</h2>
           <p class="muted small" style="margin:0 0 8px">Você é <b>membro piloto</b>: responde aos eventos pelas contas que pilota, escolhendo a conta no topo do site em <b>“Respondendo como”</b>.${account.pilot_note ? ` No cadastro você informou: “${esc(account.pilot_note)}”.` : ''}</p>
           <div class="row" style="margin-bottom:10px">
             <button class="btn small primary" id="btn-ask-pilot">Pedir acesso a uma conta existente</button>
@@ -6883,7 +6935,7 @@
         </div>`;
       }).join('');
       return `<div class="card pilots-card">
-        <h2>🧑‍✈️ Contas que pilota <span class="muted small">· membro piloto</span></h2>
+        <h2>✈️ Contas que pilota <span class="muted small">· membro piloto</span></h2>
         ${account.pilot_note ? `<p class="muted small" style="margin:0 0 8px">Informado no cadastro: “${esc(account.pilot_note)}”</p>` : ''}
         ${flownRows || '<p class="muted small">Ainda não pilota nenhuma conta no site.</p>'}
         ${can('pilots') ? '<button class="btn small" id="btn-link-account" style="margin-top:8px">+ Vincular conta</button>' : ''}
@@ -6891,7 +6943,7 @@
     }
     if (!self && !rowsFor.length && !isOfficer()) return '';
     return `<div class="card pilots-card">
-      <h2>🧑‍✈️ ${self ? 'Contas pilotadas' : 'Pilotos desta conta'}${account.managed ? ' <span class="muted small">· conta sem login</span>' : ''}</h2>
+      <h2>✈️ ${self ? 'Contas pilotadas' : 'Pilotos desta conta'}${account.managed ? ' <span class="muted small">· conta sem login</span>' : ''}</h2>
       ${self ? `<p class="muted small" style="margin:0 0 8px">Jogue com mais de uma conta: depois de aprovada, escolha a conta no topo do site em <b>“Respondendo como”</b>.</p>
         <div class="row" style="margin-bottom:10px">
           <button class="btn small primary" id="btn-new-piloted">+ Cadastrar conta sem login</button>
@@ -8831,11 +8883,11 @@
     const histBtn = (m) => (histBy[m.id]?.length
       ? `<button class="btn small ghost" data-history="${esc(m.id)}" title="Ver histórico de alterações">🕘 ${histBy[m.id].length}</button>` : '');
     const kindBtn = (m) => (canChangeKind(m)
-      ? `<button class="btn small ghost" data-kind="${esc(m.id)}" title="${isPilotOnly(m) ? `Tornar ${esc(displayName(m))} jogador (com conta própria no jogo)` : `Tornar ${esc(displayName(m))} membro piloto (sem conta própria no jogo)`}">${isPilotOnly(m) ? '🎮 Tornar jogador' : '🧑‍✈️ Tornar piloto'}</button>` : '');
+      ? `<button class="btn small ghost" data-kind="${esc(m.id)}" title="${isPilotOnly(m) ? `Tornar ${esc(displayName(m))} jogador (com conta própria no jogo)` : `Tornar ${esc(displayName(m))} membro piloto (sem conta própria no jogo)`}">${isPilotOnly(m) ? '🎮 Tornar jogador' : '✈️ Tornar piloto'}</button>` : '');
     // Membro piloto: no lugar da classe, as contas que ele pilota (ou o que escreveu no cadastro)
     const pilotLine = (m) => {
       const flown = flownBy(m.id);
-      return `<div class="member-build"><span class="pilot-kind">🧑‍✈️ Membro piloto</span>${flown.length
+      return `<div class="member-build"><span class="pilot-kind">✈️ Membro piloto</span>${flown.length
         ? `<span class="small">pilota ${flown.map((a) => `<a class="member-link" href="#/membro/${encodeURIComponent(a.id)}">${esc(displayName(a))}</a>`).join(', ')}</span>`
         : `<span class="muted small">${m.pilot_note ? `informou: “${esc(m.pilot_note)}” · ` : ''}ainda sem conta vinculada</span>`}</div>`;
     };
@@ -8864,7 +8916,7 @@
             <button class="btn small primary" data-leave-ok="${l.id}">Aprovar saída</button>
           </div>`;
         }).join('')}</div>` : ''}
-      ${pilotRequests.length ? `<h2>🧑‍✈️ Pedidos de piloto (${pilotRequests.length})</h2>
+      ${pilotRequests.length ? `<h2>✈️ Pedidos de piloto (${pilotRequests.length})</h2>
         <div class="card" style="margin-bottom:20px">${pilotRequests.map((p) => {
           const pilot = memberById(p.pilot_id); const acc = memberById(p.account_id);
           return `<div class="pilot-row">${avatar(pilot)}
@@ -8879,7 +8931,7 @@
           ${can('member_approve') ? `<button class="btn small primary" data-approve="${esc(m.id)}">Aprovar</button>` : ''}`)).join('')}</div>` : ''}
       ${isOfficer() ? `<div class="seg rc-filter m-tabs" role="tablist" aria-label="Tipo de membro">
           <button type="button" role="tab" data-mtab="members" class="${pilotsTab ? '' : 'on'}" aria-selected="${!pilotsTab}">Membros (${active.length})</button>
-          <button type="button" role="tab" data-mtab="pilots" class="${pilotsTab ? 'on' : ''}" aria-selected="${pilotsTab}">🧑‍✈️ Membros piloto (${pilotsOnly.length})</button>
+          <button type="button" role="tab" data-mtab="pilots" class="${pilotsTab ? 'on' : ''}" aria-selected="${pilotsTab}">✈️ Membros piloto (${pilotsOnly.length})</button>
         </div>` : ''}
       <div class="card" id="m-tab-members"${pilotsTab ? ' hidden' : ''}>${active.map((m) => row(m, roleControl(m))).join('')}</div>
       <div id="m-tab-pilots"${pilotsTab ? '' : ' hidden'}>
@@ -8888,7 +8940,7 @@
         ${helpers.length ? `<h2 style="margin-top:20px">Membros que também pilotam (${helpers.length})</h2>
           <div class="card">${helpers.map((m) => {
             const flown = flownBy(m.id);
-            return `<div class="pilot-row">${avatar(m)}<div class="spacer"><a class="member-link" href="#/membro/${encodeURIComponent(m.id)}"><b>${esc(displayName(m))}</b></a>${m.is_pilot ? ' <span class="pilot-tag">🧑‍✈️ piloto</span>' : ''}
+            return `<div class="pilot-row">${avatar(m)}<div class="spacer"><a class="member-link" href="#/membro/${encodeURIComponent(m.id)}"><b>${esc(displayName(m))}</b></a>${m.is_pilot ? ' <span class="pilot-tag">✈️ piloto</span>' : ''}
               <div class="muted small">${flown.length ? `pilota ${flown.map((a) => esc(displayName(a))).join(', ')}` : 'ainda não pilota nenhuma conta'}${m.pilot_note ? ` · “${esc(m.pilot_note)}”` : ''}</div></div></div>`;
           }).join('')}</div>` : ''}
       </div>
@@ -9210,7 +9262,7 @@
   const photoBlockHtml = (me) => `
     <span id="pf-avatar">${avatar(me, 'xl')}</span>
     <div class="stack" style="gap:6px">
-      <div><strong>${esc(me.google_name)}</strong><div class="muted small">${ROLE_LABEL[me.role]}${me.pilot_only ? ' · 🧑‍✈️ Membro piloto' : ''}</div></div>
+      <div><strong>${esc(me.google_name)}</strong><div class="muted small">${ROLE_LABEL[me.role]}${me.pilot_only ? ' · ✈️ Membro piloto' : ''}</div></div>
       <div class="row pf-photo-btns" style="gap:6px">
         <button type="button" class="btn small" id="pf-pick">📷 ${me.custom_avatar_url ? 'Trocar foto' : 'Enviar foto'}</button>
         ${!me.avatar_hidden && (me.custom_avatar_url || me.avatar_url) ? '<button type="button" class="btn small ghost danger" id="pf-remove">Remover foto</button>' : ''}
@@ -9231,7 +9283,7 @@
           <label class="kind-opt"><input type="radio" name="f-kind" value="player" ${me.pilot_only ? '' : 'checked'}>
             <span><b>🎮 Jogador</b><small>Tenho minha própria conta no jogo</small></span></label>
           <label class="kind-opt"><input type="radio" name="f-kind" value="pilot" ${me.pilot_only ? 'checked' : ''}>
-            <span><b>🧑‍✈️ Membro piloto</b><small>Não tenho conta própria: piloto contas de outros membros</small></span></label>
+            <span><b>✈️ Membro piloto</b><small>Não tenho conta própria: piloto contas de outros membros</small></span></label>
         </fieldset>
         <div class="grid2">
           <div class="field">
@@ -9434,10 +9486,10 @@
       mine.push({ icon: '📣', text: `${plural(recruitApps(r, 'applied').length, 'candidato aguardando', 'candidatos aguardando')} você`, sub: `Recrutamento “${esc(r.title)}”`, href: `#/recrutamento/${r.id}` });
     });
     (state.pilots || []).filter((p) => p.account_id === me && p.status === 'pending').forEach((p) => {
-      mine.push({ icon: '🧑‍✈️', text: `<b>${esc(nameOf(p.pilot_id))}</b> pediu para pilotar sua conta`, href: '#/perfil' });
+      mine.push({ icon: '✈️', text: `<b>${esc(nameOf(p.pilot_id))}</b> pediu para pilotar sua conta`, href: '#/perfil' });
     });
     pilotageInbox().forEach((r) => {
-      mine.push({ icon: '🧑‍✈️', text: `<b>${esc(r.account_name)}</b> pediu seus serviços de pilotagem`, sub: r.message ? `“${esc(r.message)}”` : 'Aceite ou recuse na Pilotagem', href: '#/pilotagem' });
+      mine.push({ icon: '✈️', text: `<b>${esc(r.account_name)}</b> pediu seus serviços de pilotagem`, sub: r.message ? `“${esc(r.message)}”` : 'Aceite ou recuse na Pilotagem', href: '#/pilotagem' });
     });
     if (hasUnreadNews()) mine.push({ icon: '📰', text: 'Edição nova do <b>Malah News</b>', href: '#/news' });
     (state.notices || []).forEach((n) => {
@@ -9452,11 +9504,11 @@
       }
       if (can('pilots')) {
         const n = (state.pilots || []).filter((p) => p.status === 'pending' && p.account_id !== me).length;
-        if (n) lead.push({ icon: '🧑‍✈️', text: `${plural(n, 'pedido de piloto', 'pedidos de piloto')}`, href: '#/membros' });
+        if (n) lead.push({ icon: '✈️', text: `${plural(n, 'pedido de piloto', 'pedidos de piloto')}`, href: '#/membros' });
       }
       if (offersToReview().length) {
         const n = offersToReview().length;
-        lead.push({ icon: '🧑‍✈️', text: `${plural(n, 'anúncio de pilotagem', 'anúncios de pilotagem')} aguardando aprovação`, href: '#/pilotagem' });
+        lead.push({ icon: '✈️', text: `${plural(n, 'anúncio de pilotagem', 'anúncios de pilotagem')} aguardando aprovação`, href: '#/pilotagem' });
       }
       if (can('withdraw_decide')) {
         state.bellUp.forEach((ev) => {
@@ -9587,8 +9639,8 @@
     if (!state.user) return viewLogin();
     if (!isMember()) return state.me?.role === 'former' ? viewFormer() : viewPending();
     if (myLeave()) return viewLeaving();
-    notifyTicketReplies();
     notifyNotices();
+    notifyTicketReplies();
     try {
       if (key === 'past') await viewEvents(true);
       else if (key === 'news') await viewNews();

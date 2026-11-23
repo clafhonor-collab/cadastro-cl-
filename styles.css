@@ -1413,3 +1413,64 @@ fieldset.invalid { border-color: #ef4444; }
   .ms-cell .ms-on { flex: none; }
   .ms-cell select { flex: 1 1 0; min-width: 0; min-height: 44px; font-size: 16px; padding-left: 8px; padding-right: 4px; }
 }
+
+/* =====================================================================
+   Celular: ajustes de usabilidade (lote 3)
+   ===================================================================== */
+.toast.has-act { pointer-events: auto; display: flex; align-items: center; justify-content: space-between; gap: 12px; width: min(440px, calc(100vw - 32px)); }
+.toast-act { flex: none; }
+.toast-act { background: transparent; border: 1px solid var(--gold); color: var(--gold); border-radius: 8px; padding: 6px 12px; font: inherit; font-weight: 700; cursor: pointer; min-height: 36px; }
+.toast-act:hover { background: rgba(220, 170, 82, .12); }
+.event[data-ev-open] { cursor: pointer; }
+.ev-more { display: flex; justify-content: center; margin: 16px 0 4px; }
+.help-fab { transition: transform .25s ease, opacity .25s ease; }
+.help-fab.away { transform: translateY(140%); opacity: 0; pointer-events: none; }
+.tk-notice { transition: transform .25s ease, opacity .25s ease; }
+.tk-notice.away { transform: translateY(160%); opacity: 0; pointer-events: none; }
+.toast { z-index: 70; }
+.nav-logout { display: none; }
+.rc-class-grid label .cls { flex: none; }
+@media (max-width: 760px) {
+  /* Campos com letra de 16px: o iPhone não dá zoom ao tocar */
+  input, select, textarea { font-size: 16px; }
+  select.inline { min-height: 36px; }
+  /* Alvos de toque maiores */
+  .btn.small { min-height: 40px; }
+  .radio input, .check-line input[type="checkbox"], .tk-who input { width: 20px; height: 20px; }
+  /* Mensagem rápida acima do botão 💬 */
+  .toast { bottom: calc(88px + env(safe-area-inset-bottom)); }
+  /* "Sair" vai para o menu ☰; no topo fica só o essencial */
+  #btn-logout { display: none; }
+  .nav-logout { display: flex; align-items: center; gap: 12px; margin-top: auto; min-height: 48px; padding: 10px 12px; border-radius: 10px;
+    background: transparent; border: 1px solid var(--border); color: var(--muted); font: inherit; font-size: 1.02rem; cursor: pointer; }
+  .nav-logout:hover { color: var(--text); background: var(--panel-2); }
+  /* Cartão do evento: a resposta (encerrada / times travados) usa a largura toda */
+  .event > .rsvp-locked { grid-column: 1 / -1; align-items: stretch; text-align: left; max-width: none; flex-direction: row; flex-wrap: wrap; justify-content: space-between; }
+  /* Página do evento: título na largura toda e Vou / Não vou grandes */
+  .ev-detail-head { flex-direction: column; align-items: stretch; gap: 12px; }
+  .ev-detail-head > .actions { width: 100%; display: flex; gap: 8px; flex-wrap: wrap; }
+  .ev-detail-head > .actions .btn { flex: 1; min-height: 48px; font-size: 1rem; }
+  .ev-detail-head > .rsvp-locked { max-width: none; align-items: stretch; text-align: left; }
+  /* Filtros em grade, sem linha sobrando */
+  .seg.rc-filter { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); width: 100%; }
+  .seg.rc-filter button { min-height: 40px; }
+  /* Recrutamento: classes em duas colunas, etiqueta do tamanho certo */
+  .rc-class-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 10px; }
+  .rc-class-grid label { min-width: 0; gap: 6px; }
+  .rc-class-grid label > span:not(.cls) { display: none; }   /* no celular fica só a etiqueta da classe e o número */
+  .rc-class-grid label .cls { min-width: 42px; height: 26px; }
+  .rc-class-grid input { width: auto; flex: 1 1 0; min-width: 0; min-height: 40px; padding: 6px 8px; text-align: center; }
+  .rc-classes legend { font-size: .85rem; }
+  /* Pilotagem: Recusar e Aceitar lado a lado, na largura toda */
+  .pg-req { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .pg-req > .spacer { grid-column: 1 / -1; min-width: 0; }
+  .pg-req > .btn { width: 100%; justify-content: center; }
+  /* Perfil: rank numa linha e nomes do Top 10 sem cortar */
+  .pr-pos { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .pr-pos .stat { padding: 10px 8px; }
+  .pr-pos .stat-num { font-size: 1.35rem; }
+  .pr-pos .muted.small { font-size: .78rem; }
+  .pr-name { white-space: normal; overflow: visible; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; }
+  /* Gráfico de evolução: números do eixo legíveis */
+  .line-chart .axis { font-size: 22px; }
+}
