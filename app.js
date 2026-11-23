@@ -2515,6 +2515,8 @@
     });
   }
 
+  const TOUCH = matchMedia('(pointer: coarse)').matches;
+
   // ---------- Menu do celular: botão ☰ que abre um painel lateral ----------
   function setupNavDrawer() {
     if ($('#nav-toggle')) return;
@@ -4165,7 +4167,9 @@
           <h1 style="margin:0">${finished ? 'Revisar times' : 'Times'} · ${esc(ev.title)}</h1>
           <div class="muted small">${esc(fmtDay(ev.starts_at))} · ${fmtTime(ev.starts_at)} · ${T.people.length} confirmados · ${assigned} em times${capacity ? ` · ${capacity} vagas` : ''}</div>
         </div>
-        <div class="row">
+        <div class="row tm-ctrls">
+          <button type="button" class="btn small tm-opts-btn" aria-expanded="false">⚙ ${esc(ev.team_format ? (tower ? 'Torres' : FORMAT_LABEL[ev.team_format]) : 'Formato')} · ${{ avg: 'Média', sum: 'Totalizador', hide: 'Ocultar' }[aggMode()]} ▾</button>
+          <div class="tm-opts">
           ${tower ? `<span class="tower-tag" title="Torres: de 1 a ${TOWER_MAX_TEAMS} times de até ${TOWER_TEAM_SIZE} membros">🗼 Torres · até ${TOWER_TEAM_SIZE} por time</span>
             ${towerFix ? '' : `<label class="inline-label">Times <select class="inline" id="tower-count">${Array.from({ length: TOWER_MAX_TEAMS }, (_, i) => i + 1).map((n) => `<option ${n === towerCount(ev) ? 'selected' : ''}>${n}</option>`).join('')}</select></label>`}` : `<div class="seg" role="group" aria-label="Formato">
             <button class="${ev.team_format === 'guerra' ? 'on' : ''}" data-format="guerra">Guerra</button>
@@ -4177,7 +4181,9 @@
               <button class="${aggMode() === 'avg' ? 'on' : ''}" data-agg="avg" title="Média dos atributos de cada time">Média</button>
               <button class="${aggMode() === 'sum' ? 'on' : ''}" data-agg="sum" title="Soma dos atributos de cada time">Totalizador</button>
               <button class="${aggMode() === 'hide' ? 'on' : ''}" data-agg="hide" title="Mostrar só nome e classe de cada membro">Ocultar</button>
-            </div>
+            </div>` : ''}
+          </div>
+          ${ev.team_format && !towerFix ? `
             <button class="btn small primary" id="btn-suggest" title="Monta uma sugestão de times pela Ressonância">✨ Sugerir times</button>
             <button class="btn small" id="btn-copy-teams">📋 Copiar times</button>
             <button class="btn small ghost danger" id="btn-clear">Limpar</button>
@@ -4186,7 +4192,7 @@
       </div>
       ${ev.team_format && !towerFix ? saveBar() : ''}
       ${samePilotBanner()}
-      ${ev.teams_locked ? `<div class="lock-banner">🔒 <b>Times travados.</b> Quem está escalado não consegue sair sozinho: precisa enviar um pedido de saída, que aparece na página do evento. Você continua podendo editar os times.</div>` : ''}
+      ${ev.teams_locked ? `<div class="lock-banner">🔒 <b>Times travados.</b> <span class="lb-more">Quem está escalado não consegue sair sozinho: precisa enviar um pedido de saída, que aparece na página do evento. </span>Você continua podendo editar os times.</div>` : ''}
       ${T.people.some((p) => p.wd) ? `<div class="lock-banner warn">⚠ ${T.people.filter((p) => p.wd).length} membro(s) pediram para sair. Decida na <a href="#/evento/${ev.id}">página do evento</a>.</div>` : ''}`;
 
     if (towerFix) {
@@ -4211,7 +4217,7 @@
     }
 
     main.innerHTML = `${head}
-      <p class="muted small hint">Clique em um membro e depois no time (ou arraste). Para tirar do time, clique no × ou arraste de volta para a lista.${ev.team_format === 'rito' && !tower ? ' Para renomear um time (ex.: “Revenge”), clique no ✏️ ao lado do nome.' : ''}</p>
+      <p class="muted small hint">${TOUCH ? 'Toque em um membro e depois no time. Para tirar do time, toque no ×.' : 'Clique em um membro e depois no time (ou arraste). Para tirar do time, clique no × ou arraste de volta para a lista.'}${ev.team_format === 'rito' && !tower ? ` Para renomear um time (ex.: “Revenge”), ${TOUCH ? 'toque' : 'clique'} no ✏️ ao lado do nome.` : ''}</p>
       <div class="tb">
         <aside class="pool card${T.sel && T.slots.has(T.sel) ? ' target' : ''}" id="pool">
           <div class="pool-head">
@@ -4240,6 +4246,24 @@
     main.querySelectorAll('.chip[data-uid]').forEach((c) => {
       if ((T.orig.get(c.dataset.uid) ?? null) !== (T.slots.get(c.dataset.uid) ?? null)) c.classList.add('changed');
     });
+    // Celular: formato e exibição ficam atrás do botão ⚙ (o resto dos controles fica à vista)
+    const optsBtn = $('.tm-opts-btn');
+    if (optsBtn) {
+      if (T.optsOpen) { optsBtn.closest('.tm-ctrls').classList.add('opts-open'); optsBtn.setAttribute('aria-expanded', 'true'); }
+      optsBtn.addEventListener('click', () => {
+        T.optsOpen = optsBtn.closest('.tm-ctrls').classList.toggle('opts-open');
+        optsBtn.setAttribute('aria-expanded', String(T.optsOpen));
+      });
+    }
+    // Celular: barra fixa mostrando quem está selecionado, com Cancelar
+    if (T.sel && TOUCH) {
+      const p = T.people.find((x) => x.id === T.sel);
+      if (p) {
+        main.insertAdjacentHTML('beforeend', `<div class="sel-bar" role="status"><span>✋ <b>${esc(p.name)}</b> selecionado · toque ${T.slots.has(p.id) ? 'em outro time ou em “Sem time”' : 'em um time'}</span>
+          <button type="button" class="btn small" id="sel-cancel">Cancelar</button></div>`);
+        $('#sel-cancel').addEventListener('click', () => { T.sel = null; renderTeams(); });
+      }
+    }
     bindTeamControls();
   }
 
@@ -7731,7 +7755,7 @@
 
     // ----- Guerras -----
     const warRow = (e) => { const r = resBy[e.id]; return `<a class="war-chip ${r.outcome}" href="#/evento/${e.id}" title="${esc(`${fmtShortDate(e.starts_at)} · ${r.outcome === 'win' ? 'Vitória' : 'Derrota'}${r.opponent ? ` contra ${r.opponent}` : ''}${scoreText(r) ? ` · ${scoreText(r)}` : ''}`)}">${r.outcome === 'win' ? 'V' : 'D'}</a>`; };
-    const seq = M.wars.length ? `<div class="war-seq">${M.wars.map(warRow).join('')}</div><div class="muted small">Da mais antiga para a mais recente. Passe o mouse para ver o adversário e o placar.</div>` : empty('Nenhuma Guerra com resultado registrado neste período.');
+    const seq = M.wars.length ? `<div class="war-seq">${M.wars.map(warRow).join('')}</div><div class="muted small">Da mais antiga para a mais recente. ${matchMedia('(hover: hover)').matches ? 'Passe o mouse para ver o adversário e o placar.' : 'Toque em uma para abrir a Guerra (adversário e placar).'}</div>` : empty('Nenhuma Guerra com resultado registrado neste período.');
     const cycleBars = cycles.length >= 2 ? vcols(cycles.slice(-6).map((c) => {
       const m = metrics({ from: c.from, to: Math.min(c.to, now) });
       return { label: `${SIDE[c.side].icon} ${fmtShortDate(new Date(c.from).toISOString())}`, title: `${cycleName(c)} (${spanText(c)}): ${m.wins} vitória(s), ${m.losses} derrota(s)`,
@@ -8991,7 +9015,7 @@
         <small>${m.managed ? 'conta sem login' : (m.game_name ? esc(m.google_name) : '')} ${phoneLink(m)}</small>
         ${isPilotOnly(m) ? pilotLine(m)
           : m.char_class ? `<div class="member-build">${classTag(m.char_class)} <span>${esc(CLASS[m.char_class].label)}</span><span class="chip-stats">${statsLine(m)}</span></div>` : '<div class="member-build muted small">Classe e atributos não informados</div>'}
-      </div>${canRename(m) ? `<button class="btn small ghost" data-rename="${esc(m.id)}" title="Editar o nick de ${esc(displayName(m))}">✎ Nick</button>` : ''}${kindBtn(m)}${histBtn(m)}${ctrl}</div>`;
+      </div>${m.role !== 'pending' && (canRename(m) || canChangeKind(m) || histBy[m.id]?.length || /<(button|select)/.test(ctrl)) ? '<button type="button" class="btn small ghost member-more" aria-label="Ações" aria-expanded="false" title="Ações">⋯</button>' : ''}${canRename(m) ? `<button class="btn small ghost" data-rename="${esc(m.id)}" title="Editar o nick de ${esc(displayName(m))}">✎ Nick</button>` : ''}${kindBtn(m)}${histBtn(m)}${ctrl}</div>`;
 
     main.innerHTML = `
       <div class="page-head"><h1>Membros</h1><span class="muted">${active.length} ativos${pilotsOnly.length ? ` · ${pilotsOnly.length} ${pilotsOnly.length === 1 ? 'membro piloto' : 'membros piloto'}` : ''}</span>
@@ -9092,6 +9116,17 @@
       location.hash = `#/membro/${encodeURIComponent(r.dataset.profile)}`;
     }));
     applySearch();
+    // Celular: as ações de cada membro (Nick, Tornar piloto, histórico, cargo) ficam atrás do ⋯
+    main.querySelectorAll('.member-more').forEach((b) => {
+      b.closest('.member').classList.add('has-more');
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const row = b.closest('.member');
+        const open = row.classList.toggle('open');
+        b.setAttribute('aria-expanded', String(open));
+        b.textContent = open ? '✕' : '⋯';
+      });
+    });
     main.querySelectorAll('[data-history]').forEach((b) => b.addEventListener('click', () => {
       openHistory(state.members.find((x) => x.id === b.dataset.history), histBy[b.dataset.history] || []);
     }));

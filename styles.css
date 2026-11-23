@@ -639,6 +639,7 @@ h1 { background: linear-gradient(180deg, #fff1da, #e3b878); -webkit-background-c
 .chart { padding: 14px; min-width: 0; }
 .chart-grid.evo { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); }
 .stats-section h3 select { font-family: "Inter", sans-serif; font-size: .85rem; font-weight: 500; width: auto; }
+@media (max-width: 760px) { .stats-section h3 select { font-size: 16px; } }
 .chart h4 { margin: 0 0 12px; font-size: .95rem; color: var(--text); }
 .chart-empty { padding: 18px 4px; text-align: center; }
 .chart-foot { margin-top: 10px; font-size: .85rem; color: var(--muted); }
@@ -1502,4 +1503,66 @@ fieldset.invalid { border-color: #ef4444; }
   /* Selos com letra legível */
   .badge { font-size: .72rem; }
   .cls { font-size: .72rem; }
+}
+
+/* =====================================================================
+   Liderança no celular: Estatísticas, Membros e Montar times (lote 5)
+   ===================================================================== */
+/* A legenda dos gráficos (.lg) tinha o mesmo nome do tamanho da foto: a foto grande ficava quadrada */
+.avatar.lg { display: inline-grid; border-radius: 50%; place-items: center; }
+.member-more, .tm-opts-btn, .sel-bar { display: none; }
+.tm-opts { display: contents; }
+@media (max-width: 760px) {
+  /* Seletores e campos das telas da liderança: letra de 16px (sem zoom no iPhone) */
+  select.inline, .inline-num { font-size: 16px; }
+  .inline-num { width: 64px; min-height: 36px; }
+  .seg button { min-height: 40px; }
+  /* Estatísticas: período na largura da tela */
+  .panel-period .row > select { flex: 1 1 100%; width: 100%; min-width: 0; max-width: 100%; }
+  .panel-cycle { overflow-wrap: anywhere; }
+  .war-chip { min-width: 36px; min-height: 36px; }
+
+  /* Membros: linha compacta; as ações ficam atrás do ⋯ */
+  .member { flex-wrap: wrap; align-items: flex-start; }
+  .member .name { flex: 1 1 calc(100% - 66px); min-width: 0; }
+  .member.has-more .name { flex-basis: calc(100% - 122px); }
+  .member > .btn, .member > select { margin-left: 0; }
+  .member.has-more.open > .btn:not(.member-more) { flex: 1 1 auto; justify-content: center; }
+  .member.has-more > .btn:not(.member-more), .member.has-more > select { display: none; }
+  .member.has-more.open > .btn:not(.member-more), .member.has-more.open > select { display: inline-flex; }
+  .member.has-more.open > select { display: block; }
+  .member.has-more.open > .member-more { order: 0; }
+  .member-more { display: inline-flex; justify-content: center; flex: none; width: 44px; min-height: 40px; font-size: 1.2rem; padding: 0; }
+  .member .chip-stats, .member .member-build { font-size: .8rem; }
+  .member > .role-tag { flex-basis: 100%; padding-left: 46px; }
+  /* Pedidos (sair do clã, piloto…): texto na largura toda, botões embaixo lado a lado */
+  .pilot-row:has(> .btn) { flex-wrap: wrap; }
+  .pilot-row:has(> .btn) > .spacer { flex: 1 1 calc(100% - 50px); min-width: 0; }
+  .pilot-row:has(> .btn) > .btn { flex: 1 1 0; justify-content: center; min-height: 42px; }
+
+  /* Montar times: controles em grade; formato e exibição atrás do ⚙ */
+  .tm-ctrls { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; width: 100%; }
+  .tm-ctrls > .tm-opts-btn { display: flex; grid-column: 1 / -1; justify-content: center; }
+  .tm-ctrls > .tm-opts { display: none; }
+  .tm-ctrls.opts-open > .tm-opts { display: flex; flex-direction: column; gap: 8px; grid-column: 1 / -1; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-2); }
+  .tm-ctrls .tm-opts .seg { display: flex; width: 100%; }
+  .tm-ctrls .tm-opts .seg button { flex: 1 1 0; }
+  .tm-ctrls > #btn-suggest { grid-column: 1 / -1; min-height: 46px; justify-content: center; }
+  .tm-ctrls > .btn { justify-content: center; min-width: 0; padding-left: 6px; padding-right: 6px; white-space: nowrap; font-size: .88rem; }
+  .savebar { flex-wrap: wrap; gap: 8px; padding: 8px 10px; font-size: .85rem; }
+  .savebar .btn { flex: 1 1 0; min-height: 42px; justify-content: center; }
+  .savebar .spacer { display: none; }
+  .savebar > span:first-child { flex-basis: 100%; }
+  .lb-more { display: none; }
+  .lock-banner { font-size: .85rem; padding: 8px 10px; }
+  .hint { font-size: .85rem; }
+  .chip { padding: 6px 8px; gap: 6px; }
+  .chip-x { min-width: 36px; min-height: 36px; display: inline-grid; place-items: center; }
+  /* Barra fixa de quem está selecionado */
+  .sel-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; position: fixed; left: 10px; right: 10px;
+    bottom: calc(10px + env(safe-area-inset-bottom)); z-index: 45; padding: 10px 12px; border-radius: 12px;
+    background: var(--panel); border: 1px solid var(--gold); box-shadow: 0 10px 28px rgba(0, 0, 0, .6); font-size: .92rem; }
+  .sel-bar .btn { flex: none; }
+  body:has(.sel-bar) .help-fab { display: none; }
+  .tb { padding-bottom: 70px; }
 }
