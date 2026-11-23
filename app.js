@@ -2384,8 +2384,15 @@
   }, true);
 
   function openDialog(html, onReady) {
-    dlg.innerHTML = html;
+    dlg.innerHTML = `<button type="button" class="dlg-x" data-close aria-label="Fechar" title="Fechar">✕</button>${html}`;
     if (!dlg.open) dlg.showModal();
+    // No celular, o navegador põe o foco no primeiro campo e abre o teclado por cima da janela: evita isso
+    if (matchMedia('(pointer: coarse)').matches && document.activeElement?.matches?.('input:not([type=checkbox]):not([type=radio]), textarea, select')) {
+      document.activeElement.blur();
+      dlg.setAttribute('tabindex', '-1');
+      dlg.focus({ preventScroll: true });
+    }
+    dlg.scrollTop = 0;
     dlg.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => dlg.close()));
     onReady?.(dlg);
   }
@@ -2479,6 +2486,35 @@
     }, { passive: true });
   }
 
+  // Celular: no Meu perfil, as seções de apoio (depois do rank e da evolução) ficam recolhidas;
+  // tocar no título abre. O que fica aberto é lembrado neste aparelho.
+  const FOLD_KEY = 'pf-open';
+  function foldCards(root) {
+    if (!matchMedia('(max-width: 760px)').matches) return;
+    const panels = root.querySelector('.panels');
+    if (!panels) return;
+    let open = {};
+    try { open = JSON.parse(localStorage.getItem(FOLD_KEY) || '{}') || {}; } catch { open = {}; }
+    const after = [...root.children].slice([...root.children].indexOf(panels) + 1).filter((c) => c.classList.contains('card'));
+    [...panels.children, ...after].filter((c) => c.classList.contains('card') && c.querySelector(':scope > h2')).forEach((c) => {
+      const h = c.querySelector(':scope > h2');
+      const key = h.textContent.replace(/\d+/g, '').trim().slice(0, 40);
+      c.classList.add('fold');
+      if (!open[key]) c.classList.add('folded');
+      h.setAttribute('role', 'button'); h.setAttribute('tabindex', '0');
+      h.setAttribute('aria-expanded', String(!c.classList.contains('folded')));
+      const toggle = (e) => {
+        if (e.target.closest('a, button:not(.fold-h), select, input')) return;
+        const now = c.classList.toggle('folded');
+        h.setAttribute('aria-expanded', String(!now));
+        open[key] = !now;
+        try { localStorage.setItem(FOLD_KEY, JSON.stringify(open)); } catch { /* ignora */ }
+      };
+      h.addEventListener('click', toggle);
+      h.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(e); } });
+    });
+  }
+
   // ---------- Menu do celular: botão ☰ que abre um painel lateral ----------
   function setupNavDrawer() {
     if ($('#nav-toggle')) return;
@@ -2569,7 +2605,11 @@
           const on = currentKey === key || (key === 'utils' && currentKey === 'pilotage');
           return `<a href="${href}" class="${on ? 'active' : ''}"${on ? ' aria-current="page"' : ''}><span class="nav-ic" aria-hidden="true">${ic}</span>${label}</a>`;
         }).join('')}`;
-      nav.insertAdjacentHTML('beforeend', '<button type="button" class="nav-logout">🚪 Sair</button>');
+      // No celular, os atalhos 📊 e ⚙️ do topo ficam dentro do menu
+      nav.insertAdjacentHTML('beforeend', `${can('panel_view') || can('rivals_view') ? `<a class="nav-extra${currentKey === 'panel' || currentKey === 'rivals' ? ' active' : ''}" href="${can('panel_view') ? '#/estatisticas' : '#/rivais'}"><span class="nav-ic" aria-hidden="true">📊</span>Estatísticas</a>` : ''}
+        ${isLeader() ? `<a class="nav-extra${currentKey === 'config' ? ' active' : ''}" href="#/config"><span class="nav-ic" aria-hidden="true">⚙️</span>Configurações</a>` : ''}
+        <button type="button" class="nav-logout">🚪 Sair</button>`);
+      nav.querySelectorAll('.nav-extra').forEach((a) => a.addEventListener('click', () => closeNav()));
       nav.querySelector('.nav-logout').addEventListener('click', () => { closeNav(); api.signOut().catch(fail); });
       nav.querySelector('.nav-close').addEventListener('click', () => closeNav(true));
       nav.querySelectorAll('a').forEach((a) => a.addEventListener('click', () => closeNav()));
@@ -2577,6 +2617,7 @@
     $('#nav-toggle').hidden = !memberUI();
 
     const box = $('#userbox');
+    document.body.classList.toggle('authed', !!state.me && memberUI());
     if (state.me) {
       const accounts = memberUI() ? myAccounts() : [];
       box.innerHTML = `${accounts.length > 1 || (isPilotOnly(state.me) && accounts.length) ? `<label class="acting" title="Escolha a conta do jogo pela qual você está respondendo">
@@ -6517,6 +6558,7 @@
     $('#btn-pr-info')?.addEventListener('click', () => openPowerInfo(me, pw));
     if (!po) bindEvo(me, myChanges, self);
     bindPilotsCard(me, () => viewMyPanel(userId));
+    foldCards(main);
     bindAbsences(me, absences || [], () => viewMyPanel(userId));
     bindLeave(me, () => viewMyPanel(userId));
     $('#p-days').addEventListener('change', (e) => { P.days = Number(e.target.value); viewMyPanel(userId); });
@@ -9789,7 +9831,9 @@
       location.hash = target;
       return;
     }
+    const changed = lastHash !== location.hash;
     lastHash = location.hash;
+    if (changed) window.scrollTo(0, 0); // página nova começa do topo
     route();
   });
   window.addEventListener('beforeunload', (e) => {

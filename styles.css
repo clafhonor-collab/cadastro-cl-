@@ -1474,3 +1474,32 @@ fieldset.invalid { border-color: #ef4444; }
   /* Gráfico de evolução: números do eixo legíveis */
   .line-chart .axis { font-size: 22px; }
 }
+
+/* =====================================================================
+   Celular: ajustes de usabilidade (lote 4)
+   ===================================================================== */
+.dialog { position: fixed; }
+.dlg-x { position: absolute; top: 8px; right: 8px; z-index: 3; width: 40px; height: 40px; border-radius: 10px; border: 0; background: transparent;
+  color: var(--muted); font-size: 1.1rem; cursor: pointer; }
+.dlg-x:hover, .dlg-x:focus-visible { background: var(--panel-2); color: var(--text); }
+.dialog h2:first-of-type { padding-right: 40px; }
+.dialog:focus { outline: none; }
+.nav-extra { display: none; }
+.card.fold > h2 { cursor: pointer; user-select: none; display: flex; align-items: center; gap: 8px; }
+.card.fold > h2::after { content: "▾"; margin-left: auto; color: var(--muted); font-size: .9rem; transition: transform .2s ease; }
+.card.fold.folded > h2::after { transform: rotate(-90deg); }
+.card.fold.folded > :not(h2) { display: none; }
+.card.fold.folded > h2 { margin-bottom: 0; }
+@media (max-width: 760px) {
+  /* Topo numa linha: ☰, emblema e, à direita, conta, sino e foto */
+  body.authed .brand .wordmark { display: none; }
+  body.authed .topbar { flex-wrap: nowrap; padding: 8px 12px; }
+  body.authed .userbox { min-width: 0; gap: 6px; }
+  .userbox .gear { display: none; }
+  .acting { min-width: 0; }
+  .acting select { max-width: 44vw; text-overflow: ellipsis; }
+  .nav .nav-extra { display: flex; }
+  /* Selos com letra legível */
+  .badge { font-size: .72rem; }
+  .cls { font-size: .72rem; }
+}
