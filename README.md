@@ -142,6 +142,9 @@ Cada time aceita no máximo 8 pessoas. O seletor **Média / Totalizador / Oculta
 - **Foco Exaltação:** os mais fortes preenchem Exaltação 1, 2 e 3; depois Eminência, Renome e Orgulho.
 - **Foco 2/2:** Exaltação 1 e 2 com os mais fortes, Exaltação 3 vazia; Eminência 1 e 2 em seguida, Eminência 3 vazia; Renome e Orgulho completas.
 - **Foco 1 Exaltação:** os mais fortes só na Exaltação 1, com Exaltação 2 e 3 vazias; Eminência, Renome e Orgulho completas.
+- **🔁 Repetir times da semana passada** (Guerra das Sombras e Vigília): cada membro volta para o mesmo time em que jogou no último evento do mesmo tipo com times montados (a janela mostra qual).
+  Se alguém de lá não confirmou presença, o site avisa "Nem todos os membros se inscreveram pra esse evento", mostra quem e de qual sala, e pergunta: **Completar com outras contas** (os mais fortes que confirmaram entram nas vagas, as salas mais altas primeiro) ou **Preencher manualmente**.
+  Quem agora marcou a 🚩 de partidas de 4 pontos não volta sozinho para Exaltação (dá para colocar manualmente). Se a última vez usou outro formato de times, o site pede para trocar o formato antes.
 
 Em todos os modos, os mais fortes vão para as salas mais altas, e as salas da mesma categoria (ex.: Eminência 1, 2 e 3) ficam com quantidade de membros e Ressonância total equilibradas.
 No Rito há o modo **Equilibrado**, que distribui os confirmados em times completos de 8, com a Ressonância equilibrada.

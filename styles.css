@@ -1387,3 +1387,7 @@ fieldset.invalid { border-color: #ef4444; }
   .raffle-winners.review .raffle-winner .btn { width: 100%; }
   .raffle-review-actions .btn { flex: 1; }
 }
+
+/* ---------- Repetir times da semana passada ---------- */
+.rp-missing { display: grid; gap: 4px; padding: 10px 12px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--border); font-size: .92rem; max-height: 40vh; overflow-y: auto; }
+.sg-mode input:disabled + span { opacity: .55; }

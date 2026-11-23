@@ -314,6 +314,13 @@
           : q.gte('starts_at', cut).order('starts_at')));
       },
       async event(id) { return ok(await sb.from('events').select(full).eq('id', id).maybeSingle()); },
+      // Eventos anteriores do mesmo tipo (para "Repetir times da semana passada")
+      async prevSameEvents(ev) {
+        let q = sb.from('events').select('id, title, type_id, starts_at, team_format, team_count, team_names, team_slots(user_id, team)')
+          .lt('starts_at', ev.starts_at).order('starts_at', { ascending: false }).limit(8);
+        q = ev.type_id ? q.eq('type_id', ev.type_id) : q.eq('title', ev.title);
+        return ok(await q) || [];
+      },
       // Eventos que já começaram, para o painel de frequência
       async history(sinceIso) {
         let q = sb.from('events').select('id, title, type_id, starts_at, rsvps(user_id, going), attendance(user_id, present), team_slots(user_id, team)')
@@ -855,6 +862,14 @@
         db.attendance.push({ event_id: id, user_id: p.id, present: p.id === 'u0' || rnd() < reliability[p.id] + 0.25 });
       });
     });
+    // A Guerra de sábado passado teve times (para "Repetir times da semana passada"): quase todos
+    // confirmaram a próxima Guerra; três não (para mostrar o aviso de quem faltou se inscrever)
+    {
+      const g1 = db.rsvps.filter((r) => r.event_id === 1 && r.going).map((r) => r.user_id).slice(0, 21);
+      const out = db.rsvps.filter((r) => r.event_id === 1 && !r.going).map((r) => r.user_id).slice(0, 3);
+      Object.assign(db.events.find((e) => e.id === 32), { team_format: 'guerra' });
+      [...out, ...g1].forEach((u, i) => db.slots.push({ event_id: 32, user_id: u, team: `${WAR_GROUPS[Math.floor(i / 24)] || 'Orgulho'} ${Math.floor((i % 24) / 8) + 1}` }));
+    }
     // Nesta semana: uma Guerra já aconteceu (com presença registrada), se a semana já tiver começado há tempo suficiente
     const thisWeek = Date.parse(raffleWeekStart(drawIso(0)));
     const midWeek = thisWeek + (2 * 24 + 20.5) * 3600e3;
@@ -1167,6 +1182,10 @@
           .map(attach);
       },
       async event(id) { const e = db.events.find((x) => x.id === id); return e ? attach(e) : null; },
+      async prevSameEvents(ev) {
+        return db.events.filter((e) => Date.parse(e.starts_at) < Date.parse(ev.starts_at) && (ev.type_id ? e.type_id === ev.type_id : e.title === ev.title))
+          .sort((a, b) => Date.parse(b.starts_at) - Date.parse(a.starts_at)).slice(0, 8).map(attach);
+      },
       // Igual à função member_badges do banco
       async badges() {
         const now = Date.now();
@@ -3995,6 +4014,10 @@
       desc: 'Os mais fortes só na Exaltação 1 (Exaltação 2 e 3 vazias). Eminência, Renome e Orgulho completas, sempre os mais fortes nas salas mais altas.',
       rooms: { 'Exaltação': [1], 'Eminência': [1, 2, 3], 'Renome': [1, 2, 3], 'Orgulho': [1, 2, 3] },
     },
+    repetir: {
+      label: '🔁 Repetir times da semana passada',
+      desc: 'Cada membro volta para o mesmo time em que jogou na última vez.',
+    },
     torre: {
       label: 'Mais fortes com tanques',
       desc: 'Escolhe os mais fortes pela Ressonância para preencher os times (até 10 por time), garante pelo menos 3 tanques (Druida, Cruzado ou Bárbaro) em cada time e equilibra as classes e a força entre os times.',
@@ -4116,11 +4139,23 @@
     return { slots, left: rest.length, noRes: pool.filter((p) => !Number.isFinite(p.build.resonance)).length };
   }
 
-  function openSuggestDialog() {
+  // Último evento do mesmo tipo (Guerra das Sombras / Vigília) que teve times montados
+  async function findPrevTeams(ev) {
+    const list = await api.prevSameEvents(ev).catch(() => []);
+    return list.find((e) => e.id !== ev.id && (e.team_slots || []).length) || null;
+  }
+
+  async function openSuggestDialog() {
     const war = T.ev.team_format === 'guerra';
     const tower = isTower(T.ev);
-    const modes = war ? ['exaltacao', '2x2', '1exaltacao'] : tower ? ['torre', 'equilibrado'] : ['equilibrado'];
+    // Guerra das Sombras e Vigília se repetem toda semana: dá para repetir os times da última
+    const prev = has4pts(T.ev) ? await findPrevTeams(T.ev) : null;
+    const base = war ? ['exaltacao', '2x2', '1exaltacao'] : tower ? ['torre', 'equilibrado'] : ['equilibrado'];
+    const modes = has4pts(T.ev) ? ['repetir', ...base] : base;
     const capacity = (k) => (k === 'equilibrado' || k === 'torre' ? teamNames(T.ev).length : Object.values(SUGGEST_MODES[k].rooms).flat().length) * teamSize(T.ev);
+    const prevNote = prev
+      ? `<span class="muted small">· ${esc(prev.title)} de ${esc(fmtShortWeekday(prev.starts_at))} ${esc(fmtShortDate(prev.starts_at))} (${new Set(prev.team_slots.map((x) => x.team)).size} ${war ? 'salas' : 'times'}, ${prev.team_slots.length} membros)</span>`
+      : '<span class="muted small">· nenhum evento anterior deste tipo com times montados</span>';
     openDialog(`
       <form id="sg-form" class="stack">
         <h2>✨ Sugerir times</h2>
@@ -4129,8 +4164,8 @@
         ${war && T.people.some((p) => p.p4) ? `<p class="small" style="margin:0">🚩 <b>${T.people.filter((p) => p.p4).length}</b> preferem partidas de 4 pontos: a sugestão não coloca essas pessoas em Exaltação, só de Eminência em diante.</p>` : ''}
         <div class="sg-modes">
           ${modes.map((k, i) => `<label class="sg-mode">
-            <input type="radio" name="mode" value="${k}" ${i === 0 ? 'checked' : ''}>
-            <span><b>${SUGGEST_MODES[k].label}</b> <span class="muted small">· ${capacity(k)} vagas</span><br><span class="muted small">${SUGGEST_MODES[k].desc}</span></span>
+            <input type="radio" name="mode" value="${k}" ${k === 'repetir' && !prev ? 'disabled' : ''} ${(prev ? i === 0 : k === base[0]) ? 'checked' : ''}>
+            <span><b>${SUGGEST_MODES[k].label}</b> ${k === 'repetir' ? prevNote : `<span class="muted small">· ${capacity(k)} vagas</span>`}<br><span class="muted small">${SUGGEST_MODES[k].desc}</span></span>
           </label>`).join('')}
         </div>
         <p class="small" style="margin:0">${T.slots.size ? '⚠ A sugestão substitui a distribuição atual do rascunho. ' : ''}Nada é salvo até você revisar e clicar em <b>💾 Salvar</b>.</p>
@@ -4142,6 +4177,7 @@
       $('#sg-form', d).addEventListener('submit', (e) => {
         e.preventDefault();
         const mode = d.querySelector('input[name="mode"]:checked').value;
+        if (mode === 'repetir') { dlg.close(); repeatLastTeams(prev); return; }
         const { slots, left, noRes, tankShort } = suggestTeams(mode);
         T.slots = slots;
         T.sel = null;
@@ -4150,6 +4186,77 @@
         const rooms = new Set(slots.values()).size;
         toast(`${SUGGEST_MODES[mode].label}: ${slots.size} membros em ${rooms} ${tower ? (rooms === 1 ? 'time' : 'times') : 'salas'}${left ? ` · ${left} sem vaga` : ''}${noRes ? ` · ${noRes} sem Ressonância informada` : ''}${tankShort ? ` · ⚠ faltaram ${tankShort} tanques para ter ${TOWER_MIN_TANKS} em cada time` : ''}. Revise e salve.`, !!tankShort);
       });
+    });
+  }
+
+  // Repete os times do evento anterior com quem confirmou agora; avisa quem não se inscreveu
+  function repeatLastTeams(prev) {
+    const ev = T.ev;
+    if ((prev.team_format || null) !== (ev.team_format || null)) {
+      toast(`Na última vez os times usaram o formato ${FORMAT_LABEL[prev.team_format] || 'outro'}. Troque o formato para ${FORMAT_LABEL[prev.team_format] || 'o mesmo'} para repetir.`, true);
+      return;
+    }
+    const size = teamSize(ev);
+    const names = teamNames(ev);
+    const valid = new Set(names);
+    const going = new Map(T.people.map((p) => [p.id, p]));
+    const slots = new Map(); const count = {}; const lastCount = {};
+    const missing = []; const p4Out = [];
+    prev.team_slots.filter((x) => valid.has(x.team)).forEach((x) => {
+      lastCount[x.team] = (lastCount[x.team] || 0) + 1;
+      if (!going.has(x.user_id)) { missing.push(x); return; }
+      // Agora prefere partidas de 4 pontos: a repetição automática não coloca em Exaltação
+      if (going.get(x.user_id).p4 && isExaltRoom(x.team)) { p4Out.push(x); return; }
+      if ((count[x.team] || 0) >= size) return;
+      slots.set(x.user_id, x.team); count[x.team] = (count[x.team] || 0) + 1;
+    });
+    const apply = (map, msg, warn = false) => { T.slots = map; T.sel = null; renderTeams(); toast(msg, warn); };
+    const others = () => T.people.filter((p) => !slots.has(p.id));
+    const when = `${fmtShortWeekday(prev.starts_at)} ${fmtShortDate(prev.starts_at)}`;
+    if (!missing.length && !p4Out.length) {
+      const extra = others().length;
+      apply(slots, `Times de ${when} repetidos: ${slots.size} membros.${extra ? ` ${extra} confirmado(s) novo(s) ficaram em “Sem time”.` : ''} Revise e salve.`);
+      return;
+    }
+    // Completa as vagas de quem faltou com os mais fortes que confirmaram (as salas mais altas primeiro)
+    const complete = () => {
+      const map = new Map(slots); const cnt = { ...count };
+      const pool = others().sort((a, b) => resOf(b) - resOf(a) || a.name.localeCompare(b.name, 'pt-BR'));
+      names.forEach((t) => {
+        let free = Math.min(size, lastCount[t] || 0) - (cnt[t] || 0);
+        while (free > 0) {
+          const k = pool.findIndex((p) => !(p.p4 && isExaltRoom(t)));
+          if (k < 0) break;
+          const [p] = pool.splice(k, 1);
+          map.set(p.id, t); cnt[t] = (cnt[t] || 0) + 1; free--;
+        }
+      });
+      const filled = map.size - slots.size;
+      const stillFree = names.reduce((n, t) => n + Math.max(0, Math.min(size, lastCount[t] || 0) - (cnt[t] || 0)), 0);
+      apply(map, `Times de ${when} repetidos e completados: ${filled} vaga(s) preenchida(s) com outras contas${stillFree ? `, ${stillFree} vaga(s) continuam abertas (${pool.length ? 'quem sobrou prefere partidas de 4 pontos e não vai para Exaltação' : 'não há mais confirmados'})` : ''}${pool.length ? `. ${pool.length} ficaram em “Sem time”` : ''}. Revise e salve.`, !!stillFree);
+    };
+    const avail = others().length;
+    const byTeam = {};
+    missing.forEach((x) => { (byTeam[x.team] ||= []).push(x.user_id); });
+    const vacancies = missing.length + p4Out.length;
+    openDialog(`<div class="stack">
+        <h2>⚠ ${missing.length ? 'Nem todos se inscreveram' : 'Vagas para completar'}</h2>
+        ${missing.length ? `<p style="margin:0">Nem todos os membros se inscreveram pra esse evento. <b>${missing.length}</b> de quem jogou em ${esc(when)} ainda não confirmou presença:</p>
+        <div class="rp-missing">${names.filter((t) => byTeam[t]).map((t) => `<div><b>${esc(t)}</b>: ${byTeam[t].map((u) => esc(nameOf(u))).join(', ')}</div>`).join('')}</div>` : ''}
+        ${p4Out.length ? `<p class="small" style="margin:0">🚩 <b>${p4Out.map((x) => esc(nameOf(x.user_id))).join(', ')}</b> ${p4Out.length === 1 ? 'jogou' : 'jogaram'} em Exaltação, mas agora ${p4Out.length === 1 ? 'prefere' : 'preferem'} partidas de 4 pontos: ${p4Out.length === 1 ? 'ficou' : 'ficaram'} fora da Exaltação (dá para colocar manualmente).</p>` : ''}
+        <p class="small" style="margin:0">Completar com outras contas ou terminar de preencher manualmente?
+          ${avail ? `<span class="muted">Há ${avail} confirmado(s) fora dos times; os mais fortes entram nas vagas (respeitando a 🚩 dos 4 pontos).</span>` : '<span class="muted">Não há outros confirmados para completar agora.</span>'}</p>
+        <div class="row end dlg-actions" style="flex-wrap:wrap">
+          <button type="button" class="btn ghost" data-close>Cancelar</button>
+          <button type="button" class="btn" id="rp-manual">Preencher manualmente</button>
+          <button type="button" class="btn primary" id="rp-fill"${avail ? '' : ' disabled'}>Completar com outras contas</button>
+        </div>
+      </div>`, (d) => {
+      $('#rp-manual', d).addEventListener('click', () => {
+        dlg.close();
+        apply(slots, `Times de ${when} repetidos com ${slots.size} membros. ${vacancies} vaga(s) para preencher: arraste os confirmados de “Sem time”.`);
+      });
+      $('#rp-fill', d).addEventListener('click', () => { dlg.close(); complete(); });
     });
   }
 
