@@ -7719,7 +7719,8 @@
     const resBy = Object.fromEntries(results.map((r) => [r.event_id, r]));
     const now = Date.now();
     const cycles = cycleSpans(cyclesRaw);
-    const members = activeMembers();
+    const members = activePlayers(); // sem os membros piloto (só contam as contas que eles pilotam)
+    const pilotIds = new Set(state.members.filter(isPilotOnly).map((m) => m.id));
     const link = (m) => (m ? `<a class="member-link" href="#/membro/${encodeURIComponent(m.id)}">${esc(displayName(m))}</a>` : '—');
     const empty = (msg) => `<div class="muted small chart-empty">${msg}</div>`;
 
@@ -7747,10 +7748,12 @@
       const evs = past.filter((e) => inSpan(Date.parse(e.starts_at), p));
       const wars = evs.filter((e) => resBy[e.id]).sort((a, b) => Date.parse(a.starts_at) - Date.parse(b.starts_at));
       const wins = wars.filter((e) => resBy[e.id].outcome === 'win').length;
-      const att = evs.filter((e) => e.attendance.length);
-      const rate = att.length ? att.reduce((s, e) => s + e.attendance.filter((a) => a.present).length / e.attendance.length, 0) / att.length : null;
-      const joins = mlog.filter((l) => l.to_role === 'member' && ['pending', 'former'].includes(l.from_role) && inSpan(Date.parse(l.changed_at), p));
-      const exits = mlog.filter((l) => l.to_role === 'former' && ACTIVE_ROLES.includes(l.from_role) && inSpan(Date.parse(l.changed_at), p));
+      // Membros piloto (sem conta própria no jogo) não entram na presença, nas entradas e saídas nem nas contagens
+      const attOf = (e) => e.attendance.filter((a) => !pilotIds.has(a.user_id));
+      const att = evs.filter((e) => attOf(e).length);
+      const rate = att.length ? att.reduce((s, e) => s + attOf(e).filter((a) => a.present).length / attOf(e).length, 0) / att.length : null;
+      const joins = mlog.filter((l) => !pilotIds.has(l.user_id) && l.to_role === 'member' && ['pending', 'former'].includes(l.from_role) && inSpan(Date.parse(l.changed_at), p));
+      const exits = mlog.filter((l) => !pilotIds.has(l.user_id) && l.to_role === 'former' && ACTIVE_ROLES.includes(l.from_role) && inSpan(Date.parse(l.changed_at), p));
       const tEnd = Math.min(p.to, now) - 1;
       const resAt = (t) => { const v = members.map((m) => valueAt(m, 'resonance', t, histBy[m.id] || [])).filter((x) => x != null); return v.length ? v.reduce((s, x) => s + x, 0) / v.length : null; };
       const tks = (state.tickets || []).filter((t) => inSpan(Date.parse(t.created_at), p));
@@ -7774,7 +7777,7 @@
     const logAsc = mlog.slice().sort((a, b) => Date.parse(a.changed_at) - Date.parse(b.changed_at));
     const activeAt = (t) => {
       const last = {};
-      for (const l of logAsc) { if (Date.parse(l.changed_at) > t) break; last[l.user_id] = l.to_role; }
+      for (const l of logAsc) { if (Date.parse(l.changed_at) > t) break; if (!pilotIds.has(l.user_id)) last[l.user_id] = l.to_role; }
       return Object.values(last).filter((r) => ACTIVE_ROLES.includes(r)).length;
     };
     // ----- KPIs -----
@@ -8387,7 +8390,7 @@
       c.ids = new Set(c.scans.map((x) => x.id));
       return c;
     });
-    const us = { key: '__us', name: OUR, us: true, players: activeMembers() };
+    const us = { key: '__us', name: OUR, us: true, players: activePlayers() }; // membros piloto não têm atributos próprios
     const statK = RIV.stat in RIV_STATS ? RIV.stat : 'avg';
     clans.sort((a, b) => (statOf(b.players, 'resonance', statK) || 0) - (statOf(a.players, 'resonance', statK) || 0));
     const rowsAll = [us, ...clans];
