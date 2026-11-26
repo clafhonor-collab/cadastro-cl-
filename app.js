@@ -3153,6 +3153,52 @@
     });
   }
 
+  // ---------- Lista de presença (eventos passados, liderança) ----------
+  // Quem marcou "Vou": compareceu (presença confirmada), faltou, ou ainda está sem presença registrada.
+  function openAttendanceList(ev, yes, after) {
+    const att = ev.attendance || [];
+    const byUser = new Map(att.map((a) => [a.user_id, a.present]));
+    const nm = (x) => displayName(x.p);
+    const sortN = (a, b) => nm(a).localeCompare(nm(b), 'pt-BR');
+    const present = yes.filter((x) => byUser.get(x.p.id) === true).sort(sortN);
+    const absent = yes.filter((x) => byUser.get(x.p.id) === false).sort(sortN);
+    const unset = yes.filter((x) => !byUser.has(x.p.id)).sort(sortN);
+    // Quem compareceu sem ter marcado "Vou" (ex.: entrou na hora)
+    const yesIds = new Set(yes.map((x) => x.p.id));
+    const extra = att.filter((a) => a.present && !yesIds.has(a.user_id)).map((a) => ({ p: memberById(a.user_id) })).filter((x) => x.p && !isPilotOnly(x.p)).sort(sortN);
+    const when = `${fmtDay(ev.starts_at)} às ${fmtTime(ev.starts_at)}`;
+    const text = () => {
+      const lines = [`*${ev.title}*`, when, ''];
+      const block = (title, arr) => { if (arr.length) lines.push(`*${title} (${arr.length})*`, ...arr.map((x) => `• ${nm(x)}`), ''); };
+      block('✅ Confirmaram e compareceram', present);
+      block('❌ Confirmaram e não compareceram', absent);
+      block('⚠️ Sem presença registrada', unset);
+      block('➕ Compareceram sem ter confirmado', extra);
+      if (!yes.length && !extra.length) lines.push('Ninguém confirmou presença neste evento.');
+      return lines.join('\n').trim();
+    };
+    const sec = (cls, title, arr, note = '') => `<div class="al-sec ${cls}"><h3>${title} <span class="muted">(${arr.length})</span></h3>
+        ${note ? `<p class="muted small" style="margin:0 0 6px">${note}</p>` : ''}
+        ${arr.length ? `<ul class="al-list">${arr.map((x) => `<li>${avatar(x.p)}<span>${esc(nm(x))}</span>${x.p.char_class ? classTag(x.p.char_class) : ''}</li>`).join('')}</ul>` : '<p class="muted small" style="margin:0">Ninguém.</p>'}</div>`;
+    openDialog(`<div class="stack att-list-dlg">
+        <h2>✅ Lista de presença</h2>
+        <p class="muted" style="margin:0">${esc(ev.title)} · ${esc(when)}</p>
+        ${!att.length ? '<p class="lb-warn small" style="margin:0">⚠️ A presença deste evento ainda não foi registrada: todos que marcaram “Vou” aparecem como sem presença registrada.</p>' : ''}
+        ${sec('ok', '✅ Compareceram', present, 'Marcaram “Vou” e estão com a presença confirmada.')}
+        ${sec('bad', '❌ Não compareceram', absent, 'Marcaram “Vou” e a presença foi registrada como falta.')}
+        ${sec('warn', '⚠️ Sem presença registrada', unset, 'Marcaram “Vou”, mas ainda não têm presença definida.')}
+        ${extra.length ? sec('extra', '➕ Compareceram sem ter confirmado', extra) : ''}
+        <div class="row end dlg-actions" style="flex-wrap:wrap">
+          <button type="button" class="btn ghost" data-close>Fechar</button>
+          ${can('attendance') ? `<button type="button" class="btn" id="al-edit">${att.length ? 'Editar presença' : '📋 Registrar presença'}</button>` : ''}
+          <button type="button" class="btn primary" id="al-copy">📋 Copiar lista</button>
+        </div>
+      </div>`, (d) => {
+      $('#al-copy', d).addEventListener('click', () => copy(text(), 'Lista de presença copiada — é só colar no WhatsApp'));
+      $('#al-edit', d)?.addEventListener('click', () => { dlg.close(); openAttendanceDialog(ev, after); });
+    });
+  }
+
   // Pedido de saída: quando o membro não pode mais mudar a resposta sozinho
   function openWithdrawDialog(ev, after) {
     const team = myTeam(ev);
@@ -3802,6 +3848,7 @@
         ${ev.description ? `<div class="desc" style="white-space:pre-line">${esc(ev.description)}</div>` : ''}
         <div class="row">
           <button class="btn small ghost" id="btn-copy">🔗 Copiar link</button>${calBtn(ev)}
+          ${isOfficer() && finished ? '<button class="btn small" id="btn-att-list" title="Quem confirmou “Vou” e compareceu, faltou ou está sem presença registrada">✅ Lista de presença</button>' : ''}
           ${isOfficer() ? `<button class="btn small ghost" id="btn-copy-list">📋 Copiar lista</button>
             <button class="btn small ghost" id="btn-history" title="Quem alterou o evento e cada sala">🕘 Histórico de alterações</button>
             <span class="spacer"></span>
@@ -3860,6 +3907,7 @@
     $('#btn-attend')?.addEventListener('click', () => openAttendanceDialog(ev, () => viewEvent(id)));
     $('#btn-result')?.addEventListener('click', () => openResultDialog(ev, result, () => viewEvent(id)));
     if (isOfficer()) {
+      $('#btn-att-list')?.addEventListener('click', () => openAttendanceList(ev, yes, () => viewEvent(id)));
       $('#btn-copy-list').addEventListener('click', () => {
         // Padrão do WhatsApp: título em negrito e um nome por linha, com um ponto na frente
         const lines = [`*${ev.title}*`, `${fmtDay(ev.starts_at)} às ${fmtTime(ev.starts_at)}`];

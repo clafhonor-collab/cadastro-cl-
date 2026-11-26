@@ -1791,3 +1791,14 @@ fieldset.invalid { border-color: #ef4444; }
   .bd-table .bd-clan { position: sticky; left: 0; z-index: 1; background: var(--panel); box-shadow: 1px 0 0 var(--border); }
   .bd-us .bd-clan { background: #2a1610; }
 }
+
+/* ---------- Lista de presença (eventos passados) ---------- */
+.al-sec { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+.al-sec h3 { margin: 0 0 6px; font-size: 1rem; }
+.al-sec.ok { border-color: rgba(74, 222, 128, .35); }
+.al-sec.bad { border-color: rgba(239, 68, 68, .4); }
+.al-sec.warn { border-color: rgba(220, 170, 82, .45); }
+.al-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 6px 12px; }
+.al-list li { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.al-list li > span:not(.cls):not(.avatar) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.att-list-dlg { max-height: none; }
